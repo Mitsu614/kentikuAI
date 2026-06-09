@@ -1,0 +1,9 @@
+node_modules/
+dist/
+release/
+*.exe
+.DS_Store
+api-config.json
+*.lock
+.claude/
+.mcp.json

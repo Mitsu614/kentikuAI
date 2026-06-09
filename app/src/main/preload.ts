@@ -1,0 +1,129 @@
+import { contextBridge, ipcRenderer } from 'electron';
+
+contextBridge.exposeInMainWorld('api', {
+  // 物件
+  listProperties: () => ipcRenderer.invoke('properties:list'),
+  createProperty: (data: any) => ipcRenderer.invoke('properties:create', data),
+  updateProperty: (data: any) => ipcRenderer.invoke('properties:update', data),
+  deleteProperty: (id: number) => ipcRenderer.invoke('properties:delete', id),
+  selectImage: () => ipcRenderer.invoke('dialog:selectImage'),
+
+  // 材料マスタ
+  listMaterials: () => ipcRenderer.invoke('materials:list'),
+  createMaterial: (data: any) => ipcRenderer.invoke('materials:create', data),
+  updateMaterial: (data: any) => ipcRenderer.invoke('materials:update', data),
+  deleteMaterial: (id: number) => ipcRenderer.invoke('materials:delete', id),
+
+  // 施工履歴
+  listConstructions: () => ipcRenderer.invoke('constructions:list'),
+  createConstruction: (data: any) => ipcRenderer.invoke('constructions:create', data),
+  updateConstruction: (data: any) => ipcRenderer.invoke('constructions:update', data),
+  deleteConstruction: (id: number) => ipcRenderer.invoke('constructions:delete', id),
+  calculateConstruction: (id: number) => ipcRenderer.invoke('constructions:calculate', id),
+
+  // 施工材料明細
+  listConstructionMaterials: (cid: number) => ipcRenderer.invoke('constructionMaterials:list', cid),
+  addConstructionMaterial: (data: any) => ipcRenderer.invoke('constructionMaterials:add', data),
+  updateConstructionMaterial: (data: any) => ipcRenderer.invoke('constructionMaterials:update', data),
+  removeConstructionMaterial: (id: number) => ipcRenderer.invoke('constructionMaterials:remove', id),
+
+  // 請求書
+  listInvoices: () => ipcRenderer.invoke('invoices:list'),
+  createInvoice: (data: any) => ipcRenderer.invoke('invoices:create', data),
+  updateInvoice: (data: any) => ipcRenderer.invoke('invoices:update', data),
+  deleteInvoice: (id: number) => ipcRenderer.invoke('invoices:delete', id),
+  getInvoiceDetail: (id: number) => ipcRenderer.invoke('invoices:getDetail', id),
+  generatePDF: (data: any) => ipcRenderer.invoke('invoices:generatePDF', data),
+
+  // ダッシュボード
+  getDashboardSummary: () => ipcRenderer.invoke('dashboard:summary'),
+
+  // テナント
+  listTenants: () => ipcRenderer.invoke('tenants:list'),
+  createTenant: (name: string) => ipcRenderer.invoke('tenants:create', name),
+  switchTenant: (id: number) => ipcRenderer.invoke('tenants:switch', id),
+  deleteTenant: (id: number) => ipcRenderer.invoke('tenants:delete', id),
+  currentTenant: () => ipcRenderer.invoke('tenants:current'),
+
+  // ユーザー管理
+  listUsers: () => ipcRenderer.invoke('users:list'),
+  createUser: (data: any) => ipcRenderer.invoke('users:create', data),
+  deleteUser: (id: number) => ipcRenderer.invoke('users:delete', id),
+
+  // 監査ログ
+  listAuditLog: () => ipcRenderer.invoke('audit:list'),
+
+  // CSVエクスポート
+  exportConstructions: () => ipcRenderer.invoke('export:constructions'),
+  exportInvoices: () => ipcRenderer.invoke('export:invoices'),
+  exportMaterials: () => ipcRenderer.invoke('export:materials'),
+
+  // バックアップ
+  runBackup: () => ipcRenderer.invoke('backup:run'),
+  listBackups: () => ipcRenderer.invoke('backup:list'),
+
+  // トンネル
+  startTunnel: () => ipcRenderer.invoke('tunnel:start'),
+  stopTunnel: () => ipcRenderer.invoke('tunnel:stop'),
+  tunnelStatus: () => ipcRenderer.invoke('tunnel:status'),
+
+  // 設定
+  loadConfig: () => ipcRenderer.invoke('config:load'),
+  saveConfig: (config: any) => ipcRenderer.invoke('config:save', config),
+  selectDbPath: () => ipcRenderer.invoke('config:selectDbPath'),
+  setDbPath: (folderPath: string) => ipcRenderer.invoke('config:setDbPath', folderPath),
+
+  // 施工複製
+  duplicateConstruction: (id: number) => ipcRenderer.invoke('constructions:duplicate', id),
+  // 材料CSVインポート
+  importMaterialsCSV: () => ipcRenderer.invoke('materials:importCSV'),
+
+  // 見積書PDF
+  generateEstimatePDF: (data: any) => ipcRenderer.invoke('estimates:generatePDF', data),
+
+  // 工事写真
+  listConstructionPhotos: (cid: number) => ipcRenderer.invoke('constructionPhotos:list', cid),
+  addConstructionPhoto: (data: any) => ipcRenderer.invoke('constructionPhotos:add', data),
+  deleteConstructionPhoto: (id: number) => ipcRenderer.invoke('constructionPhotos:delete', id),
+
+  // PDF一括出力
+  batchExportPDF: () => ipcRenderer.invoke('invoices:batchPDF'),
+
+  // OCR（紙→電子化）
+  ocrInvoice: (imageBase64: string) => ipcRenderer.invoke('ai:ocrInvoice', imageBase64),
+  importOcrResult: (data: any) => ipcRenderer.invoke('ai:importOcrResult', data),
+
+  // クレジット（AIストック）
+  getCredits: () => ipcRenderer.invoke('credits:get'),
+  getMonthlyUsage: () => ipcRenderer.invoke('credits:usage'),
+  addCredits: (amount: number, reason: string) => ipcRenderer.invoke('credits:add', amount, reason),
+  getCreditLog: () => ipcRenderer.invoke('credits:log'),
+
+  // プラン管理
+  getPlan: () => ipcRenderer.invoke('plan:get'),
+  setPlan: (planKey: string, tenantId?: number) => ipcRenderer.invoke('plan:set', planKey, tenantId),
+  listPlans: () => ipcRenderer.invoke('plan:list'),
+  getCreditCosts: () => ipcRenderer.invoke('plan:costs'),
+
+  // プラン申請
+  requestPlan: (planKey: string) => ipcRenderer.invoke('plan:request', planKey),
+  listPlanRequests: () => ipcRenderer.invoke('plan:requestList'),
+  listAllPlanRequests: () => ipcRenderer.invoke('plan:allRequests'),
+  approvePlanRequest: (id: number) => ipcRenderer.invoke('plan:approve', id),
+  rejectPlanRequest: (id: number) => ipcRenderer.invoke('plan:reject', id),
+  cancelPlanRequest: (id: number) => ipcRenderer.invoke('plan:cancel', id),
+  generatePlanInvoice: (id: number) => ipcRenderer.invoke('plan:generateInvoice', id),
+
+  // 見積ログ
+  getEstimateLog: () => ipcRenderer.invoke('estimates:log'),
+  saveEstimateImage: (data: any) => ipcRenderer.invoke('estimates:saveImage', data),
+
+  // AI
+  analyzeImage: (data: any) => ipcRenderer.invoke('ai:analyzeImage', data),
+  generateImage: (data: any) => ipcRenderer.invoke('ai:generateImage', data),
+  autoCreateFromEstimate: (data: any) => ipcRenderer.invoke('ai:autoCreate', data),
+
+  // データエクスポート/インポート
+  exportData: () => ipcRenderer.invoke('data:export'),
+  importData: () => ipcRenderer.invoke('data:import'),
+});
