@@ -1,11 +1,9 @@
-name: 学習ループ - 見積精度自動改善
+name: learning-loop
 
 on:
-  schedule:
-    # 毎週月曜 AM 3:00 (JST) = 日曜 18:00 UTC
-    - cron: '0 18 * * 0'
   workflow_dispatch:
-    inputs: {}
+  schedule:
+    - cron: '0 18 * * 0'
 
 jobs:
   analyze-and-update:
