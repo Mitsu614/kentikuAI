@@ -18,7 +18,7 @@ interface FeedbackData {
   actual_labor_cost?: number;
   actual_selling_price?: number;
   actual_markup_rate?: number;
-  accuracy_ratio?: number;
+  accuracy_ratio?: number | null;
 }
 
 interface CostCoefficient {
