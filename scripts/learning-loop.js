@@ -85,8 +85,8 @@ async function main() {
   const feedback = await supabaseGet('estimate_feedback', '?select=*&order=created_at.desc&limit=1000');
   console.log('feedback count: ' + feedback.length);
 
-  if (feedback.length < 3) {
-    console.log('not enough data (< 3), skipping');
+  if (feedback.length < 1) {
+    console.log('no data, skipping');
     await supabasePost('learning_runs', {
       feedback_count: feedback.length,
       coefficients_updated: 0,

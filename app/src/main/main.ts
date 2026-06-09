@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients } from './supabase-sync';
 
 // ── トライアル用埋め込みキー ──
 const TRIAL_KEYS = {
@@ -570,13 +570,34 @@ app.whenReady().then(async () => {
 
     // ── 学習ループ: estimate_logに実績値を自動フィードバック ──
     try {
-      const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total FROM estimate_log WHERE construction_id = ?', [constructionId]);
+      const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type FROM estimate_log WHERE construction_id = ?', [constructionId]);
       if (log) {
         const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
         runSql(
           'UPDATE estimate_log SET actual_material_cost=?, actual_labor_cost=?, actual_selling_price=?, actual_markup_rate=?, feedback_at=? WHERE id=?',
           [matCost, laborCost, sellingPrice, markupRate, now, log.id]
         );
+
+        // ── 即時学習: Supabaseに送信 → 全実績から係数を即更新 ──
+        const config = loadApiConfig();
+        sendFeedbackToSupabase([{
+          work_type: log.work_type || '不明',
+          ai_material_cost: log.ai_material_cost,
+          ai_labor_cost: log.ai_labor_cost,
+          ai_total: log.ai_total,
+          actual_material_cost: matCost,
+          actual_labor_cost: laborCost,
+          actual_selling_price: sellingPrice,
+          actual_markup_rate: markupRate,
+          accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
+        }]).then(() => {
+          // 送信完了後、即座にClaude APIで全実績を分析して係数更新
+          return analyzeAndUpdateCoefficients(config.anthropicKey);
+        }).then(() => {
+          console.log('学習ループ即時: 係数更新完了 — 次回見積から反映されます');
+        }).catch((e: any) => {
+          console.error('学習ループ即時エラー:', e);
+        });
       }
     } catch (_) {}
   }

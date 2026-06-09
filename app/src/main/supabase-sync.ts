@@ -108,6 +108,97 @@ export async function fetchCostCoefficients(): Promise<CostCoefficient[]> {
   }
 }
 
+// 実績1件でも即時分析 → 係数更新
+export async function analyzeAndUpdateCoefficients(anthropicKey: string): Promise<void> {
+  try {
+    // 1. Supabaseから全実績を取得
+    const feedback = await supabaseRequest(
+      'estimate_feedback', 'GET', null,
+      '?select=*&order=created_at.desc&limit=1000'
+    );
+    if (!Array.isArray(feedback) || feedback.length === 0) {
+      console.log('学習ループ即時: 実績データなし、スキップ');
+      return;
+    }
+
+    // 2. 工事種別ごとに集計
+    const byType: Record<string, any[]> = {};
+    for (const fb of feedback) {
+      const wt = fb.work_type || '不明';
+      if (!byType[wt]) byType[wt] = [];
+      byType[wt].push(fb);
+    }
+
+    const summary = Object.entries(byType).map(([wt, list]) => {
+      const avgAiMat = list.reduce((s, f) => s + (f.ai_material_cost || 0), 0) / list.length;
+      const avgActMat = list.reduce((s, f) => s + (f.actual_material_cost || f.ai_material_cost || 0), 0) / list.length;
+      const avgAiLab = list.reduce((s, f) => s + (f.ai_labor_cost || 0), 0) / list.length;
+      const avgActLab = list.reduce((s, f) => s + (f.actual_labor_cost || f.ai_labor_cost || 0), 0) / list.length;
+      const avgAiTotal = list.reduce((s, f) => s + (f.ai_total || 0), 0) / list.length;
+      const avgActual = list.reduce((s, f) => s + (f.actual_selling_price || f.ai_total || 0), 0) / list.length;
+      return `${wt}(${list.length}件): AI材料費${Math.round(avgAiMat)}円→実績${Math.round(avgActMat)}円, AI労務費${Math.round(avgAiLab)}円→実績${Math.round(avgActLab)}円, AI合計${Math.round(avgAiTotal)}円→実績売価${Math.round(avgActual)}円`;
+    }).join('\n');
+
+    // 3. Claude APIで分析
+    const https = require('https');
+    const prompt = `建築見積AIの精度改善データです。補正係数をJSON配列で返してください。\n\n${summary}\n\n出力: [{"work_type":"名前","material_adjustment":1.0,"labor_adjustment":1.0,"confidence":0.0,"avg_accuracy":1.0,"notes":"メモ"}]\nルール: 乖離5%未満は1.0、データ1件はconfidence=0.1`;
+
+    const claudeResponse: string = await new Promise((resolve, reject) => {
+      const body = JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2000,
+        temperature: 0,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const req = https.request({
+        hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+        headers: {
+          'x-api-key': anthropicKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+      }, (res: any) => {
+        let data = '';
+        res.on('data', (c: string) => { data += c; });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            const parsed = JSON.parse(data);
+            resolve(parsed.content[0].text);
+          } else reject(new Error(`Claude ${res.statusCode}: ${data}`));
+        });
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+
+    // 4. JSONを抽出してSupabaseに書き込み
+    const jsonMatch = claudeResponse.match(/\[[\s\S]*?\]/);
+    if (!jsonMatch) {
+      console.error('学習ループ即時: JSON抽出失敗');
+      return;
+    }
+
+    const coefficients = JSON.parse(jsonMatch[0]);
+    for (const coeff of coefficients) {
+      await supabaseRequest('cost_coefficients', 'POST', {
+        work_type: coeff.work_type,
+        material_adjustment: coeff.material_adjustment,
+        labor_adjustment: coeff.labor_adjustment,
+        confidence: coeff.confidence,
+        sample_count: (byType[coeff.work_type] || []).length,
+        avg_accuracy: coeff.avg_accuracy,
+        notes: coeff.notes,
+        updated_at: new Date().toISOString(),
+      }, '?on_conflict=work_type');
+    }
+
+    console.log(`学習ループ即時: ${feedback.length}件の実績から${coefficients.length}工種の係数を更新`);
+  } catch (e) {
+    console.error('学習ループ即時分析エラー:', e);
+  }
+}
+
 // 係数をプロンプト用テキストに変換
 export function coefficientsToPromptText(coefficients: CostCoefficient[]): string {
   if (!coefficients || coefficients.length === 0) return '';
