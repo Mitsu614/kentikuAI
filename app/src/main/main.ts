@@ -1833,6 +1833,368 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
     });
   });
 
+  // ── 日報管理 ──
+  ipcMain.handle('dailyReports:list', (_e, filter: any) => {
+    const tid = getCurrentTenant();
+    if (filter?.construction_id) {
+      return queryAll(`SELECT dr.*, c.title as construction_title FROM daily_reports dr
+        LEFT JOIN constructions c ON dr.construction_id = c.id
+        WHERE dr.tenant_id = ? AND dr.construction_id = ? ORDER BY dr.report_date DESC`, [tid, filter.construction_id]);
+    }
+    if (filter?.month) {
+      return queryAll(`SELECT dr.*, c.title as construction_title FROM daily_reports dr
+        LEFT JOIN constructions c ON dr.construction_id = c.id
+        WHERE dr.tenant_id = ? AND dr.report_date LIKE ? ORDER BY dr.report_date DESC`, [tid, filter.month + '%']);
+    }
+    return queryAll(`SELECT dr.*, c.title as construction_title FROM daily_reports dr
+      LEFT JOIN constructions c ON dr.construction_id = c.id
+      WHERE dr.tenant_id = ? ORDER BY dr.report_date DESC LIMIT 100`, [tid]);
+  });
+  ipcMain.handle('dailyReports:create', (_e, data: any) => {
+    return runSql(`INSERT INTO daily_reports (tenant_id, construction_id, report_date, weather, temp_min, temp_max, progress, work_content, safety_notes, tomorrow_plan, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [getCurrentTenant(), data.construction_id || null, data.report_date, data.weather || '晴れ',
+       data.temp_min || null, data.temp_max || null, data.progress || 0,
+       data.work_content || '', data.safety_notes || '', data.tomorrow_plan || '', data.notes || '']);
+  });
+  ipcMain.handle('dailyReports:update', (_e, data: any) => {
+    runSql(`UPDATE daily_reports SET construction_id=?, report_date=?, weather=?, temp_min=?, temp_max=?, progress=?, work_content=?, safety_notes=?, tomorrow_plan=?, notes=?
+      WHERE id=? AND tenant_id=?`,
+      [data.construction_id, data.report_date, data.weather, data.temp_min, data.temp_max, data.progress,
+       data.work_content, data.safety_notes, data.tomorrow_plan, data.notes, data.id, getCurrentTenant()]);
+  });
+  ipcMain.handle('dailyReports:delete', (_e, id: number) => {
+    runSql('DELETE FROM daily_reports WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+  });
+  ipcMain.handle('dailyReports:generatePDF', async (_e, data: any) => {
+    const tid = getCurrentTenant();
+    const reports = queryAll(`SELECT dr.*, c.title as construction_title FROM daily_reports dr
+      LEFT JOIN constructions c ON dr.construction_id = c.id
+      WHERE dr.tenant_id = ? AND dr.report_date >= ? AND dr.report_date <= ?
+      ${data.construction_id ? 'AND dr.construction_id = ' + Number(data.construction_id) : ''}
+      ORDER BY dr.report_date`, [tid, data.startDate, data.endDate]);
+    const weatherIcon = (w: string) => ({ '晴れ': '☀️', '曇り': '☁️', '雨': '🌧️', '雪': '❄️' }[w] || w);
+    const cfg = loadApiConfig();
+    let rows = reports.map((r: any) => `<tr>
+      <td>${r.report_date}</td><td style="text-align:center">${weatherIcon(r.weather)} ${r.weather}</td>
+      <td>${r.temp_min != null ? r.temp_min + '〜' + r.temp_max + '℃' : '—'}</td>
+      <td>${escapeHtml(r.construction_title || '—')}</td>
+      <td style="text-align:center">${r.progress}%</td>
+      <td style="font-size:9px">${escapeHtml(r.work_content || '')}</td>
+      <td style="font-size:9px">${escapeHtml(r.safety_notes || '')}</td>
+    </tr>`).join('');
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:30px;font-size:10px}
+h1{text-align:center;font-size:20px;margin-bottom:16px}table{width:100%;border-collapse:collapse}th{background:#2e4057;color:#fff;padding:6px;font-size:9px}td{padding:4px 6px;border-bottom:1px solid #ddd;font-size:9px;vertical-align:top}
+.meta{text-align:right;font-size:10px;margin-bottom:12px}</style></head><body>
+<h1>作 業 日 報</h1>
+<div class="meta">${cfg.companyName ? escapeHtml(cfg.companyName) + '<br>' : ''}期間: ${data.startDate} ～ ${data.endDate}</div>
+<table><thead><tr><th>日付</th><th>天候</th><th>気温</th><th>施工案件</th><th>進捗</th><th>作業内容</th><th>安全事項</th></tr></thead><tbody>${rows}</tbody></table>
+</body></html>`;
+    const tmpHtml = path.join(app.getPath('temp'), `report_${Date.now()}.html`);
+    const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+    fs.writeFileSync(tmpHtml, Buffer.concat([bom, Buffer.from(html, 'utf-8')]));
+    const pdfWin = new BrowserWindow({ show: false, width: 1123, height: 794, webPreferences: { defaultEncoding: 'utf-8' } });
+    await pdfWin.loadURL(`file:///${tmpHtml.replace(/\\/g, '/')}`);
+    await new Promise<void>(r => setTimeout(r, 800));
+    const pdf = await pdfWin.webContents.printToPDF({ landscape: true, printBackground: true, margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 } });
+    pdfWin.close();
+    try { fs.unlinkSync(tmpHtml); } catch(_) {}
+    const savePath = await dialog.showSaveDialog({ defaultPath: `日報_${data.startDate}_${data.endDate}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (!savePath.canceled && savePath.filePath) { fs.writeFileSync(savePath.filePath, pdf); shell.openPath(savePath.filePath); }
+  });
+
+  // ── 工程表（ガントチャート） ──
+  ipcMain.handle('gantt:list', (_e, filter: any) => {
+    const tid = getCurrentTenant();
+    if (filter?.construction_id) {
+      return queryAll(`SELECT gt.*, c.title as construction_title FROM gantt_tasks gt
+        LEFT JOIN constructions c ON gt.construction_id = c.id
+        WHERE gt.tenant_id = ? AND gt.construction_id = ? ORDER BY gt.sort_order, gt.start_date`, [tid, filter.construction_id]);
+    }
+    return queryAll(`SELECT gt.*, c.title as construction_title FROM gantt_tasks gt
+      LEFT JOIN constructions c ON gt.construction_id = c.id
+      WHERE gt.tenant_id = ? ORDER BY gt.sort_order, gt.start_date`, [tid]);
+  });
+  ipcMain.handle('gantt:create', (_e, data: any) => {
+    return runSql(`INSERT INTO gantt_tasks (tenant_id, construction_id, task_name, assignee, start_date, end_date, progress, color, dependencies, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [getCurrentTenant(), data.construction_id || null, data.task_name, data.assignee || '',
+       data.start_date, data.end_date, data.progress || 0, data.color || '#3498db', data.dependencies || '', data.sort_order || 0]);
+  });
+  ipcMain.handle('gantt:update', (_e, data: any) => {
+    runSql(`UPDATE gantt_tasks SET construction_id=?, task_name=?, assignee=?, start_date=?, end_date=?, progress=?, color=?, dependencies=?, sort_order=?
+      WHERE id=? AND tenant_id=?`,
+      [data.construction_id, data.task_name, data.assignee, data.start_date, data.end_date, data.progress, data.color, data.dependencies, data.sort_order, data.id, getCurrentTenant()]);
+  });
+  ipcMain.handle('gantt:delete', (_e, id: number) => {
+    runSql('DELETE FROM gantt_tasks WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+  });
+
+  // ── 安全書類（グリーンファイル） ──
+  ipcMain.handle('safety:listWorkers', () => {
+    const tid = getCurrentTenant();
+    return queryAll(`SELECT w.*, si.blood_type, si.emergency_contact, si.emergency_tel, si.health_check_date, si.insurance_type, si.certifications
+      FROM workers w LEFT JOIN safety_worker_info si ON si.worker_id = w.id WHERE w.tenant_id = ? ORDER BY w.name`, [tid]);
+  });
+  ipcMain.handle('safety:updateInfo', (_e, data: any) => {
+    const existing = queryOne('SELECT id FROM safety_worker_info WHERE worker_id=?', [data.worker_id]);
+    if (existing) {
+      runSql('UPDATE safety_worker_info SET blood_type=?, emergency_contact=?, emergency_tel=?, health_check_date=?, insurance_type=?, certifications=? WHERE worker_id=?',
+        [data.blood_type, data.emergency_contact, data.emergency_tel, data.health_check_date, data.insurance_type, data.certifications, data.worker_id]);
+    } else {
+      runSql('INSERT INTO safety_worker_info (worker_id, blood_type, emergency_contact, emergency_tel, health_check_date, insurance_type, certifications) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [data.worker_id, data.blood_type, data.emergency_contact, data.emergency_tel, data.health_check_date, data.insurance_type, data.certifications]);
+    }
+  });
+  ipcMain.handle('safety:listEducation', (_e, filter: any) => {
+    const tid = getCurrentTenant();
+    if (filter?.construction_id) {
+      return queryAll(`SELECT se.*, w.name as worker_name, c.title as construction_title FROM safety_education se
+        LEFT JOIN workers w ON se.worker_id = w.id LEFT JOIN constructions c ON se.construction_id = c.id
+        WHERE se.tenant_id = ? AND se.construction_id = ? ORDER BY se.education_date DESC`, [tid, filter.construction_id]);
+    }
+    return queryAll(`SELECT se.*, w.name as worker_name, c.title as construction_title FROM safety_education se
+      LEFT JOIN workers w ON se.worker_id = w.id LEFT JOIN constructions c ON se.construction_id = c.id
+      WHERE se.tenant_id = ? ORDER BY se.education_date DESC LIMIT 200`, [tid]);
+  });
+  ipcMain.handle('safety:createEducation', (_e, data: any) => {
+    return runSql('INSERT INTO safety_education (tenant_id, construction_id, worker_id, education_date, instructor, content) VALUES (?, ?, ?, ?, ?, ?)',
+      [getCurrentTenant(), data.construction_id || null, data.worker_id || null, data.education_date, data.instructor || '', data.content || '']);
+  });
+  ipcMain.handle('safety:deleteEducation', (_e, id: number) => {
+    runSql('DELETE FROM safety_education WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+  });
+  ipcMain.handle('safety:listKY', (_e, filter: any) => {
+    const tid = getCurrentTenant();
+    if (filter?.construction_id) {
+      return queryAll(`SELECT ky.*, c.title as construction_title FROM ky_records ky
+        LEFT JOIN constructions c ON ky.construction_id = c.id
+        WHERE ky.tenant_id = ? AND ky.construction_id = ? ORDER BY ky.activity_date DESC`, [tid, filter.construction_id]);
+    }
+    return queryAll(`SELECT ky.*, c.title as construction_title FROM ky_records ky
+      LEFT JOIN constructions c ON ky.construction_id = c.id
+      WHERE ky.tenant_id = ? ORDER BY ky.activity_date DESC LIMIT 200`, [tid]);
+  });
+  ipcMain.handle('safety:createKY', (_e, data: any) => {
+    return runSql('INSERT INTO ky_records (tenant_id, construction_id, activity_date, participants, hazard, countermeasures, leader) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [getCurrentTenant(), data.construction_id || null, data.activity_date, data.participants || '', data.hazard || '', data.countermeasures || '', data.leader || '']);
+  });
+  ipcMain.handle('safety:deleteKY', (_e, id: number) => {
+    runSql('DELETE FROM ky_records WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+  });
+  ipcMain.handle('safety:generatePDF', async (_e, data: any) => {
+    const tid = getCurrentTenant();
+    const cfg = loadApiConfig();
+    let html = '';
+    const conTitle = data.construction_id ? queryOne('SELECT title FROM constructions WHERE id=?', [data.construction_id])?.title || '' : '全案件';
+
+    if (data.type === 'worker_list') {
+      const workers = queryAll(`SELECT w.*, si.blood_type, si.emergency_contact, si.emergency_tel, si.health_check_date, si.insurance_type, si.certifications
+        FROM workers w LEFT JOIN safety_worker_info si ON si.worker_id = w.id WHERE w.tenant_id = ? ORDER BY w.name`, [tid]);
+      let rows = workers.map((w: any) => `<tr>
+        <td>${escapeHtml(w.name)}</td><td>${escapeHtml(w.role || '')}</td><td style="text-align:center">${escapeHtml(w.blood_type || '—')}</td>
+        <td>${escapeHtml(w.emergency_contact || '—')}</td><td>${escapeHtml(w.emergency_tel || '—')}</td>
+        <td>${escapeHtml(w.health_check_date || '—')}</td><td>${escapeHtml(w.insurance_type || '—')}</td>
+        <td style="font-size:8px">${escapeHtml(w.certifications || '—')}</td>
+      </tr>`).join('');
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:30px;font-size:10px}
+h1{text-align:center;font-size:18px;margin-bottom:12px}table{width:100%;border-collapse:collapse}th{background:#2e4057;color:#fff;padding:5px;font-size:9px}td{padding:4px;border-bottom:1px solid #ddd;font-size:9px}
+.meta{text-align:right;font-size:10px;margin-bottom:10px}</style></head><body>
+<h1>作業員名簿</h1><div class="meta">${cfg.companyName ? escapeHtml(cfg.companyName) : ''}</div>
+<table><thead><tr><th>氏名</th><th>職種</th><th>血液型</th><th>緊急連絡先</th><th>連絡先TEL</th><th>健康診断日</th><th>保険種別</th><th>保有資格</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+    } else if (data.type === 'education') {
+      const records = queryAll(`SELECT se.*, w.name as worker_name, c.title as construction_title FROM safety_education se
+        LEFT JOIN workers w ON se.worker_id = w.id LEFT JOIN constructions c ON se.construction_id = c.id
+        WHERE se.tenant_id = ? ${data.construction_id ? 'AND se.construction_id = ' + Number(data.construction_id) : ''} ORDER BY se.education_date DESC`, [tid]);
+      let rows = records.map((r: any) => `<tr>
+        <td>${r.education_date}</td><td>${escapeHtml(r.construction_title || '—')}</td><td>${escapeHtml(r.worker_name || '—')}</td>
+        <td>${escapeHtml(r.instructor || '—')}</td><td style="font-size:8px">${escapeHtml(r.content || '')}</td>
+      </tr>`).join('');
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:30px;font-size:10px}
+h1{text-align:center;font-size:18px;margin-bottom:12px}table{width:100%;border-collapse:collapse}th{background:#2e4057;color:#fff;padding:5px;font-size:9px}td{padding:4px;border-bottom:1px solid #ddd;font-size:9px}
+.meta{text-align:right;font-size:10px;margin-bottom:10px}</style></head><body>
+<h1>新規入場者教育記録</h1><div class="meta">${escapeHtml(conTitle)}<br>${cfg.companyName ? escapeHtml(cfg.companyName) : ''}</div>
+<table><thead><tr><th>教育日</th><th>施工案件</th><th>受講者</th><th>教育担当</th><th>教育内容</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+    } else if (data.type === 'ky') {
+      const records = queryAll(`SELECT ky.*, c.title as construction_title FROM ky_records ky
+        LEFT JOIN constructions c ON ky.construction_id = c.id
+        WHERE ky.tenant_id = ? ${data.construction_id ? 'AND ky.construction_id = ' + Number(data.construction_id) : ''} ORDER BY ky.activity_date DESC`, [tid]);
+      let rows = records.map((r: any) => `<tr>
+        <td>${r.activity_date}</td><td>${escapeHtml(r.construction_title || '—')}</td><td>${escapeHtml(r.leader || '—')}</td>
+        <td>${escapeHtml(r.participants || '—')}</td><td>${escapeHtml(r.hazard || '')}</td><td>${escapeHtml(r.countermeasures || '')}</td>
+      </tr>`).join('');
+      html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:30px;font-size:10px}
+h1{text-align:center;font-size:18px;margin-bottom:12px}table{width:100%;border-collapse:collapse}th{background:#2e4057;color:#fff;padding:5px;font-size:9px}td{padding:4px;border-bottom:1px solid #ddd;font-size:9px}
+.meta{text-align:right;font-size:10px;margin-bottom:10px}</style></head><body>
+<h1>KY活動記録（危険予知活動）</h1><div class="meta">${escapeHtml(conTitle)}<br>${cfg.companyName ? escapeHtml(cfg.companyName) : ''}</div>
+<table><thead><tr><th>実施日</th><th>施工案件</th><th>リーダー</th><th>参加者</th><th>危険要因</th><th>対策</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+    }
+    if (!html) return;
+    const tmpHtml = path.join(app.getPath('temp'), `safety_${Date.now()}.html`);
+    const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+    fs.writeFileSync(tmpHtml, Buffer.concat([bom, Buffer.from(html, 'utf-8')]));
+    const pdfWin = new BrowserWindow({ show: false, width: 1123, height: 794, webPreferences: { defaultEncoding: 'utf-8' } });
+    await pdfWin.loadURL(`file:///${tmpHtml.replace(/\\/g, '/')}`);
+    await new Promise<void>(r => setTimeout(r, 800));
+    const pdf = await pdfWin.webContents.printToPDF({ landscape: true, printBackground: true, margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 } });
+    pdfWin.close();
+    try { fs.unlinkSync(tmpHtml); } catch(_) {}
+    const typeLabel = { worker_list: '作業員名簿', education: '新規入場者教育', ky: 'KY活動記録' }[data.type as string] || '安全書類';
+    const savePath = await dialog.showSaveDialog({ defaultPath: `${typeLabel}_${new Date().toISOString().split('T')[0]}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (!savePath.canceled && savePath.filePath) { fs.writeFileSync(savePath.filePath, pdf); shell.openPath(savePath.filePath); }
+  });
+
+  // ── 見積比較 ──
+  ipcMain.handle('quotes:listComparisons', (_e, cid?: number) => {
+    const tid = getCurrentTenant();
+    if (cid) {
+      return queryAll(`SELECT qc.*, c.title as construction_title FROM quote_comparisons qc
+        LEFT JOIN constructions c ON qc.construction_id = c.id WHERE qc.tenant_id = ? AND qc.construction_id = ? ORDER BY qc.id DESC`, [tid, cid]);
+    }
+    return queryAll(`SELECT qc.*, c.title as construction_title FROM quote_comparisons qc
+      LEFT JOIN constructions c ON qc.construction_id = c.id WHERE qc.tenant_id = ? ORDER BY qc.id DESC`, [tid]);
+  });
+  ipcMain.handle('quotes:createComparison', (_e, data: any) => {
+    return runSql('INSERT INTO quote_comparisons (tenant_id, construction_id, title) VALUES (?, ?, ?)',
+      [getCurrentTenant(), data.construction_id || null, data.title || '見積比較']);
+  });
+  ipcMain.handle('quotes:deleteComparison', (_e, id: number) => {
+    runSql('DELETE FROM quote_comparisons WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+  });
+  ipcMain.handle('quotes:addVendor', (_e, data: any) => {
+    const vendorId = runSql('INSERT INTO quote_vendors (comparison_id, vendor_name, notes) VALUES (?, ?, ?)',
+      [data.comparison_id, data.vendor_name, data.notes || '']);
+    if (data.items?.length) {
+      for (const item of data.items) {
+        runSql('INSERT INTO quote_vendor_items (vendor_id, name, quantity, unit, unit_price) VALUES (?, ?, ?, ?, ?)',
+          [vendorId, item.name, item.quantity || 1, item.unit || '式', item.unit_price || 0]);
+      }
+    }
+    return vendorId;
+  });
+  ipcMain.handle('quotes:deleteVendor', (_e, id: number) => {
+    runSql('DELETE FROM quote_vendors WHERE id=?', [id]);
+  });
+  ipcMain.handle('quotes:getDetail', (_e, id: number) => {
+    const comp = queryOne(`SELECT qc.*, c.title as construction_title FROM quote_comparisons qc
+      LEFT JOIN constructions c ON qc.construction_id = c.id WHERE qc.id=? AND qc.tenant_id=?`, [id, getCurrentTenant()]);
+    if (!comp) return null;
+    const vendors = queryAll('SELECT * FROM quote_vendors WHERE comparison_id=? ORDER BY id', [id]);
+    for (const v of vendors) {
+      (v as any).items = queryAll('SELECT * FROM quote_vendor_items WHERE vendor_id=? ORDER BY id', [v.id]);
+      (v as any).total = ((v as any).items as any[]).reduce((s: number, i: any) => s + (i.quantity || 1) * (i.unit_price || 0), 0);
+    }
+    return { ...comp, vendors };
+  });
+  ipcMain.handle('quotes:generatePDF', async (_e, data: any) => {
+    const detail = queryOne(`SELECT qc.*, c.title as construction_title FROM quote_comparisons qc
+      LEFT JOIN constructions c ON qc.construction_id = c.id WHERE qc.id=? AND qc.tenant_id=?`, [data.comparison_id, getCurrentTenant()]);
+    if (!detail) return;
+    const vendors = queryAll('SELECT * FROM quote_vendors WHERE comparison_id=? ORDER BY id', [data.comparison_id]);
+    for (const v of vendors) {
+      (v as any).items = queryAll('SELECT * FROM quote_vendor_items WHERE vendor_id=? ORDER BY id', [v.id]);
+      (v as any).total = ((v as any).items as any[]).reduce((s: number, i: any) => s + (i.quantity || 1) * (i.unit_price || 0), 0);
+    }
+    const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
+    const cfg = loadApiConfig();
+    const vHeaders = vendors.map((v: any) => `<th style="text-align:right">${escapeHtml(v.vendor_name)}</th>`).join('');
+    // Collect all unique item names
+    const allItems: string[] = [];
+    for (const v of vendors) { for (const item of (v as any).items) { if (!allItems.includes(item.name)) allItems.push(item.name); } }
+    let rows = allItems.map((itemName: string) => {
+      const cells = vendors.map((v: any) => {
+        const item = (v as any).items.find((i: any) => i.name === itemName);
+        return `<td style="text-align:right">${item ? fmt(item.quantity * item.unit_price) : '—'}</td>`;
+      }).join('');
+      return `<tr><td>${escapeHtml(itemName)}</td>${cells}</tr>`;
+    }).join('');
+    const totals = vendors.map((v: any) => `<td style="text-align:right;font-weight:bold">${fmt((v as any).total)}</td>`).join('');
+    rows += `<tr style="border-top:2px solid #333;background:#f5f5f5"><td><strong>合計</strong></td>${totals}</tr>`;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:30px;font-size:10px}
+h1{text-align:center;font-size:18px;margin-bottom:12px}table{width:100%;border-collapse:collapse}th{background:#2e4057;color:#fff;padding:5px;font-size:9px}td{padding:4px;border-bottom:1px solid #ddd;font-size:9px}
+.meta{text-align:right;font-size:10px;margin-bottom:10px}</style></head><body>
+<h1>見 積 比 較 表</h1>
+<div class="meta">${cfg.companyName ? escapeHtml(cfg.companyName) + '<br>' : ''}${escapeHtml(detail.construction_title || '')}<br>${new Date().toISOString().split('T')[0]}</div>
+<table><thead><tr><th>項目</th>${vHeaders}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
+    const tmpHtml = path.join(app.getPath('temp'), `quote_cmp_${Date.now()}.html`);
+    const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+    fs.writeFileSync(tmpHtml, Buffer.concat([bom, Buffer.from(html, 'utf-8')]));
+    const pdfWin = new BrowserWindow({ show: false, width: 1123, height: 794, webPreferences: { defaultEncoding: 'utf-8' } });
+    await pdfWin.loadURL(`file:///${tmpHtml.replace(/\\/g, '/')}`);
+    await new Promise<void>(r => setTimeout(r, 800));
+    const pdf = await pdfWin.webContents.printToPDF({ landscape: true, printBackground: true, margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 } });
+    pdfWin.close();
+    try { fs.unlinkSync(tmpHtml); } catch(_) {}
+    const savePath = await dialog.showSaveDialog({ defaultPath: `見積比較_${detail.title || ''}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (!savePath.canceled && savePath.filePath) { fs.writeFileSync(savePath.filePath, pdf); shell.openPath(savePath.filePath); }
+  });
+
+  // ── 写真台帳 ──
+  ipcMain.handle('photoLedger:list', (_e, filter: any) => {
+    const tid = getCurrentTenant();
+    let where = 'pl.tenant_id = ?';
+    const params: any[] = [tid];
+    if (filter?.construction_id) { where += ' AND pl.construction_id = ?'; params.push(filter.construction_id); }
+    if (filter?.category) { where += ' AND pl.category = ?'; params.push(filter.category); }
+    if (filter?.work_type) { where += ' AND pl.work_type = ?'; params.push(filter.work_type); }
+    return queryAll(`SELECT pl.*, c.title as construction_title FROM photo_ledger pl
+      LEFT JOIN constructions c ON pl.construction_id = c.id WHERE ${where} ORDER BY pl.work_type, pl.photo_date DESC, pl.id DESC`, params);
+  });
+  ipcMain.handle('photoLedger:add', (_e, data: any) => {
+    return runSql('INSERT INTO photo_ledger (tenant_id, construction_id, photo_data, category, work_type, location, photo_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [getCurrentTenant(), data.construction_id, data.photo_data, data.category || '施工中', data.work_type || 'その他',
+       data.location || '', data.photo_date || new Date().toISOString().split('T')[0], data.notes || '']);
+  });
+  ipcMain.handle('photoLedger:delete', (_e, id: number) => {
+    runSql('DELETE FROM photo_ledger WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+  });
+  ipcMain.handle('photoLedger:generatePDF', async (_e, data: any) => {
+    const tid = getCurrentTenant();
+    let where = 'pl.tenant_id = ?';
+    const params: any[] = [tid];
+    if (data.construction_id) { where += ' AND pl.construction_id = ?'; params.push(data.construction_id); }
+    if (data.category) { where += ' AND pl.category = ?'; params.push(data.category); }
+    if (data.work_type) { where += ' AND pl.work_type = ?'; params.push(data.work_type); }
+    const photos = queryAll(`SELECT pl.*, c.title as construction_title FROM photo_ledger pl
+      LEFT JOIN constructions c ON pl.construction_id = c.id WHERE ${where} ORDER BY pl.work_type, pl.photo_date`, params);
+    const cfg = loadApiConfig();
+    const conTitle = data.construction_id ? queryOne('SELECT title FROM constructions WHERE id=?', [data.construction_id])?.title || '' : '全案件';
+    const catColor: Record<string, string> = { '着工前': '#3498db', '施工中': '#e67e22', '完了': '#27ae60', '是正前': '#e74c3c', '是正後': '#9b59b6', '検査': '#7f8c8d' };
+    // 6 photos per page (2x3)
+    let pages = '';
+    for (let i = 0; i < photos.length; i += 6) {
+      const chunk = photos.slice(i, i + 6);
+      let cells = chunk.map((p: any) => `<div style="width:48%;border:1px solid #ddd;border-radius:4px;overflow:hidden;margin-bottom:8px">
+        <div style="height:180px;background:#f0f0f0;display:flex;align-items:center;justify-content:center;overflow:hidden">
+          ${p.photo_data ? `<img src="${p.photo_data}" style="max-width:100%;max-height:180px;object-fit:contain">` : '<span style="color:#999">写真なし</span>'}
+        </div>
+        <div style="padding:6px;font-size:9px">
+          <span style="background:${catColor[p.category] || '#999'};color:#fff;padding:1px 6px;border-radius:8px;font-size:8px">${escapeHtml(p.category)}</span>
+          <span style="margin-left:4px;color:#555">${escapeHtml(p.work_type || '')}</span><br>
+          <span>${p.photo_date || ''} | ${escapeHtml(p.location || '')}</span><br>
+          <span style="color:#666">${escapeHtml(p.notes || '')}</span>
+        </div>
+      </div>`).join('');
+      pages += `<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;${i > 0 ? 'page-break-before:always;' : ''}">${cells}</div>`;
+    }
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:25px;font-size:10px}
+h1{text-align:center;font-size:18px;margin-bottom:8px}.meta{text-align:right;font-size:10px;margin-bottom:12px}</style></head><body>
+<h1>現場写真台帳</h1><div class="meta">${escapeHtml(conTitle)}<br>${cfg.companyName ? escapeHtml(cfg.companyName) : ''}<br>${new Date().toISOString().split('T')[0]}</div>
+${pages}</body></html>`;
+    const tmpHtml = path.join(app.getPath('temp'), `photo_${Date.now()}.html`);
+    const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+    fs.writeFileSync(tmpHtml, Buffer.concat([bom, Buffer.from(html, 'utf-8')]));
+    const pdfWin = new BrowserWindow({ show: false, width: 794, height: 1123, webPreferences: { defaultEncoding: 'utf-8' } });
+    await pdfWin.loadURL(`file:///${tmpHtml.replace(/\\/g, '/')}`);
+    await new Promise<void>(r => setTimeout(r, 1200));
+    const pdf = await pdfWin.webContents.printToPDF({ printBackground: true, margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 } });
+    pdfWin.close();
+    try { fs.unlinkSync(tmpHtml); } catch(_) {}
+    const savePath = await dialog.showSaveDialog({ defaultPath: `写真台帳_${conTitle}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (!savePath.canceled && savePath.filePath) { fs.writeFileSync(savePath.filePath, pdf); shell.openPath(savePath.filePath); }
+  });
+
   // ── 工事写真管理 ──
   ipcMain.handle('constructionPhotos:list', (_e, cid: number) => {
     return queryAll('SELECT * FROM construction_photos WHERE construction_id = ? ORDER BY label, id', [cid]);

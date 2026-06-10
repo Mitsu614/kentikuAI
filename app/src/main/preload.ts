@@ -154,4 +154,43 @@ contextBridge.exposeInMainWorld('api', {
 
   // 予実管理
   getBudgetSummary: () => ipcRenderer.invoke('budget:summary'),
+
+  // 日報
+  listDailyReports: (filter: any) => ipcRenderer.invoke('dailyReports:list', filter),
+  createDailyReport: (data: any) => ipcRenderer.invoke('dailyReports:create', data),
+  updateDailyReport: (data: any) => ipcRenderer.invoke('dailyReports:update', data),
+  deleteDailyReport: (id: number) => ipcRenderer.invoke('dailyReports:delete', id),
+  generateDailyReportPDF: (data: any) => ipcRenderer.invoke('dailyReports:generatePDF', data),
+
+  // 工程表
+  listGanttTasks: (filter: any) => ipcRenderer.invoke('gantt:list', filter),
+  createGanttTask: (data: any) => ipcRenderer.invoke('gantt:create', data),
+  updateGanttTask: (data: any) => ipcRenderer.invoke('gantt:update', data),
+  deleteGanttTask: (id: number) => ipcRenderer.invoke('gantt:delete', id),
+
+  // 安全書類
+  listSafetyWorkers: () => ipcRenderer.invoke('safety:listWorkers'),
+  updateSafetyInfo: (data: any) => ipcRenderer.invoke('safety:updateInfo', data),
+  listSafetyEducation: (filter: any) => ipcRenderer.invoke('safety:listEducation', filter),
+  createSafetyEducation: (data: any) => ipcRenderer.invoke('safety:createEducation', data),
+  deleteSafetyEducation: (id: number) => ipcRenderer.invoke('safety:deleteEducation', id),
+  listKYRecords: (filter: any) => ipcRenderer.invoke('safety:listKY', filter),
+  createKYRecord: (data: any) => ipcRenderer.invoke('safety:createKY', data),
+  deleteKYRecord: (id: number) => ipcRenderer.invoke('safety:deleteKY', id),
+  generateSafetyPDF: (data: any) => ipcRenderer.invoke('safety:generatePDF', data),
+
+  // 見積比較
+  listQuoteComparisons: (cid?: number) => ipcRenderer.invoke('quotes:listComparisons', cid),
+  createQuoteComparison: (data: any) => ipcRenderer.invoke('quotes:createComparison', data),
+  deleteQuoteComparison: (id: number) => ipcRenderer.invoke('quotes:deleteComparison', id),
+  addQuoteVendor: (data: any) => ipcRenderer.invoke('quotes:addVendor', data),
+  deleteQuoteVendor: (id: number) => ipcRenderer.invoke('quotes:deleteVendor', id),
+  getQuoteComparisonDetail: (id: number) => ipcRenderer.invoke('quotes:getDetail', id),
+  generateQuoteComparisonPDF: (data: any) => ipcRenderer.invoke('quotes:generatePDF', data),
+
+  // 写真台帳
+  listPhotoLedger: (filter: any) => ipcRenderer.invoke('photoLedger:list', filter),
+  addPhotoLedgerEntry: (data: any) => ipcRenderer.invoke('photoLedger:add', data),
+  deletePhotoLedgerEntry: (id: number) => ipcRenderer.invoke('photoLedger:delete', id),
+  generatePhotoLedgerPDF: (data: any) => ipcRenderer.invoke('photoLedger:generatePDF', data),
 });

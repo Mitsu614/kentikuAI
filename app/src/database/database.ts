@@ -328,6 +328,74 @@ function createTables() {
     quantity REAL DEFAULT 1, unit TEXT DEFAULT '式', unit_price REAL DEFAULT 0, notes TEXT,
     FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE CASCADE
   )`);
+  // 日報
+  db.run(`CREATE TABLE IF NOT EXISTS daily_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    construction_id INTEGER, report_date TEXT NOT NULL, weather TEXT DEFAULT '晴れ',
+    temp_min REAL, temp_max REAL, progress INTEGER DEFAULT 0,
+    work_content TEXT, safety_notes TEXT, tomorrow_plan TEXT, notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL
+  )`);
+  // 工程表タスク
+  db.run(`CREATE TABLE IF NOT EXISTS gantt_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    construction_id INTEGER, task_name TEXT NOT NULL, assignee TEXT,
+    start_date TEXT NOT NULL, end_date TEXT NOT NULL, progress INTEGER DEFAULT 0,
+    color TEXT DEFAULT '#3498db', dependencies TEXT, sort_order INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL
+  )`);
+  // 安全書類: 作業員安全情報
+  db.run(`CREATE TABLE IF NOT EXISTS safety_worker_info (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    worker_id INTEGER NOT NULL UNIQUE, blood_type TEXT, emergency_contact TEXT,
+    emergency_tel TEXT, health_check_date TEXT, insurance_type TEXT, certifications TEXT,
+    FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
+  )`);
+  // 安全書類: 新規入場者教育
+  db.run(`CREATE TABLE IF NOT EXISTS safety_education (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    construction_id INTEGER, worker_id INTEGER, education_date TEXT NOT NULL,
+    instructor TEXT, content TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL,
+    FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE SET NULL
+  )`);
+  // 安全書類: KY活動記録
+  db.run(`CREATE TABLE IF NOT EXISTS ky_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    construction_id INTEGER, activity_date TEXT NOT NULL, participants TEXT,
+    hazard TEXT, countermeasures TEXT, leader TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL
+  )`);
+  // 見積比較
+  db.run(`CREATE TABLE IF NOT EXISTS quote_comparisons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    construction_id INTEGER, title TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS quote_vendors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    comparison_id INTEGER NOT NULL, vendor_name TEXT NOT NULL, notes TEXT,
+    FOREIGN KEY (comparison_id) REFERENCES quote_comparisons(id) ON DELETE CASCADE
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS quote_vendor_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vendor_id INTEGER NOT NULL, name TEXT NOT NULL,
+    quantity REAL DEFAULT 1, unit TEXT DEFAULT '式', unit_price REAL DEFAULT 0,
+    FOREIGN KEY (vendor_id) REFERENCES quote_vendors(id) ON DELETE CASCADE
+  )`);
+  // 写真台帳
+  db.run(`CREATE TABLE IF NOT EXISTS photo_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    construction_id INTEGER NOT NULL, photo_data TEXT, category TEXT DEFAULT '施工中',
+    work_type TEXT DEFAULT 'その他', location TEXT, photo_date TEXT, notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE CASCADE
+  )`);
   db.run(`CREATE TABLE IF NOT EXISTS invoices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     construction_id INTEGER, client_name TEXT NOT NULL, client_address TEXT,

@@ -14,8 +14,13 @@ import CustomersPage from './pages/CustomersPage';
 import AttendancePage from './pages/AttendancePage';
 import PurchaseOrdersPage from './pages/PurchaseOrdersPage';
 import BudgetPage from './pages/BudgetPage';
+import DailyReportPage from './pages/DailyReportPage';
+import GanttPage from './pages/GanttPage';
+import SafetyDocsPage from './pages/SafetyDocsPage';
+import QuoteComparisonPage from './pages/QuoteComparisonPage';
+import PhotoLedgerPage from './pages/PhotoLedgerPage';
 
-type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'settings';
+type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'daily-report' | 'gantt' | 'safety-docs' | 'quote-comparison' | 'photo-ledger' | 'settings';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
@@ -80,6 +85,11 @@ export default function App() {
     { key: 'invoices', label: '請求書', icon: '📄' },
     { key: 'purchase-orders', label: '発注書', icon: '📝' },
     { key: 'attendance', label: '出面管理', icon: '📋' },
+    { key: 'daily-report', label: '作業日報', icon: '📓' },
+    { key: 'gantt', label: '工程表', icon: '📊' },
+    { key: 'photo-ledger', label: '写真台帳', icon: '📷' },
+    { key: 'safety-docs', label: '安全書類', icon: '🦺' },
+    { key: 'quote-comparison', label: '見積比較', icon: '⚖️' },
     { key: 'customers', label: '顧客管理', icon: '👥' },
     { key: 'calendar', label: 'カレンダー', icon: '📅' },
     { key: 'reports', label: '利益レポート', icon: '📈' },
@@ -108,6 +118,11 @@ export default function App() {
       case 'attendance': return <AttendancePage key={tenantKey} />;
       case 'purchase-orders': return <PurchaseOrdersPage key={tenantKey} />;
       case 'budget': return <BudgetPage key={tenantKey} />;
+      case 'daily-report': return <DailyReportPage key={tenantKey} />;
+      case 'gantt': return <GanttPage key={tenantKey} />;
+      case 'safety-docs': return <SafetyDocsPage key={tenantKey} />;
+      case 'quote-comparison': return <QuoteComparisonPage key={tenantKey} />;
+      case 'photo-ledger': return <PhotoLedgerPage key={tenantKey} />;
       case 'settings': return <SettingsPage />;
     }
   };
