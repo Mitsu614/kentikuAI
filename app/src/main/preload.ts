@@ -126,4 +126,32 @@ contextBridge.exposeInMainWorld('api', {
   // データエクスポート/インポート
   exportData: () => ipcRenderer.invoke('data:export'),
   importData: () => ipcRenderer.invoke('data:import'),
+
+  // 作業者
+  listWorkers: () => ipcRenderer.invoke('workers:list'),
+  createWorker: (data: any) => ipcRenderer.invoke('workers:create', data),
+  updateWorker: (data: any) => ipcRenderer.invoke('workers:update', data),
+  deleteWorker: (id: number) => ipcRenderer.invoke('workers:delete', id),
+
+  // 出面管理
+  listAttendance: (filter: any) => ipcRenderer.invoke('attendance:list', filter),
+  createAttendance: (data: any) => ipcRenderer.invoke('attendance:create', data),
+  updateAttendance: (data: any) => ipcRenderer.invoke('attendance:update', data),
+  deleteAttendance: (id: number) => ipcRenderer.invoke('attendance:delete', id),
+  getAttendanceSummary: (filter: any) => ipcRenderer.invoke('attendance:summary', filter),
+
+  // 発注書
+  listPurchaseOrders: () => ipcRenderer.invoke('purchaseOrders:list'),
+  createPurchaseOrder: (data: any) => ipcRenderer.invoke('purchaseOrders:create', data),
+  updatePurchaseOrder: (data: any) => ipcRenderer.invoke('purchaseOrders:update', data),
+  deletePurchaseOrder: (id: number) => ipcRenderer.invoke('purchaseOrders:delete', id),
+  getPurchaseOrderDetail: (id: number) => ipcRenderer.invoke('purchaseOrders:getDetail', id),
+  addPurchaseOrderItem: (data: any) => ipcRenderer.invoke('purchaseOrders:addItem', data),
+  updatePurchaseOrderItem: (data: any) => ipcRenderer.invoke('purchaseOrders:updateItem', data),
+  deletePurchaseOrderItem: (id: number) => ipcRenderer.invoke('purchaseOrders:deleteItem', id),
+  createPOFromConstruction: (cid: number) => ipcRenderer.invoke('purchaseOrders:createFromConstruction', cid),
+  generatePurchaseOrderPDF: (data: any) => ipcRenderer.invoke('purchaseOrders:generatePDF', data),
+
+  // 予実管理
+  getBudgetSummary: () => ipcRenderer.invoke('budget:summary'),
 });

@@ -11,8 +11,11 @@ import OcrPage from './pages/OcrPage';
 import CalendarPage from './pages/CalendarPage';
 import ReportsPage from './pages/ReportsPage';
 import CustomersPage from './pages/CustomersPage';
+import AttendancePage from './pages/AttendancePage';
+import PurchaseOrdersPage from './pages/PurchaseOrdersPage';
+import BudgetPage from './pages/BudgetPage';
 
-type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'settings';
+type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'settings';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
@@ -75,9 +78,12 @@ export default function App() {
     ...(!isTrial ? [{ key: 'materials' as Page, label: '材料マスタ', icon: '🧱' }] : []),
     { key: 'constructions', label: '施工・見積', icon: '🔨' },
     { key: 'invoices', label: '請求書', icon: '📄' },
+    { key: 'purchase-orders', label: '発注書', icon: '📝' },
+    { key: 'attendance', label: '出面管理', icon: '📋' },
     { key: 'customers', label: '顧客管理', icon: '👥' },
     { key: 'calendar', label: 'カレンダー', icon: '📅' },
     { key: 'reports', label: '利益レポート', icon: '📈' },
+    { key: 'budget', label: '予実管理', icon: '💰' },
     { key: 'settings', label: '設定', icon: '⚙️' },
   ];
 
@@ -99,6 +105,9 @@ export default function App() {
       case 'customers': return <CustomersPage key={tenantKey} />;
       case 'calendar': return <CalendarPage key={tenantKey} />;
       case 'reports': return <ReportsPage key={tenantKey} />;
+      case 'attendance': return <AttendancePage key={tenantKey} />;
+      case 'purchase-orders': return <PurchaseOrdersPage key={tenantKey} />;
+      case 'budget': return <BudgetPage key={tenantKey} />;
       case 'settings': return <SettingsPage />;
     }
   };

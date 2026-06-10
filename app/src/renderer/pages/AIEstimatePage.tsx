@@ -427,6 +427,20 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 >{result.workType}</div>
                 <div style={{ fontSize: 14, marginTop: 8, opacity: 0.9 }}>{result.description}</div>
                 <div style={{ fontSize: 13, marginTop: 4, opacity: 0.7 }}>推定規模: {result.estimatedScale}</div>
+                {(result.estimatedDuration || result.totalManDays) && (
+                  <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+                    {result.estimatedDuration && (
+                      <span style={{ background: '#e8f0fe', color: '#1a73e8', padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 'bold' }}>
+                        工期: {result.estimatedDuration}
+                      </span>
+                    )}
+                    {result.totalManDays && (
+                      <span style={{ background: '#fef3e0', color: '#e67e22', padding: '3px 10px', borderRadius: 12, fontSize: 12, fontWeight: 'bold' }}>
+                        総工数: {result.totalManDays}人工
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
               <div style={{ textAlign: 'right' }}>
                 <span style={{
@@ -472,6 +486,45 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       <td style={{ color: '#888', fontSize: 12 }}>{b.note}</td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* 人工内訳 */}
+          {result.manDaysBreakdown && result.manDaysBreakdown.length > 0 && (
+            <div className="card" style={{ marginTop: 16 }}>
+              <h3 style={{ marginBottom: 12 }}>工数内訳</h3>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>職種</th>
+                    <th style={{ textAlign: 'center' }}>人数</th>
+                    <th style={{ textAlign: 'center' }}>日数</th>
+                    <th style={{ textAlign: 'center' }}>人工</th>
+                    <th style={{ textAlign: 'right' }}>日額単価</th>
+                    <th style={{ textAlign: 'right' }}>小計</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.manDaysBreakdown.map((m: any, i: number) => (
+                    <tr key={i}>
+                      <td>{m.trade}</td>
+                      <td style={{ textAlign: 'center' }}>{m.workers}人</td>
+                      <td style={{ textAlign: 'center' }}>{m.days}日</td>
+                      <td style={{ textAlign: 'center', fontWeight: 'bold' }}>{m.manDays}</td>
+                      <td style={{ textAlign: 'right' }}>{fmt(m.dailyRate)}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{fmt(m.manDays * m.dailyRate)}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: '2px solid #333', fontWeight: 'bold' }}>
+                    <td>合計</td>
+                    <td></td>
+                    <td></td>
+                    <td style={{ textAlign: 'center' }}>{result.totalManDays}人工</td>
+                    <td></td>
+                    <td style={{ textAlign: 'right' }}>{fmt(result.manDaysBreakdown.reduce((s: number, m: any) => s + m.manDays * m.dailyRate, 0))}</td>
+                  </tr>
                 </tbody>
               </table>
             </div>

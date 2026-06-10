@@ -63,6 +63,32 @@ export default function SettingsPage() {
       {/* 管理者用: プラン申請管理 */}
       <PlanAdmin />
 
+      {/* 業種選択 */}
+      <div className="card" style={{ border: '2px solid #e67e22' }}>
+        <h3 style={{ marginBottom: 12 }}>🏗️ 業種設定</h3>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>業種を選択すると、AI見積もりの相場データや材料マスタがその業種に最適化されます。</p>
+        <div className="form-row">
+          <div className="form-group">
+            <label>業種</label>
+            <select value={config.industryType || 'general'} onChange={e => setConfig({ ...config, industryType: e.target.value })} style={{ fontSize: 15, padding: '8px 12px' }}>
+              <option value="general">総合建設業（工務店・リフォーム）</option>
+              <option value="lease">仮設工事リース業</option>
+              <option value="demolition">解体工事業</option>
+              <option value="exterior">外構・エクステリア業</option>
+              <option value="painting">塗装工事業</option>
+              <option value="equipment">設備工事業（水道・電気・空調）</option>
+            </select>
+          </div>
+        </div>
+        {config.industryType === 'lease' && (
+          <div style={{ background: '#fef9e7', border: '1px solid #f39c12', borderRadius: 8, padding: 12, marginTop: 8, fontSize: 13 }}>
+            <strong>仮設工事リース業モード:</strong> 足場・養生・仮囲い・仮設建物・重機・運搬の詳細な相場データでAI見積もりを行います。リース日数・月額ベースの見積もりに対応。
+          </div>
+        )}
+        <button className="btn btn-primary" onClick={save} style={{ marginTop: 12 }}>保存</button>
+        {saved && <span style={{ color: '#27ae60', fontSize: 13, marginLeft: 8 }}>✓ 保存しました</span>}
+      </div>
+
       {/* 会社情報 */}
       <div className="card" style={{ border: '2px solid #27ae60' }}>
         <h3 style={{ marginBottom: 12 }}>🏢 会社情報（請求書に反映）</h3>

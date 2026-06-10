@@ -293,6 +293,54 @@ async function sendLimitNotification(operation: string) {
   }
 }
 
+// AI利用時のメール通知（誰が何をいつ使ったか）
+async function sendUsageNotification(operation: string, detail?: string) {
+  try {
+    const tid = getCurrentTenant();
+    // 管理者（テナントID=1）の操作は通知しない
+    if (tid === 1) return;
+    const tenant = queryOne('SELECT name, contact_company, contact_tel, contact_email FROM tenants WHERE id = ?', [tid]);
+    const usage = getMonthlyUsage(tid);
+    const planDef = PLANS[usage.plan];
+    const now = new Date();
+
+    const nodemailer = require('nodemailer');
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
+    });
+
+    await transporter.sendMail({
+      from: '建築ブースト <mitsuakinakano0215@gmail.com>',
+      to: 'mitsuakinakano0215@gmail.com',
+      subject: `【利用通知】${tenant?.name || 'テナント' + tid} — ${operation}`,
+      text: [
+        `テナント「${tenant?.name || 'ID:' + tid}」がAI機能を使用しました。`,
+        '',
+        '【利用内容】',
+        `■ 操作: ${operation}`,
+        `■ 日時: ${now.toLocaleString('ja-JP')}`,
+        detail ? `■ 詳細: ${detail}` : '',
+        '',
+        '【お客様情報】',
+        `■ 会社名: ${tenant?.contact_company || tenant?.name || '未登録'}`,
+        `■ 電話番号: ${tenant?.contact_tel || '未登録'}`,
+        `■ メールアドレス: ${tenant?.contact_email || '未登録'}`,
+        '',
+        '【利用状況】',
+        `■ プラン: ${planDef?.name || usage.plan}`,
+        `■ 今月の使用量: ${usage.used}/${usage.limit}回`,
+        `■ 残ストック: ${usage.remaining}回`,
+        '',
+        '---',
+        '建築ブースト 利用通知',
+      ].filter(Boolean).join('\n'),
+    });
+  } catch (e: any) {
+    console.error('Usage notification email failed:', e?.message || e);
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -726,6 +774,21 @@ app.whenReady().then(async () => {
   ipcMain.handle('invoices:generatePDF', async (_e, data: any) => {
     const { invoice, materials } = data;
     const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
+    const cfg_pre = loadApiConfig();
+    const isLease = cfg_pre.industryType === 'lease';
+
+    // リース業向けカテゴリグループ定義
+    const leaseGroups: Record<string, { label: string; order: number }> = {
+      '足場': { label: '【足場工事】', order: 1 },
+      '養生': { label: '【養生・安全設備】', order: 2 },
+      '仮囲い': { label: '【仮囲い・ゲート】', order: 3 },
+      '仮設リース': { label: '【仮設建物・設備リース】', order: 4 },
+      '重機リース': { label: '【重機・機材リース】', order: 5 },
+      '運搬': { label: '【運搬・人工費】', order: 6 },
+      '産廃処理': { label: '【産廃処理】', order: 7 },
+      '技能者報酬': { label: '【技能者報酬（CCUS基準）】', order: 8 },
+      '技術者報酬': { label: '【技術者報酬（国交省基準）】', order: 9 },
+    };
 
     // ── 金額を明細から積み上げて計算（DBの値と一致させる）──
     let materialTotal = 0;
@@ -733,22 +796,98 @@ app.whenReady().then(async () => {
     let rowNum = 1;
 
     if (materials && materials.length > 0) {
-      materials.forEach((m: any) => {
-        const name = escapeHtml(m.material_name || m.name || '（項目名なし）');
-        const unit = escapeHtml(m.unit || '式');
-        const qty = m.quantity || 1;
-        const price = m.unit_price || 0;
-        const subtotal = Math.round(qty * price);
-        materialTotal += subtotal;
-        materialRows += `<tr>
-          <td style="text-align:center;color:#888;width:30px">${rowNum++}</td>
-          <td>${name}</td>
-          <td style="text-align:center">${qty}</td>
-          <td style="text-align:center">${unit}</td>
-          <td style="text-align:right">${fmt(price)}</td>
-          <td style="text-align:right">${fmt(subtotal)}</td>
-        </tr>`;
-      });
+      if (isLease) {
+        // リース業: カテゴリ別にグループ分けして表示
+        const grouped: Record<string, any[]> = {};
+        const ungrouped: any[] = [];
+        materials.forEach((m: any) => {
+          const cat = m.category || '';
+          if (leaseGroups[cat]) {
+            if (!grouped[cat]) grouped[cat] = [];
+            grouped[cat].push(m);
+          } else {
+            ungrouped.push(m);
+          }
+        });
+
+        // カテゴリ順にソートして出力
+        const sortedCats = Object.keys(grouped).sort((a, b) => (leaseGroups[a]?.order || 99) - (leaseGroups[b]?.order || 99));
+        for (const cat of sortedCats) {
+          const group = grouped[cat];
+          let groupTotal = 0;
+          // グループヘッダー
+          materialRows += `<tr style="background:#e8edf3;border-top:2px solid #999">
+            <td colspan="6" style="font-weight:bold;font-size:11px;padding:6px 8px;color:#2e4057">${leaseGroups[cat].label}</td>
+          </tr>`;
+          for (const m of group) {
+            const name = escapeHtml(m.material_name || m.name || '（項目名なし）');
+            const unit = escapeHtml(m.unit || '式');
+            const qty = m.quantity || 1;
+            const price = m.unit_price || 0;
+            const subtotal = Math.round(qty * price);
+            materialTotal += subtotal;
+            groupTotal += subtotal;
+            // リース期間の補足（月/日の場合）
+            const periodNote = (unit === '月' || unit === '日') ? `<span style="color:#888;font-size:9px"> (${qty}${unit})</span>` : '';
+            materialRows += `<tr>
+              <td style="text-align:center;color:#888;width:30px">${rowNum++}</td>
+              <td>${name}${periodNote}</td>
+              <td style="text-align:center">${qty}</td>
+              <td style="text-align:center">${unit}</td>
+              <td style="text-align:right">${fmt(price)}</td>
+              <td style="text-align:right">${fmt(subtotal)}</td>
+            </tr>`;
+          }
+          // グループ小計
+          materialRows += `<tr style="background:#f5f7fa">
+            <td colspan="5" style="text-align:right;font-size:10px;color:#555;padding-right:12px">${leaseGroups[cat].label.replace(/[【】]/g, '')} 小計</td>
+            <td style="text-align:right;font-weight:bold;font-size:10px">${fmt(groupTotal)}</td>
+          </tr>`;
+        }
+
+        // グループに属さない項目
+        if (ungrouped.length > 0) {
+          if (sortedCats.length > 0) {
+            materialRows += `<tr style="background:#e8edf3;border-top:2px solid #999">
+              <td colspan="6" style="font-weight:bold;font-size:11px;padding:6px 8px;color:#2e4057">【その他】</td>
+            </tr>`;
+          }
+          for (const m of ungrouped) {
+            const name = escapeHtml(m.material_name || m.name || '（項目名なし）');
+            const unit = escapeHtml(m.unit || '式');
+            const qty = m.quantity || 1;
+            const price = m.unit_price || 0;
+            const subtotal = Math.round(qty * price);
+            materialTotal += subtotal;
+            materialRows += `<tr>
+              <td style="text-align:center;color:#888;width:30px">${rowNum++}</td>
+              <td>${name}</td>
+              <td style="text-align:center">${qty}</td>
+              <td style="text-align:center">${unit}</td>
+              <td style="text-align:right">${fmt(price)}</td>
+              <td style="text-align:right">${fmt(subtotal)}</td>
+            </tr>`;
+          }
+        }
+      } else {
+        // 通常業種: フラット表示
+        materials.forEach((m: any) => {
+          const name = escapeHtml(m.material_name || m.name || '（項目名なし）');
+          const unit = escapeHtml(m.unit || '式');
+          const qty = m.quantity || 1;
+          const price = m.unit_price || 0;
+          const subtotal = Math.round(qty * price);
+          materialTotal += subtotal;
+          materialRows += `<tr>
+            <td style="text-align:center;color:#888;width:30px">${rowNum++}</td>
+            <td>${name}</td>
+            <td style="text-align:center">${qty}</td>
+            <td style="text-align:center">${unit}</td>
+            <td style="text-align:right">${fmt(price)}</td>
+            <td style="text-align:right">${fmt(subtotal)}</td>
+          </tr>`;
+        });
+      }
     }
 
     // 人件費（施工費）
@@ -756,7 +895,7 @@ app.whenReady().then(async () => {
     if (laborCost > 0) {
       materialRows += `<tr style="border-top:2px solid #ccc">
         <td style="text-align:center;color:#888">${rowNum++}</td>
-        <td><strong>施工費</strong></td>
+        <td><strong>${isLease ? '設置・撤去作業費' : '施工費'}</strong></td>
         <td style="text-align:center">1</td>
         <td style="text-align:center">式</td>
         <td style="text-align:right">${fmt(laborCost)}</td>
@@ -768,12 +907,12 @@ app.whenReady().then(async () => {
     const costTotal = materialTotal + laborCost;
     // 売価 = invoice.amount
     const taxExcluded = invoice.amount || 0;
-    // マージン = 売価 - 原価 → 「設計・工事管理費」として明細に入れる
+    // マージン = 売価 - 原価 → 管理費として明細に入れる
     const managementFee = taxExcluded - costTotal;
     if (managementFee > 0) {
       materialRows += `<tr>
         <td style="text-align:center;color:#888">${rowNum++}</td>
-        <td><strong>設計・工事管理費</strong></td>
+        <td><strong>${isLease ? '現場管理・諸経費' : '設計・工事管理費'}</strong></td>
         <td style="text-align:center">1</td>
         <td style="text-align:center">式</td>
         <td style="text-align:right">${fmt(managementFee)}</td>
@@ -787,7 +926,7 @@ app.whenReady().then(async () => {
     const totalWithTax = taxExcluded + taxAmount;
 
     const title = escapeHtml(invoice.construction_title || invoice.notes?.match(/工事種別: (.+)/)?.[1] || '（未設定）');
-    const cfg = loadApiConfig();
+    const cfg = cfg_pre;
     const companyName = escapeHtml(cfg.companyName || '');
     const companyAddress = escapeHtml(cfg.companyAddress || '');
     const companyTel = escapeHtml(cfg.companyTel || '');
@@ -1377,35 +1516,74 @@ app.whenReady().then(async () => {
   ipcMain.handle('estimates:generatePDF', async (_e, data: any) => {
     const { invoice, materials } = data;
     const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
+    const estCfg = loadApiConfig();
+    const estIsLease = estCfg.industryType === 'lease';
+    const estLeaseGroups: Record<string, { label: string; order: number }> = {
+      '足場': { label: '【足場工事】', order: 1 }, '養生': { label: '【養生・安全設備】', order: 2 },
+      '仮囲い': { label: '【仮囲い・ゲート】', order: 3 }, '仮設リース': { label: '【仮設建物・設備リース】', order: 4 },
+      '重機リース': { label: '【重機・機材リース】', order: 5 }, '運搬': { label: '【運搬・人工費】', order: 6 },
+      '産廃処理': { label: '【産廃処理】', order: 7 },
+      '技能者報酬': { label: '【技能者報酬（CCUS基準）】', order: 8 },
+      '技術者報酬': { label: '【技術者報酬（国交省基準）】', order: 9 },
+    };
     let materialTotal = 0;
     let rows = '';
     let num = 1;
     if (materials?.length) {
-      materials.forEach((m: any) => {
-        const name = escapeHtml(m.material_name || m.name || '（項目名なし）');
-        const unit = escapeHtml(m.unit || '式');
-        const qty = m.quantity || 1;
-        const price = m.unit_price || 0;
-        const sub = Math.round(qty * price);
-        materialTotal += sub;
-        rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td>${name}</td><td style="text-align:center">${qty}</td><td style="text-align:center">${unit}</td><td style="text-align:right">${fmt(price)}</td><td style="text-align:right">${fmt(sub)}</td></tr>`;
-      });
+      if (estIsLease) {
+        const grouped: Record<string, any[]> = {};
+        const ungrouped: any[] = [];
+        materials.forEach((m: any) => {
+          const cat = m.category || '';
+          if (estLeaseGroups[cat]) { if (!grouped[cat]) grouped[cat] = []; grouped[cat].push(m); }
+          else { ungrouped.push(m); }
+        });
+        const sortedCats = Object.keys(grouped).sort((a, b) => (estLeaseGroups[a]?.order || 99) - (estLeaseGroups[b]?.order || 99));
+        for (const cat of sortedCats) {
+          let groupTotal = 0;
+          rows += `<tr style="background:#e8edf3;border-top:2px solid #999"><td colspan="6" style="font-weight:bold;font-size:11px;padding:6px 8px;color:#2e4057">${estLeaseGroups[cat].label}</td></tr>`;
+          for (const m of grouped[cat]) {
+            const name = escapeHtml(m.material_name || m.name || '（項目名なし）');
+            const unit = escapeHtml(m.unit || '式');
+            const qty = m.quantity || 1; const price = m.unit_price || 0; const sub = Math.round(qty * price);
+            materialTotal += sub; groupTotal += sub;
+            const periodNote = (unit === '月' || unit === '日') ? `<span style="color:#888;font-size:9px"> (${qty}${unit})</span>` : '';
+            rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td>${name}${periodNote}</td><td style="text-align:center">${qty}</td><td style="text-align:center">${unit}</td><td style="text-align:right">${fmt(price)}</td><td style="text-align:right">${fmt(sub)}</td></tr>`;
+          }
+          rows += `<tr style="background:#f5f7fa"><td colspan="5" style="text-align:right;font-size:10px;color:#555;padding-right:12px">${estLeaseGroups[cat].label.replace(/[【】]/g, '')} 小計</td><td style="text-align:right;font-weight:bold;font-size:10px">${fmt(groupTotal)}</td></tr>`;
+        }
+        for (const m of ungrouped) {
+          const name = escapeHtml(m.material_name || m.name || '（項目名なし）');
+          const unit = escapeHtml(m.unit || '式');
+          const qty = m.quantity || 1; const price = m.unit_price || 0; const sub = Math.round(qty * price);
+          materialTotal += sub;
+          rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td>${name}</td><td style="text-align:center">${qty}</td><td style="text-align:center">${unit}</td><td style="text-align:right">${fmt(price)}</td><td style="text-align:right">${fmt(sub)}</td></tr>`;
+        }
+      } else {
+        materials.forEach((m: any) => {
+          const name = escapeHtml(m.material_name || m.name || '（項目名なし）');
+          const unit = escapeHtml(m.unit || '式');
+          const qty = m.quantity || 1; const price = m.unit_price || 0; const sub = Math.round(qty * price);
+          materialTotal += sub;
+          rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td>${name}</td><td style="text-align:center">${qty}</td><td style="text-align:center">${unit}</td><td style="text-align:right">${fmt(price)}</td><td style="text-align:right">${fmt(sub)}</td></tr>`;
+        });
+      }
     }
     const laborCost = invoice.labor_cost || 0;
     if (laborCost > 0) {
-      rows += `<tr style="border-top:2px solid #ccc"><td style="text-align:center;color:#888">${num++}</td><td><strong>施工費</strong></td><td style="text-align:center">1</td><td style="text-align:center">式</td><td style="text-align:right">${fmt(laborCost)}</td><td style="text-align:right">${fmt(laborCost)}</td></tr>`;
+      rows += `<tr style="border-top:2px solid #ccc"><td style="text-align:center;color:#888">${num++}</td><td><strong>${estIsLease ? '設置・撤去作業費' : '施工費'}</strong></td><td style="text-align:center">1</td><td style="text-align:center">式</td><td style="text-align:right">${fmt(laborCost)}</td><td style="text-align:right">${fmt(laborCost)}</td></tr>`;
     }
     const costTotal = materialTotal + laborCost;
     const taxExcluded = invoice.amount || 0;
     const managementFee = taxExcluded - costTotal;
     if (managementFee > 0) {
-      rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td><strong>設計・工事管理費</strong></td><td style="text-align:center">1</td><td style="text-align:center">式</td><td style="text-align:right">${fmt(managementFee)}</td><td style="text-align:right">${fmt(managementFee)}</td></tr>`;
+      rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td><strong>${estIsLease ? '現場管理・諸経費' : '設計・工事管理費'}</strong></td><td style="text-align:center">1</td><td style="text-align:center">式</td><td style="text-align:right">${fmt(managementFee)}</td><td style="text-align:right">${fmt(managementFee)}</td></tr>`;
     }
     const taxRate = invoice.tax_rate || 0.1;
     const taxAmount = Math.round(taxExcluded * taxRate);
     const totalWithTax = taxExcluded + taxAmount;
     const title = escapeHtml(invoice.construction_title || '（未設定）');
-    const cfg = loadApiConfig();
+    const cfg = estCfg;
 
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:40px 35px;color:#333;font-size:11px}
@@ -1440,6 +1618,219 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
     try { fs.unlinkSync(tmpHtml); } catch(_) {}
     const savePath = await dialog.showSaveDialog({ defaultPath: `見積書_${invoice.client_name}_${invoice.issue_date}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
     if (!savePath.canceled && savePath.filePath) { fs.writeFileSync(savePath.filePath, pdf); shell.openPath(savePath.filePath); }
+  });
+
+  // ── 作業者管理 ──
+  ipcMain.handle('workers:list', () => {
+    return queryAll('SELECT * FROM workers WHERE tenant_id = ? ORDER BY name', [getCurrentTenant()]);
+  });
+  ipcMain.handle('workers:create', (_e, data: any) => {
+    const id = runSql('INSERT INTO workers (tenant_id, name, daily_rate, role, notes) VALUES (?, ?, ?, ?, ?)',
+      [getCurrentTenant(), data.name, data.daily_rate || 0, data.role || '作業員', data.notes || null]);
+    logAudit('作成', '作業者', id, data.name);
+    return id;
+  });
+  ipcMain.handle('workers:update', (_e, data: any) => {
+    runSql('UPDATE workers SET name=?, daily_rate=?, role=?, notes=? WHERE id=? AND tenant_id=?',
+      [data.name, data.daily_rate, data.role, data.notes || null, data.id, getCurrentTenant()]);
+  });
+  ipcMain.handle('workers:delete', (_e, id: number) => {
+    runSql('DELETE FROM workers WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+  });
+
+  // ── 出面管理（日報） ──
+  ipcMain.handle('attendance:list', (_e, filter: any) => {
+    const tid = getCurrentTenant();
+    if (filter?.construction_id) {
+      return queryAll(`SELECT a.*, w.name as worker_name, w.role as worker_role, c.title as construction_title
+        FROM attendance a JOIN workers w ON a.worker_id = w.id LEFT JOIN constructions c ON a.construction_id = c.id
+        WHERE a.tenant_id = ? AND a.construction_id = ? ORDER BY a.work_date DESC, w.name`, [tid, filter.construction_id]);
+    }
+    if (filter?.month) {
+      return queryAll(`SELECT a.*, w.name as worker_name, w.role as worker_role, c.title as construction_title
+        FROM attendance a JOIN workers w ON a.worker_id = w.id LEFT JOIN constructions c ON a.construction_id = c.id
+        WHERE a.tenant_id = ? AND a.work_date LIKE ? ORDER BY a.work_date DESC, w.name`, [tid, filter.month + '%']);
+    }
+    return queryAll(`SELECT a.*, w.name as worker_name, w.role as worker_role, c.title as construction_title
+      FROM attendance a JOIN workers w ON a.worker_id = w.id LEFT JOIN constructions c ON a.construction_id = c.id
+      WHERE a.tenant_id = ? ORDER BY a.work_date DESC, w.name LIMIT 200`, [tid]);
+  });
+  ipcMain.handle('attendance:create', (_e, data: any) => {
+    const worker = queryOne('SELECT daily_rate FROM workers WHERE id=?', [data.worker_id]);
+    const rate = data.daily_rate || worker?.daily_rate || 0;
+    return runSql('INSERT INTO attendance (tenant_id, construction_id, worker_id, work_date, hours, daily_rate, notes) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [getCurrentTenant(), data.construction_id || null, data.worker_id, data.work_date, data.hours || 8, rate, data.notes || null]);
+  });
+  ipcMain.handle('attendance:update', (_e, data: any) => {
+    runSql('UPDATE attendance SET construction_id=?, worker_id=?, work_date=?, hours=?, daily_rate=?, notes=? WHERE id=? AND tenant_id=?',
+      [data.construction_id, data.worker_id, data.work_date, data.hours, data.daily_rate, data.notes, data.id, getCurrentTenant()]);
+  });
+  ipcMain.handle('attendance:delete', (_e, id: number) => {
+    runSql('DELETE FROM attendance WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+  });
+  ipcMain.handle('attendance:summary', (_e, _filter: any) => {
+    const tid = getCurrentTenant();
+    const rows = queryAll(`SELECT c.id, c.title, c.labor_cost as estimated_labor,
+      COALESCE(SUM(a.daily_rate * a.hours / 8), 0) as actual_labor,
+      COUNT(a.id) as attendance_count
+      FROM constructions c LEFT JOIN attendance a ON a.construction_id = c.id AND a.tenant_id = ?
+      WHERE c.tenant_id = ? GROUP BY c.id ORDER BY c.id DESC`, [tid, tid]);
+    return rows.map((r: any) => ({
+      ...r,
+      diff: (r.estimated_labor || 0) - r.actual_labor,
+      diffPct: r.estimated_labor > 0 ? Math.round(((r.estimated_labor - r.actual_labor) / r.estimated_labor) * 100) : 0,
+    }));
+  });
+
+  // ── 発注書管理 ──
+  ipcMain.handle('purchaseOrders:list', () => {
+    return queryAll(`SELECT po.*, c.title as construction_title FROM purchase_orders po
+      LEFT JOIN constructions c ON po.construction_id = c.id WHERE po.tenant_id = ? ORDER BY po.id DESC`, [getCurrentTenant()]);
+  });
+  ipcMain.handle('purchaseOrders:create', (_e, data: any) => {
+    const id = runSql(`INSERT INTO purchase_orders (tenant_id, construction_id, vendor_name, vendor_address, vendor_type, issue_date, delivery_date, amount, tax_rate, notes, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [getCurrentTenant(), data.construction_id || null, data.vendor_name || '', data.vendor_address || '', data.vendor_type || 'material',
+       data.issue_date || new Date().toISOString().split('T')[0], data.delivery_date || null, data.amount || 0, data.tax_rate || 0.1, data.notes || null, 'draft']);
+    logAudit('作成', '発注書', id, data.vendor_name);
+    return id;
+  });
+  ipcMain.handle('purchaseOrders:update', (_e, data: any) => {
+    runSql(`UPDATE purchase_orders SET vendor_name=?, vendor_address=?, vendor_type=?, issue_date=?, delivery_date=?, amount=?, tax_rate=?, notes=?, status=? WHERE id=? AND tenant_id=?`,
+      [data.vendor_name, data.vendor_address, data.vendor_type, data.issue_date, data.delivery_date, data.amount, data.tax_rate, data.notes, data.status, data.id, getCurrentTenant()]);
+  });
+  ipcMain.handle('purchaseOrders:delete', (_e, id: number) => {
+    runSql('DELETE FROM purchase_orders WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+  });
+  ipcMain.handle('purchaseOrders:getDetail', (_e, id: number) => {
+    const po = queryOne('SELECT po.*, c.title as construction_title FROM purchase_orders po LEFT JOIN constructions c ON po.construction_id = c.id WHERE po.id=? AND po.tenant_id=?', [id, getCurrentTenant()]);
+    const items = queryAll('SELECT * FROM purchase_order_items WHERE purchase_order_id=? ORDER BY id', [id]);
+    return { ...po, items };
+  });
+  ipcMain.handle('purchaseOrders:addItem', (_e, data: any) => {
+    const id = runSql('INSERT INTO purchase_order_items (purchase_order_id, name, quantity, unit, unit_price, notes) VALUES (?, ?, ?, ?, ?, ?)',
+      [data.purchase_order_id, data.name, data.quantity || 1, data.unit || '式', data.unit_price || 0, data.notes || null]);
+    // 合計金額を再計算
+    const total = queryOne('SELECT COALESCE(SUM(quantity * unit_price), 0) as total FROM purchase_order_items WHERE purchase_order_id=?', [data.purchase_order_id]);
+    runSql('UPDATE purchase_orders SET amount=? WHERE id=?', [total?.total || 0, data.purchase_order_id]);
+    return id;
+  });
+  ipcMain.handle('purchaseOrders:updateItem', (_e, data: any) => {
+    runSql('UPDATE purchase_order_items SET name=?, quantity=?, unit=?, unit_price=?, notes=? WHERE id=?',
+      [data.name, data.quantity, data.unit, data.unit_price, data.notes, data.id]);
+    const item = queryOne('SELECT purchase_order_id FROM purchase_order_items WHERE id=?', [data.id]);
+    if (item) {
+      const total = queryOne('SELECT COALESCE(SUM(quantity * unit_price), 0) as total FROM purchase_order_items WHERE purchase_order_id=?', [item.purchase_order_id]);
+      runSql('UPDATE purchase_orders SET amount=? WHERE id=?', [total?.total || 0, item.purchase_order_id]);
+    }
+  });
+  ipcMain.handle('purchaseOrders:deleteItem', (_e, id: number) => {
+    const item = queryOne('SELECT purchase_order_id FROM purchase_order_items WHERE id=?', [id]);
+    runSql('DELETE FROM purchase_order_items WHERE id=?', [id]);
+    if (item) {
+      const total = queryOne('SELECT COALESCE(SUM(quantity * unit_price), 0) as total FROM purchase_order_items WHERE purchase_order_id=?', [item.purchase_order_id]);
+      runSql('UPDATE purchase_orders SET amount=? WHERE id=?', [total?.total || 0, item.purchase_order_id]);
+    }
+  });
+  ipcMain.handle('purchaseOrders:createFromConstruction', (_e, cid: number) => {
+    const tid = getCurrentTenant();
+    const con = queryOne('SELECT title FROM constructions WHERE id=? AND tenant_id=?', [cid, tid]);
+    if (!con) return null;
+    const today = new Date().toISOString().split('T')[0];
+    const poId = runSql('INSERT INTO purchase_orders (tenant_id, construction_id, vendor_name, issue_date, status) VALUES (?, ?, ?, ?, ?)',
+      [tid, cid, '', today, 'draft']);
+    const mats = queryAll(`SELECT m.name, cm.quantity, m.unit, cm.unit_price FROM construction_materials cm
+      JOIN materials m ON m.id = cm.material_id WHERE cm.construction_id = ?`, [cid]);
+    let total = 0;
+    for (const m of mats) {
+      runSql('INSERT INTO purchase_order_items (purchase_order_id, name, quantity, unit, unit_price) VALUES (?, ?, ?, ?, ?)',
+        [poId, m.name, m.quantity, m.unit, m.unit_price]);
+      total += (m.quantity || 1) * (m.unit_price || 0);
+    }
+    runSql('UPDATE purchase_orders SET amount=? WHERE id=?', [total, poId]);
+    logAudit('作成', '発注書', poId, `${con.title}から自動作成`);
+    return poId;
+  });
+  ipcMain.handle('purchaseOrders:generatePDF', async (_e, data: any) => {
+    const { po, items } = data;
+    const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
+    const cfg = loadApiConfig();
+    let rows = '';
+    let num = 1;
+    let itemTotal = 0;
+    if (items?.length) {
+      items.forEach((m: any) => {
+        const sub = Math.round((m.quantity || 1) * (m.unit_price || 0));
+        itemTotal += sub;
+        rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td>${escapeHtml(m.name)}</td><td style="text-align:center">${m.quantity || 1}</td><td style="text-align:center">${escapeHtml(m.unit || '式')}</td><td style="text-align:right">${fmt(m.unit_price || 0)}</td><td style="text-align:right">${fmt(sub)}</td></tr>`;
+      });
+    }
+    const taxRate = po.tax_rate || 0.1;
+    const taxAmount = Math.round(itemTotal * taxRate);
+    const totalWithTax = itemTotal + taxAmount;
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:40px 35px;color:#333;font-size:11px}
+h1{text-align:center;font-size:26px;letter-spacing:10px;margin-bottom:24px}
+.header{display:flex;justify-content:space-between;margin-bottom:16px}.client{font-size:16px;font-weight:bold;border-bottom:2px solid #333;padding-bottom:4px}
+.meta{text-align:right;font-size:10px;line-height:1.8}.total-box{background:#f0f0f0;padding:14px 20px;display:flex;justify-content:space-between;align-items:center;margin:16px 0;border-radius:4px}
+table{width:100%;border-collapse:collapse;margin:12px 0}th{background:#2e4057;color:#fff;padding:6px 8px;text-align:left;font-size:10px}td{padding:5px 8px;border-bottom:1px solid #eee;font-size:10px}
+.summary{margin-top:8px;width:300px;margin-left:auto}.summary-row{display:flex;justify-content:space-between;padding:3px 8px;font-size:11px}
+.summary-row.sub{border-top:1px solid #ccc;padding-top:6px;margin-top:4px}.summary-row.total{border-top:2px solid #333;font-size:14px;font-weight:bold;padding-top:6px;margin-top:4px}
+.notes{margin-top:20px;padding:10px;background:#fafafa;border:1px solid #ddd;border-radius:4px;font-size:10px;white-space:pre-wrap}</style>
+</head><body>
+<h1>発 注 書</h1>
+<div class="header"><div><div class="client">${escapeHtml(po.vendor_name || '（発注先未設定）')} 御中</div>${po.vendor_address ? `<div style="margin-top:3px;font-size:10px">${escapeHtml(po.vendor_address)}</div>` : ''}</div>
+<div class="meta">No. PO-${String(po.id).padStart(4, '0')}<br>発行日: ${po.issue_date}${po.delivery_date ? '<br>納期: ' + po.delivery_date : ''}
+${cfg.companyName ? `<div style="margin-top:10px;border-top:1px solid #ccc;padding-top:6px"><strong>${escapeHtml(cfg.companyName)}</strong><br><span style="font-size:9px">${escapeHtml(cfg.companyAddress || '')}${cfg.companyTel ? '<br>TEL: ' + escapeHtml(cfg.companyTel) : ''}</span></div>` : ''}</div></div>
+${po.construction_title ? `<div style="margin:12px 0;font-size:12px">件名: ${escapeHtml(po.construction_title)}</div>` : ''}
+<div class="total-box"><span style="font-size:13px">発注金額（税込）</span><span style="font-size:22px;font-weight:bold">${fmt(totalWithTax)}</span></div>
+<table><thead><tr><th style="text-align:center;width:30px">No</th><th>品名</th><th style="text-align:center;width:50px">数量</th><th style="text-align:center;width:40px">単位</th><th style="text-align:right;width:80px">単価</th><th style="text-align:right;width:90px">金額</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="summary"><div class="summary-row sub"><span>小計（税抜）</span><span>${fmt(itemTotal)}</span></div><div class="summary-row"><span>消費税（${Math.round(taxRate * 100)}%）</span><span>${fmt(taxAmount)}</span></div><div class="summary-row total"><span>発注金額（税込）</span><span>${fmt(totalWithTax)}</span></div></div>
+${cfg.companyName ? `<div class="notes"><strong>納品先</strong><br>${escapeHtml(cfg.companyName)}<br>${escapeHtml(cfg.companyAddress || '')}${cfg.companyTel ? '<br>TEL: ' + escapeHtml(cfg.companyTel) : ''}</div>` : ''}
+${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.notes)}</div>` : ''}
+</body></html>`;
+    const tmpHtml = path.join(app.getPath('temp'), `po_${Date.now()}.html`);
+    const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+    fs.writeFileSync(tmpHtml, Buffer.concat([bom, Buffer.from(html, 'utf-8')]));
+    const pdfWin = new BrowserWindow({ show: false, width: 794, height: 1123, webPreferences: { defaultEncoding: 'utf-8' } });
+    await pdfWin.loadURL(`file:///${tmpHtml.replace(/\\/g, '/')}`);
+    await new Promise<void>(r => setTimeout(r, 1000));
+    const pdf = await pdfWin.webContents.printToPDF({ printBackground: true, margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 } });
+    pdfWin.close();
+    try { fs.unlinkSync(tmpHtml); } catch(_) {}
+    const savePath = await dialog.showSaveDialog({ defaultPath: `発注書_${po.vendor_name || '未設定'}_${po.issue_date}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (!savePath.canceled && savePath.filePath) { fs.writeFileSync(savePath.filePath, pdf); shell.openPath(savePath.filePath); }
+  });
+
+  // ── 予実管理 ──
+  ipcMain.handle('budget:summary', () => {
+    const tid = getCurrentTenant();
+    const rows = queryAll(`SELECT c.id, c.title, c.status, c.labor_cost, c.markup_rate, c.fixed_selling_price, c.actual_selling_price, c.actual_labor_cost,
+      p.name as property_name,
+      (SELECT COALESCE(SUM(cm.quantity * cm.unit_price), 0) FROM construction_materials cm WHERE cm.construction_id = c.id) as est_material,
+      (SELECT COALESCE(SUM(a.daily_rate * a.hours / 8), 0) FROM attendance a WHERE a.construction_id = c.id AND a.tenant_id = ?) as actual_labor_from_attendance,
+      (SELECT COALESCE(SUM(po.amount), 0) FROM purchase_orders po WHERE po.construction_id = c.id AND po.tenant_id = ? AND po.status != 'cancelled') as purchase_ordered,
+      (SELECT COALESCE(SUM(inv.amount), 0) FROM invoices inv WHERE inv.construction_id = c.id AND inv.tenant_id = ?) as invoiced
+      FROM constructions c LEFT JOIN properties p ON c.property_id = p.id WHERE c.tenant_id = ? ORDER BY c.id DESC`,
+      [tid, tid, tid, tid]);
+    return rows.map((r: any) => {
+      const estMaterial = r.est_material || 0;
+      const estLabor = r.labor_cost || 0;
+      const estCost = estMaterial + estLabor;
+      const estSelling = r.fixed_selling_price || Math.round(estCost * (r.markup_rate || 1.3));
+      const estProfit = estSelling - estCost;
+      const actLabor = r.actual_labor_cost || r.actual_labor_from_attendance || 0;
+      const actSelling = r.actual_selling_price || r.invoiced || 0;
+      const actCost = estMaterial + actLabor; // 実績材料費は明細と同じ想定
+      const actProfit = actSelling - actCost;
+      return {
+        id: r.id, title: r.title, status: r.status, property_name: r.property_name,
+        estimated: { material: estMaterial, labor: estLabor, selling: estSelling, profit: estProfit },
+        actual: { material: estMaterial, labor: actLabor, selling: actSelling, profit: actProfit },
+        diff: { material: 0, labor: estLabor - actLabor, selling: estSelling - actSelling, profit: estProfit - actProfit },
+        invoiced: r.invoiced || 0, purchaseOrdered: r.purchase_ordered || 0,
+      };
+    });
   });
 
   // ── 工事写真管理 ──
@@ -1505,7 +1896,7 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
       "unit": "単位",
       "unitPrice": 単価（数値）,
       "amount": 金額（数値）,
-      "category": "推定カテゴリ（木材/基礎/屋根/外壁/内装/設備/電気/水道/解体/耐震/仮設/外構/造園/その他）"
+      "category": "推定カテゴリ（木材/基礎/屋根/外壁/内装/設備/電気/水道/解体/耐震/仮設/外構/造園/足場/養生/仮囲い/重機リース/運搬/産廃処理/技能者報酬/技術者報酬/その他）"
     }
   ],
   "notes": "備考欄の内容"
@@ -1521,7 +1912,9 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
     const text = response.content[0].type === 'text' ? response.content[0].text : '';
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('読み取りに失敗しました');
-    return JSON.parse(jsonMatch[1] || jsonMatch[0]);
+    const ocrResult = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+    sendUsageNotification('OCR取込', `書類種別: ${ocrResult.documentType || '不明'}, 金額: ${ocrResult.total || '不明'}円`);
+    return ocrResult;
   });
 
   // ── OCR結果をDBに一括登録 ──
@@ -1700,6 +2093,34 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
     const hasComment = comment && comment.trim().length > 0;
     const hasImage = imageBase64 && imageBase64.length > 0;
     const hasLocation = location && location.trim().length > 0;
+    const industryType = config.industryType || 'general';
+
+    // 業種別のAI指示
+    const industryPrompt = industryType === 'lease'
+      ? `\n## ★業種: 仮設工事リース業★
+この会社は仮設工事一式のリース業です。見積もりは以下の観点を重視してください:
+- 足場（くさび式・枠組・単管）のリース費用を架面積から正確に算出
+- 養生シート・防音シート・仮囲いの面積を算出してリース費用を計上
+- 仮設トイレ・仮設事務所・仮設電気水道のリース月額を工期から算出
+- 重機（バックホー・高所作業車・クレーン）のリース日数×日額で算出
+- 運搬費（回送費・トラック）を距離と台数から算出
+- 鳶工・ガードマンの人工を日数×人数で算出
+- 産廃処理費をm³数から算出
+- 相場DBの「仮設工事リース 費用一覧」セクションの単価を必ず参照すること
+- breakdownの各項目は「リース日数×日額」「月数×月額」「面積×m²単価」等の根拠をnoteに記載\n`
+      : industryType === 'demolition'
+      ? `\n## ★業種: 解体工事業★
+この会社は解体工事業です。解体坪単価・産廃処理費・仮設足場・重機回送費を重視して見積もってください。\n`
+      : industryType === 'exterior'
+      ? `\n## ★業種: 外構・エクステリア業★
+この会社は外構・エクステリア業です。駐車場・フェンス・門扉・ウッドデッキ・植栽等の外構工事を重視して見積もってください。\n`
+      : industryType === 'painting'
+      ? `\n## ★業種: 塗装工事業★
+この会社は塗装工事業です。塗装面積・塗料グレード・足場費用を重視して見積もってください。\n`
+      : industryType === 'equipment'
+      ? `\n## ★業種: 設備工事業★
+この会社は設備工事業（水道・電気・空調）です。設備機器の型番・施工費・配管配線工事を重視して見積もってください。\n`
+      : '';
 
     const userContent: any[] = [];
     if (isBeforeAfter) {
@@ -1771,7 +2192,7 @@ ${COST_REFERENCE}
 
 ${hasLocation ? `## 現場場所\n${location}\n\n★重要: 上記の場所に基づいて「全国 地域別 工事費係数」テーブルから該当する都道府県の係数を適用し、金額を補正すること。大阪以外の場合は必ず地域係数を掛けて算出すること。\n` : ''}
 ${comment ? `## ユーザーが依頼した工事内容（★最重要★）\n${comment}\n` : ''}
-
+${industryPrompt}
 ## ★★★ 最重要ルール（絶対に守れ）★★★
 1. breakdownには「ユーザーが依頼した工事内容」に直接関係する項目だけを入れろ
 2. ユーザーが「キッチン交換」としか書いていないなら、キッチン関連の材料・施工費だけをbreakdownに入れろ。外壁・屋根・耐震・浴室など依頼されていない工事は絶対にbreakdownに入れるな
@@ -1779,8 +2200,16 @@ ${comment ? `## ユーザーが依頼した工事内容（★最重要★）\n${
 4. 画像から追加で必要そうな工事を見つけた場合は「recommendations」に「○○も検討をおすすめします（参考: 約○万円）」と書け。金額計算には一切含めるな
 5. コメントが空の場合のみ、画像から判断した全工事を見積もれ
 6. ★必須★ breakdownには以下の3項目を必ず最後に含めろ（2025-2026年の建設業界情勢を反映した現実的な金額にすること。資材高騰・人件費上昇・働き方改革による人手不足を考慮）:
-   - 「仮設工事」（足場・養生シート・仮設電気水道・仮設トイレ・交通誘導員等。直接工事費の8〜15%。最低でも5万円以上）
-   - 「現場管理費」（現場監督人件費・安全管理・品質管理・書類作成・近隣対応等。直接工事費の10〜15%��最低でも8万円以上）
+   - 「仮設工事」: 相場DBの「仮設工事リース 費用一覧」セクションを参照し、工事規模に応じて以下を積算すること:
+     * 足場: くさび式650〜1,400円/m²（養生込み）、枠組1,000〜2,000円/m²。架面積から算出
+     * 養生: メッシュシート100〜200円/m²、防音シート2,000〜5,000円/m²（住宅密集地）
+     * 仮囲い: 安全鋼板3,200〜6,800円/m（高さ別）
+     * 仮設トイレ: 簡易水洗洋式20,000〜40,000円/月 + 設置撤去各20,000〜50,000円
+     * 仮設電気水道: 電気引込55,000〜300,000円、水道50,000〜150,000円
+     * 交通誘導員: 有資格20,000〜25,000円/人日、無資格16,000〜20,000円/人日
+     * 重機回送費: ミニ15,000〜30,000円/片道、中型20,000〜40,000円/片道
+     直接工事費の8〜15%。最低でも5万円以上。数量×単価で積算しろ
+   - 「現場管理費」（現場監督人件費・安全管理・品質管理・書類作成・近隣対応等。直接工事費の10〜15%。最低でも8万円以上）
    - 「福利厚生費」（法定福利費・社会保険・雇用保険・退職金積立等。人件費の15〜20%。2024年問題で上昇中。最低でも3万円以上）
 
 ## 過去の施工実績（${totalCount}件のデータベースから集約）
@@ -1842,6 +2271,11 @@ ${categories}
   "markupRate": 適用した掛け率（数値、例: 1.43）,
   "profitRate": 適用した粗利率（数値、%、例: 30）,
   "confidence": "高/中/低",
+  "estimatedDuration": "推定工期（例: '約5日', '約2週間', '約1.5ヶ月'）。全工程の着工から完了までの暦日数。並行作業を考慮して算出",
+  "totalManDays": 総人工数（数値。全職種の延べ人工合計。例: 設備工2人×3日+大工1人×2日=8）,
+  "manDaysBreakdown": [
+    {"trade": "職種名", "workers": 人数, "days": 日数, "manDays": 人工数, "dailyRate": 日額単価}
+  ],
   "breakdown": [
     {"item": "項目名", "cost": 金額, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
   ],
@@ -1858,6 +2292,12 @@ breakdownの書き方例:
 - {"item": "電気工事", "cost": 22000, "note": "IH用200V配線+照明移設"}
 - {"item": "床フローリング張替", "cost": 50000, "note": "7m²×7,100円/m²（材工共）"}
 
+manDaysBreakdownの書き方例:
+- {"trade": "設備工（レベル3）", "workers": 2, "days": 3, "manDays": 6, "dailyRate": 30300}
+- {"trade": "大工（レベル2）", "workers": 1, "days": 1, "manDays": 1, "dailyRate": 25800}
+- {"trade": "電気工（レベル2）", "workers": 1, "days": 0.5, "manDays": 0.5, "dailyRate": 24800}
+→ totalManDays = 7.5, estimatedDuration = "約4日"（並行作業あり）
+
 大阪エリアの2025-2026年相場で見積もってください。自己検証ルールCを必ず実行してから出力すること。`
           }]
       }]
@@ -1869,7 +2309,9 @@ breakdownの書き方例:
     if (!jsonMatch) throw new Error('AI応答の解析に失敗しました: ' + text.substring(0, 200));
     const jsonStr = jsonMatch[1] || jsonMatch[0];
     try {
-      return JSON.parse(jsonStr);
+      const estimateResult = JSON.parse(jsonStr);
+      sendUsageNotification(opName, `工事種別: ${estimateResult.workType || '不明'}, 売価: ${estimateResult.estimatedTotal || '不明'}円`);
+      return estimateResult;
     } catch (e: any) {
       throw new Error('JSON解析エラー: ' + e.message + ' / ' + jsonStr.substring(0, 200));
     }
@@ -1923,6 +2365,7 @@ breakdownの書き方例:
         });
 
         const b64 = response.data?.[0]?.b64_json;
+        sendUsageNotification('完成イメージ画像生成（編集）', `プロンプト: ${prompt.substring(0, 80)}`);
         if (b64) return `data:image/png;base64,${b64}`;
         const url = response.data?.[0]?.url;
         if (url) return url;
@@ -1946,6 +2389,7 @@ breakdownの書き方例:
     });
 
     const b64 = response.data[0]?.b64_json;
+    sendUsageNotification('完成イメージ画像生成', `プロンプト: ${prompt.substring(0, 80)}`);
     if (b64) return `data:image/png;base64,${b64}`;
     return response.data[0]?.url || null;
   });

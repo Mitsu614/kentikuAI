@@ -300,6 +300,34 @@ function createTables() {
     FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE CASCADE,
     FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE
   )`);
+  db.run(`CREATE TABLE IF NOT EXISTS workers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    name TEXT NOT NULL, daily_rate REAL DEFAULT 0, role TEXT DEFAULT '作業員', notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS attendance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    construction_id INTEGER, worker_id INTEGER NOT NULL, work_date TEXT NOT NULL,
+    hours REAL DEFAULT 8, daily_rate REAL DEFAULT 0, notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL,
+    FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS purchase_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    construction_id INTEGER, vendor_name TEXT NOT NULL DEFAULT '', vendor_address TEXT,
+    vendor_type TEXT DEFAULT 'material', issue_date TEXT NOT NULL, delivery_date TEXT,
+    amount REAL NOT NULL DEFAULT 0, tax_rate REAL DEFAULT 0.1, notes TEXT,
+    status TEXT DEFAULT 'draft',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS purchase_order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    purchase_order_id INTEGER NOT NULL, name TEXT NOT NULL,
+    quantity REAL DEFAULT 1, unit TEXT DEFAULT '式', unit_price REAL DEFAULT 0, notes TEXT,
+    FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE CASCADE
+  )`);
   db.run(`CREATE TABLE IF NOT EXISTS invoices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     construction_id INTEGER, client_name TEXT NOT NULL, client_address TEXT,
@@ -371,6 +399,12 @@ function migrate() {
     }
     if (!conCols.find((c: any) => c.name === 'fixed_selling_price')) {
       db.run('ALTER TABLE constructions ADD COLUMN fixed_selling_price REAL');
+    }
+    if (!conCols.find((c: any) => c.name === 'actual_selling_price')) {
+      db.run('ALTER TABLE constructions ADD COLUMN actual_selling_price REAL');
+    }
+    if (!conCols.find((c: any) => c.name === 'actual_labor_cost')) {
+      db.run('ALTER TABLE constructions ADD COLUMN actual_labor_cost REAL');
     }
   } catch (_) {}
   // estimate_log に実績フィードバックカラム追加（学習ループ用）
