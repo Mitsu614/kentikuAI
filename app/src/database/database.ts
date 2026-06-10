@@ -60,6 +60,7 @@ export function runSql(sql: string, params?: any[]): number {
 
 // ── プラン定義 ──
 export const PLANS: Record<string, { name: string; monthlyLimit: number; price: number; description: string }> = {
+  trial:    { name: '無料トライアル', monthlyLimit: 50,   price: 0,      description: '初回限定・50回まで無料' },
   light:    { name: 'ライト',       monthlyLimit: 50,   price: 29800,  description: '個人事業主・小規模工務店' },
   standard: { name: 'スタンダード', monthlyLimit: 200,  price: 59800,  description: '3〜15名程度の工務店' },
   pro:      { name: 'プロ',         monthlyLimit: 600,  price: 119800, description: 'リフォーム会社・複数担当者' },
@@ -85,13 +86,21 @@ export function getMonthlyUsage(tenantId?: number): { used: number; limit: numbe
   const planDef = PLANS[plan];
   const limit = tenant?.plan_limit || planDef?.monthlyLimit || 200;
 
-  // 今月の使用量を credit_log から集計（負の amount = 消費）
-  const now = new Date();
-  const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-  const row = queryOne(
-    'SELECT COALESCE(SUM(ABS(amount)), 0) as used FROM credit_log WHERE tenant_id = ? AND amount < 0 AND created_at >= ?',
-    [tid, monthStart]
-  );
+  // トライアルは全期間通算、有料プランは月次リセット
+  let row;
+  if (plan === 'trial') {
+    row = queryOne(
+      'SELECT COALESCE(SUM(ABS(amount)), 0) as used FROM credit_log WHERE tenant_id = ? AND amount < 0',
+      [tid]
+    );
+  } else {
+    const now = new Date();
+    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    row = queryOne(
+      'SELECT COALESCE(SUM(ABS(amount)), 0) as used FROM credit_log WHERE tenant_id = ? AND amount < 0 AND created_at >= ?',
+      [tid, monthStart]
+    );
+  }
   const used = row?.used || 0;
   return { used, limit, plan, remaining: Math.max(0, limit - used) };
 }
@@ -473,6 +482,9 @@ function migrate() {
     }
     if (!conCols.find((c: any) => c.name === 'actual_labor_cost')) {
       db.run('ALTER TABLE constructions ADD COLUMN actual_labor_cost REAL');
+    }
+    if (!conCols.find((c: any) => c.name === 'actual_material_cost')) {
+      db.run('ALTER TABLE constructions ADD COLUMN actual_material_cost REAL');
     }
   } catch (_) {}
   // estimate_log に実績フィードバックカラム追加（学習ループ用）

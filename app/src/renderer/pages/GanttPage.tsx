@@ -124,20 +124,22 @@ export default function GanttPage() {
       <div className="card" style={{ overflow: 'hidden', padding: 0 }}>
         <div style={{ display: 'flex' }}>
           {/* Left labels */}
-          <div style={{ minWidth: 240, borderRight: '2px solid #ddd', flexShrink: 0 }}>
-            <div style={{ height: 36, background: '#2e4057', color: '#fff', padding: '8px 12px', fontSize: 11, fontWeight: 'bold' }}>タスク</div>
+          <div style={{ minWidth: 300, borderRight: '2px solid #ddd', flexShrink: 0 }}>
+            <div style={{ height: 36, background: '#2e4057', color: '#fff', padding: '8px 12px', fontSize: 11, fontWeight: 'bold', display: 'flex', justifyContent: 'space-between' }}>
+              <span>タスク</span><span>操作</span>
+            </div>
             {tasks.map((t: any) => {
               const isDelayed = t.progress < 100 && t.end_date < today;
               return (
-                <div key={t.id} style={{ height: 40, display: 'flex', alignItems: 'center', padding: '0 8px', borderBottom: '1px solid #eee', fontSize: 12, background: isDelayed ? '#fde8e8' : 'transparent', gap: 4 }}>
+                <div key={t.id} style={{ height: 40, display: 'flex', alignItems: 'center', padding: '0 8px', borderBottom: '1px solid #eee', fontSize: 12, background: isDelayed ? '#fde8e8' : 'transparent', gap: 6 }}>
                   {isDelayed && <span>⚠️</span>}
                   <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     <strong>{t.task_name}</strong>
                     {t.construction_title && <span style={{ color: '#888', fontSize: 10, marginLeft: 4 }}>{t.construction_title}</span>}
                   </div>
-                  <span style={{ fontSize: 10, color: t.progress >= 100 ? '#27ae60' : '#888' }}>{t.progress}%</span>
-                  <button onClick={() => editTask(t)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11 }}>✏️</button>
-                  <button onClick={() => deleteTask(t.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11 }}>🗑️</button>
+                  <span style={{ fontSize: 10, color: t.progress >= 100 ? '#27ae60' : '#888', minWidth: 28 }}>{t.progress}%</span>
+                  <button onClick={() => editTask(t)} style={{ background: '#f0f0f0', border: '1px solid #ddd', borderRadius: 4, cursor: 'pointer', fontSize: 11, padding: '2px 6px' }}>✏️</button>
+                  <button onClick={() => deleteTask(t.id)} style={{ background: '#fde8e8', border: '1px solid #f5c6cb', borderRadius: 4, cursor: 'pointer', fontSize: 11, padding: '2px 6px' }}>🗑️</button>
                 </div>
               );
             })}
@@ -179,7 +181,7 @@ export default function GanttPage() {
               {/* Today line */}
               {todayOffset >= 0 && todayOffset <= dayCount && (
                 <div style={{ position: 'absolute', top: 36, left: todayOffset * dayWidth, width: 2, height: tasks.length * 40, background: '#e74c3c', zIndex: 10, pointerEvents: 'none' }}>
-                  <div style={{ position: 'absolute', top: -14, left: -8, fontSize: 9, color: '#e74c3c', fontWeight: 'bold' }}>今日</div>
+                  <div style={{ position: 'absolute', top: 2, left: 4, fontSize: 9, color: '#e74c3c', fontWeight: 'bold', whiteSpace: 'nowrap' }}>今日</div>
                 </div>
               )}
             </div>

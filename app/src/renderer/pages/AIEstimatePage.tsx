@@ -90,21 +90,28 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       setResult(res);
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
 
-      // 自動で物件・施工・請求書を作成
-      setCreating(true);
-      try {
-        const mainImage = mode === 'beforeafter' ? (afterImage || beforeImage) : imageData;
-        const created = await (window as any).api.autoCreateFromEstimate({ result: res, imageBase64: mainImage, comment, location });
-        setAutoCreated(created);
-        // 実際の売価でresultを更新
-        if (created.sellingPrice) {
-          res.estimatedTotal = created.sellingPrice;
-          setResult({ ...res });
+      // 確認後、物件・施工・請求書・発注書を自動作成
+      if (confirm('見積もり結果から物件・施工・請求書・発注書（下書き）を自動作成しますか？')) {
+        setCreating(true);
+        try {
+          const mainImage = mode === 'beforeafter' ? (afterImage || beforeImage) : imageData;
+          const created = await (window as any).api.autoCreateFromEstimate({ result: res, imageBase64: mainImage, comment, location });
+          setAutoCreated(created);
+          if (created.sellingPrice) {
+            res.estimatedTotal = created.sellingPrice;
+            setResult({ ...res });
+          }
+          // 発注書も自動作成
+          if (created.constructionId) {
+            try {
+              await (window as any).api.createPOFromConstruction(created.constructionId);
+            } catch (_) {}
+          }
+        } catch (e: any) {
+          console.error('auto create error:', e);
         }
-      } catch (e: any) {
-        console.error('auto create error:', e);
+        setCreating(false);
       }
-      setCreating(false);
       // ログに追加（DBから再読込）
       try {
         const logs = await (window as any).api.getEstimateLog();
@@ -395,18 +402,30 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div style={{
               background: 'linear-gradient(135deg, #27ae60, #2ecc71)', color: '#fff',
               padding: '14px 20px', borderRadius: 10, marginBottom: 16,
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               boxShadow: '0 3px 12px rgba(39,174,96,0.3)',
-              cursor: 'pointer',
-            }} onClick={() => onNavigateToConstruction && autoCreated.constructionId && onNavigateToConstruction(autoCreated.constructionId)}>
-              <div>
-                <strong>✅ 自動登録完了!</strong>
-                <span style={{ marginLeft: 12, fontSize: 13, opacity: 0.9 }}>
-                  物件・施工・材料明細・請求書（下書き）をまとめて作成しました
-                </span>
-              </div>
-              <div style={{ fontSize: 12, background: 'rgba(255,255,255,0.2)', padding: '4px 12px', borderRadius: 6 }}>
-                👉 見積詳細を見る
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <strong>✅ 自動登録完了!</strong>
+                  <span style={{ marginLeft: 12, fontSize: 13, opacity: 0.9 }}>
+                    物件・施工・材料明細・請求書・発注書（下書き）をまとめて作成しました
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <div style={{ fontSize: 12, background: 'rgba(255,255,255,0.2)', padding: '4px 12px', borderRadius: 6, cursor: 'pointer' }}
+                    onClick={() => onNavigateToConstruction && autoCreated.constructionId && onNavigateToConstruction(autoCreated.constructionId)}>
+                    👉 見積詳細を見る
+                  </div>
+                  <div style={{ fontSize: 12, background: 'rgba(255,255,255,0.35)', padding: '4px 12px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold' }}
+                    onClick={() => {
+                      if (onNavigateToConstruction && autoCreated.constructionId) {
+                        // purchase-ordersページへの遷移は親から制御
+                      }
+                      alert('発注書ページで業者名・納期を記入してPDF出力できます。');
+                    }}>
+                    📝 発注書を確認
+                  </div>
+                </div>
               </div>
             </div>
           )}

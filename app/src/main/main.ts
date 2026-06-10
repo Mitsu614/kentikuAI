@@ -439,6 +439,12 @@ app.whenReady().then(async () => {
   const allTenants = queryAll('SELECT id FROM tenants WHERE id > 1 ORDER BY id ASC');
   if (allTenants.length > 0) {
     setCurrentTenant(allTenants[0].id);
+    // 管理者のテナントはストック50確保
+    const myTenant = allTenants[0];
+    const myPlan = queryOne('SELECT plan, plan_limit FROM tenants WHERE id = ?', [myTenant.id]);
+    if (!myPlan?.plan_limit || myPlan.plan_limit < 50) {
+      runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', ['standard', 50, myTenant.id]);
+    }
   }
 
   createWindow();
@@ -1097,13 +1103,17 @@ app.whenReady().then(async () => {
   ipcMain.handle('tenants:list', () => queryAll('SELECT * FROM tenants ORDER BY id'));
   ipcMain.handle('tenants:create', (_e, name: string) => {
     const id = runSql('INSERT INTO tenants (name) VALUES (?)', [name]);
+    // 無料トライアル: 50回、1回限り
+    const today = new Date().toISOString().split('T')[0];
+    runSql('UPDATE tenants SET plan = ?, plan_limit = ?, plan_started_at = ? WHERE id = ?',
+      ['trial', 50, today, id]);
     // デフォルトテナントの材料マスタをコピー
     const defaultMats = queryAll('SELECT name, category, unit, unit_price, notes FROM materials WHERE tenant_id = 1');
     for (const m of defaultMats) {
       runSql('INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?)',
         [m.name, m.category, m.unit, m.unit_price, m.notes, id]);
     }
-    logAudit('create', 'tenant', id, `${name}（材料${defaultMats.length}件コピー）`);
+    logAudit('create', 'tenant', id, `${name}（無料トライアル50回・材料${defaultMats.length}件コピー）`);
     return id;
   });
   ipcMain.handle('tenants:switch', (_e, id: number) => { setCurrentTenant(id); });
@@ -1655,18 +1665,60 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
       FROM attendance a JOIN workers w ON a.worker_id = w.id LEFT JOIN constructions c ON a.construction_id = c.id
       WHERE a.tenant_id = ? ORDER BY a.work_date DESC, w.name LIMIT 200`, [tid]);
   });
+  // 出面変更時に実績人件費をestimate_logへフィードバック → 学習ループ発火
+  function feedbackLaborFromAttendance(constructionId: number | null) {
+    if (!constructionId) return;
+    try {
+      const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type FROM estimate_log WHERE construction_id = ?', [constructionId]);
+      if (!log) return;
+      const c = queryOne('SELECT * FROM constructions WHERE id = ?', [constructionId]);
+      if (!c) return;
+      // 出面から実績人件費を集計
+      const att = queryOne('SELECT COALESCE(SUM(daily_rate * hours / 8), 0) as total FROM attendance WHERE construction_id = ?', [constructionId]);
+      const actualLabor = att?.total || 0;
+      const mat = queryOne('SELECT COALESCE(SUM(quantity * unit_price), 0) as total FROM construction_materials WHERE construction_id = ?', [constructionId]);
+      const matCost = mat?.total || 0;
+      const totalCost = matCost + actualLabor;
+      const sellingPrice = c.fixed_selling_price || Math.ceil(totalCost * (c.markup_rate || 1.3));
+      const markupRate = totalCost > 0 ? sellingPrice / totalCost : c.markup_rate || 1.3;
+      const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+      runSql('UPDATE estimate_log SET actual_labor_cost=?, actual_selling_price=?, actual_markup_rate=?, feedback_at=? WHERE id=?',
+        [actualLabor, sellingPrice, markupRate, now, log.id]);
+      // 施工テーブルにも実績人件費を保存
+      runSql('UPDATE constructions SET actual_labor_cost=? WHERE id=?', [actualLabor, constructionId]);
+      // Supabaseに送信 → 係数更新
+      const config = loadApiConfig();
+      sendFeedbackToSupabase([{
+        work_type: log.work_type || '不明',
+        ai_material_cost: log.ai_material_cost, ai_labor_cost: log.ai_labor_cost, ai_total: log.ai_total,
+        actual_material_cost: matCost, actual_labor_cost: actualLabor, actual_selling_price: sellingPrice,
+        actual_markup_rate: markupRate, accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
+      }]).then(() => analyzeAndUpdateCoefficients(config.anthropicKey))
+        .then(() => console.log('学習ループ（出面→人件費）: 係数更新完了'))
+        .catch((e: any) => console.error('学習ループ（出面）エラー:', e));
+    } catch (_) {}
+  }
+
   ipcMain.handle('attendance:create', (_e, data: any) => {
     const worker = queryOne('SELECT daily_rate FROM workers WHERE id=?', [data.worker_id]);
     const rate = data.daily_rate || worker?.daily_rate || 0;
-    return runSql('INSERT INTO attendance (tenant_id, construction_id, worker_id, work_date, hours, daily_rate, notes) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    const id = runSql('INSERT INTO attendance (tenant_id, construction_id, worker_id, work_date, hours, daily_rate, notes) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [getCurrentTenant(), data.construction_id || null, data.worker_id, data.work_date, data.hours || 8, rate, data.notes || null]);
+    feedbackLaborFromAttendance(data.construction_id);
+    return id;
   });
   ipcMain.handle('attendance:update', (_e, data: any) => {
+    // 更新前のconstruction_idも取得して両方フィードバック
+    const old = queryOne('SELECT construction_id FROM attendance WHERE id=? AND tenant_id=?', [data.id, getCurrentTenant()]);
     runSql('UPDATE attendance SET construction_id=?, worker_id=?, work_date=?, hours=?, daily_rate=?, notes=? WHERE id=? AND tenant_id=?',
       [data.construction_id, data.worker_id, data.work_date, data.hours, data.daily_rate, data.notes, data.id, getCurrentTenant()]);
+    feedbackLaborFromAttendance(data.construction_id);
+    if (old?.construction_id && old.construction_id !== data.construction_id) feedbackLaborFromAttendance(old.construction_id);
   });
   ipcMain.handle('attendance:delete', (_e, id: number) => {
+    const att = queryOne('SELECT construction_id FROM attendance WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
     runSql('DELETE FROM attendance WHERE id=? AND tenant_id=?', [id, getCurrentTenant()]);
+    feedbackLaborFromAttendance(att?.construction_id);
   });
   ipcMain.handle('attendance:summary', (_e, _filter: any) => {
     const tid = getCurrentTenant();
@@ -1805,7 +1857,7 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
   // ── 予実管理 ──
   ipcMain.handle('budget:summary', () => {
     const tid = getCurrentTenant();
-    const rows = queryAll(`SELECT c.id, c.title, c.status, c.labor_cost, c.markup_rate, c.fixed_selling_price, c.actual_selling_price, c.actual_labor_cost,
+    const rows = queryAll(`SELECT c.id, c.title, c.status, c.labor_cost, c.markup_rate, c.fixed_selling_price, c.actual_selling_price, c.actual_labor_cost, c.actual_material_cost,
       p.name as property_name,
       (SELECT COALESCE(SUM(cm.quantity * cm.unit_price), 0) FROM construction_materials cm WHERE cm.construction_id = c.id) as est_material,
       (SELECT COALESCE(SUM(a.daily_rate * a.hours / 8), 0) FROM attendance a WHERE a.construction_id = c.id AND a.tenant_id = ?) as actual_labor_from_attendance,
@@ -1819,18 +1871,54 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
       const estCost = estMaterial + estLabor;
       const estSelling = r.fixed_selling_price || Math.round(estCost * (r.markup_rate || 1.3));
       const estProfit = estSelling - estCost;
+      const actMaterial = r.actual_material_cost || estMaterial;
       const actLabor = r.actual_labor_cost || r.actual_labor_from_attendance || 0;
       const actSelling = r.actual_selling_price || r.invoiced || 0;
-      const actCost = estMaterial + actLabor; // 実績材料費は明細と同じ想定
+      const actCost = actMaterial + actLabor;
       const actProfit = actSelling - actCost;
       return {
         id: r.id, title: r.title, status: r.status, property_name: r.property_name,
         estimated: { material: estMaterial, labor: estLabor, selling: estSelling, profit: estProfit },
-        actual: { material: estMaterial, labor: actLabor, selling: actSelling, profit: actProfit },
-        diff: { material: 0, labor: estLabor - actLabor, selling: estSelling - actSelling, profit: estProfit - actProfit },
+        actual: { material: actMaterial, labor: actLabor, selling: actSelling, profit: actProfit },
+        diff: { material: estMaterial - actMaterial, labor: estLabor - actLabor, selling: estSelling - actSelling, profit: estProfit - actProfit },
         invoiced: r.invoiced || 0, purchaseOrdered: r.purchase_ordered || 0,
       };
     });
+  });
+
+  // 予実の実績を編集 → 学習ループ発火
+  ipcMain.handle('budget:updateActual', (_e, data: any) => {
+    const cid = data.construction_id;
+    const tid = getCurrentTenant();
+    // constructions テーブルに実績値を保存
+    runSql('UPDATE constructions SET actual_selling_price=?, actual_material_cost=?, actual_labor_cost=?, status=? WHERE id=? AND tenant_id=?',
+      [data.actual_selling_price || null, data.actual_material_cost || null, data.actual_labor_cost || null, data.status || '完了', cid, tid]);
+
+    // estimate_log にフィードバック → 学習ループ
+    try {
+      const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type FROM estimate_log WHERE construction_id = ?', [cid]);
+      if (log) {
+        const actMat = data.actual_material_cost || 0;
+        const actLabor = data.actual_labor_cost || 0;
+        const actSelling = data.actual_selling_price || 0;
+        const totalCost = actMat + actLabor;
+        const markupRate = totalCost > 0 ? actSelling / totalCost : 1.3;
+        const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+        runSql('UPDATE estimate_log SET actual_material_cost=?, actual_labor_cost=?, actual_selling_price=?, actual_markup_rate=?, feedback_at=? WHERE id=?',
+          [actMat, actLabor, actSelling, markupRate, now, log.id]);
+
+        // Supabase送信 → 係数更新
+        const config = loadApiConfig();
+        sendFeedbackToSupabase([{
+          work_type: log.work_type || '不明',
+          ai_material_cost: log.ai_material_cost, ai_labor_cost: log.ai_labor_cost, ai_total: log.ai_total,
+          actual_material_cost: actMat, actual_labor_cost: actLabor, actual_selling_price: actSelling,
+          actual_markup_rate: markupRate, accuracy_ratio: log.ai_total > 0 ? actSelling / log.ai_total : null,
+        }]).then(() => analyzeAndUpdateCoefficients(config.anthropicKey))
+          .then(() => console.log('学習ループ（予実管理）: 係数更新完了'))
+          .catch((e: any) => console.error('学習ループ（予実管理）エラー:', e));
+      }
+    } catch (_) {}
   });
 
   // ── 日報管理 ──

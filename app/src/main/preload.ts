@@ -154,6 +154,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // 予実管理
   getBudgetSummary: () => ipcRenderer.invoke('budget:summary'),
+  updateBudgetActual: (data: any) => ipcRenderer.invoke('budget:updateActual', data),
 
   // 日報
   listDailyReports: (filter: any) => ipcRenderer.invoke('dailyReports:list', filter),
