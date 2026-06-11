@@ -366,6 +366,45 @@ app.whenReady().then(async () => {
     }
   }
 
+  // ── リモートライセンスチェック ──
+  if (!isOwner) {
+    try {
+      const https = require('https');
+      const tenant = queryOne('SELECT name FROM tenants WHERE id = ?', [getCurrentTenant()]);
+      const tenantName = encodeURIComponent(tenant?.name || '');
+      const licenseCheck: any = await new Promise((resolve) => {
+        const req = https.get(
+          `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${tenantName}&select=id,active,credits,blocked_message`,
+          { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 8000 },
+          (res: any) => {
+            let body = '';
+            res.on('data', (c: string) => body += c);
+            res.on('end', () => { try { resolve(JSON.parse(body)); } catch (_) { resolve(null); } });
+          }
+        );
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+      });
+      if (Array.isArray(licenseCheck) && licenseCheck.length > 0) {
+        const lic = licenseCheck[0];
+        if (!lic.active) {
+          dialog.showErrorBox('ご利用停止', lic.blocked_message || 'ご利用期間が終了しました。ご契約については担当者にお問い合わせください。');
+          app.quit();
+          return;
+        }
+        if (lic.credits <= 0) {
+          dialog.showErrorBox('クレジット残量不足', 'AIクレジットが0です。追加クレジットについては担当者にお問い合わせください。');
+          app.quit();
+          return;
+        }
+        // リモートのクレジットをローカルに同期
+        runSql('UPDATE tenants SET credits = ?, plan_limit = ? WHERE id = ?', [lic.credits, lic.credits, getCurrentTenant()]);
+      }
+    } catch (_) {
+      // ネットワークエラー時はローカルのクレジットで続行
+    }
+  }
+
   createWindow();
 
   // 起動時バックアップ + 30分ごと

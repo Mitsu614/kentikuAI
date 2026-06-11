@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>建築ブースト 管理ダッシュボード</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Yu Gothic', 'Meiryo', sans-serif; background: #0f1923; color: #e0e0e0; min-height: 100vh; }
+
+/* ヘッダー */
+.header { background: linear-gradient(135deg, #1a2332, #2c3e50); padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #3a7bd5; }
+.header h1 { font-size: 18px; color: #fff; letter-spacing: 2px; }
+.header .status { font-size: 12px; padding: 4px 12px; border-radius: 12px; }
+.header .status.ok { background: #27ae60; color: #fff; }
+.header .status.err { background: #e74c3c; color: #fff; }
+
+/* ログイン */
+.login-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.login-box { background: #1a2332; padding: 40px; border-radius: 12px; border: 1px solid #3a7bd5; width: 380px; }
+.login-box h2 { text-align: center; margin-bottom: 24px; color: #3a7bd5; }
+.login-box input { width: 100%; padding: 12px; margin-bottom: 12px; border: 1px solid #444; border-radius: 8px; background: #0f1923; color: #fff; font-size: 14px; }
+.login-box button { width: 100%; padding: 12px; background: #3a7bd5; color: #fff; border: none; border-radius: 8px; font-size: 15px; cursor: pointer; font-weight: bold; }
+.login-box button:hover { background: #2d6bc4; }
+.login-box .error { color: #e74c3c; font-size: 12px; margin-top: 8px; text-align: center; }
+
+/* サマリーカード */
+.summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 20px 24px; }
+.card { background: #1a2332; border-radius: 10px; padding: 20px; border: 1px solid #2a3a4a; }
+.card .label { font-size: 12px; color: #888; margin-bottom: 4px; }
+.card .value { font-size: 28px; font-weight: bold; }
+.card .value.green { color: #27ae60; }
+.card .value.blue { color: #3a7bd5; }
+.card .value.red { color: #e74c3c; }
+.card .value.orange { color: #f39c12; }
+
+/* テーブル */
+.section { padding: 0 24px 24px; }
+.section h2 { font-size: 16px; margin-bottom: 12px; color: #3a7bd5; border-bottom: 1px solid #2a3a4a; padding-bottom: 8px; }
+table { width: 100%; border-collapse: collapse; background: #1a2332; border-radius: 8px; overflow: hidden; }
+th { background: #2a3a4a; padding: 10px 14px; text-align: left; font-size: 12px; color: #aaa; font-weight: normal; }
+td { padding: 10px 14px; border-bottom: 1px solid #222d3a; font-size: 13px; }
+tr:hover td { background: #1e2d3d; }
+
+/* ステータスバッジ */
+.badge { padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold; }
+.badge.active { background: #1a4a2a; color: #27ae60; }
+.badge.blocked { background: #4a1a1a; color: #e74c3c; }
+.badge.trial { background: #1a3a4a; color: #3498db; }
+.badge.standard { background: #3a3a1a; color: #f39c12; }
+.badge.premium { background: #2a1a4a; color: #9b59b6; }
+
+/* ボタン */
+.btn { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: bold; transition: all 0.15s; }
+.btn-danger { background: #e74c3c; color: #fff; }
+.btn-danger:hover { background: #c0392b; }
+.btn-success { background: #27ae60; color: #fff; }
+.btn-success:hover { background: #219a52; }
+.btn-primary { background: #3a7bd5; color: #fff; }
+.btn-primary:hover { background: #2d6bc4; }
+.btn-sm { padding: 4px 10px; font-size: 11px; }
+.btn-group { display: flex; gap: 6px; }
+
+/* モーダル */
+.modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal { background: #1a2332; padding: 28px; border-radius: 12px; border: 1px solid #3a7bd5; width: 420px; }
+.modal h3 { margin-bottom: 16px; color: #3a7bd5; }
+.modal label { display: block; font-size: 12px; color: #888; margin: 10px 0 4px; }
+.modal input, .modal select, .modal textarea { width: 100%; padding: 10px; border: 1px solid #444; border-radius: 6px; background: #0f1923; color: #fff; font-size: 13px; }
+.modal textarea { min-height: 60px; resize: vertical; }
+.modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* ログテーブル */
+.log-table td { font-size: 12px; }
+.log-table .op { color: #3a7bd5; }
+.log-table .time { color: #666; }
+
+/* レスポンシブ */
+@media (max-width: 768px) {
+  .summary { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script>
+// ── Config ──
+const SUPABASE_URL = 'https://slhgkedzlormaovwpadi.supabase.co';
+let SUPABASE_KEY = '';
+let authenticated = false;
+
+// ── Supabase API ──
+async function sbGet(table, query) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}${query || ''}`, {
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+  });
+  return res.ok ? res.json() : [];
+}
+async function sbPost(table, body) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: 'POST', headers: {
+      'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json', 'Prefer': 'return=representation'
+    }, body: JSON.stringify(body)
+  });
+  return res.ok ? res.json() : null;
+}
+async function sbPatch(table, query, body) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}${query}`, {
+    method: 'PATCH', headers: {
+      'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json', 'Prefer': 'return=representation'
+    }, body: JSON.stringify(body)
+  });
+  return res.ok ? res.json() : null;
+}
+async function sbDelete(table, query) {
+  await fetch(`${SUPABASE_URL}/rest/v1/${table}${query}`, {
+    method: 'DELETE', headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+  });
+}
+
+// ── State ──
+let licenses = [];
+let logs = [];
+let modal = null; // { type: 'add' | 'edit' | 'credit', data: ... }
+
+// ── Data ──
+async function loadData() {
+  licenses = await sbGet('remote_licenses', '?order=created_at.desc');
+  logs = await sbGet('credit_log', '?order=created_at.desc&limit=100');
+  render();
+}
+
+// ── Actions ──
+async function toggleActive(id, current) {
+  await sbPatch('remote_licenses', `?id=eq.${id}`, {
+    active: !current,
+    updated_at: new Date().toISOString()
+  });
+  await loadData();
+}
+
+async function setCredits(id, credits) {
+  await sbPatch('remote_licenses', `?id=eq.${id}`, {
+    credits: parseInt(credits),
+    updated_at: new Date().toISOString()
+  });
+  await loadData();
+}
+
+async function addLicense(data) {
+  const id = 'trial_' + Date.now().toString(36);
+  await sbPost('remote_licenses', {
+    id, company_name: data.company_name, plan: data.plan || 'trial',
+    credits: parseInt(data.credits) || 50, max_credits: parseInt(data.max_credits) || 50,
+    active: true
+  });
+  modal = null;
+  await loadData();
+}
+
+async function updateLicense(id, data) {
+  await sbPatch('remote_licenses', `?id=eq.${id}`, {
+    company_name: data.company_name, plan: data.plan,
+    max_credits: parseInt(data.max_credits), blocked_message: data.blocked_message,
+    updated_at: new Date().toISOString()
+  });
+  modal = null;
+  await loadData();
+}
+
+async function deleteLicense(id, name) {
+  if (!confirm(`「${name}」を削除しますか？`)) return;
+  await sbDelete('remote_licenses', `?id=eq.${id}`);
+  await loadData();
+}
+
+// ── Render ──
+function render() {
+  const app = document.getElementById('app');
+  if (!authenticated) {
+    app.innerHTML = renderLogin();
+    return;
+  }
+
+  const totalLicenses = licenses.length;
+  const activeLicenses = licenses.filter(l => l.active).length;
+  const blockedLicenses = licenses.filter(l => !l.active).length;
+  const totalCredits = licenses.reduce((s, l) => s + (l.credits || 0), 0);
+
+  app.innerHTML = `
+    <div class="header">
+      <h1>建築ブースト 管理ダッシュボード</h1>
+      <div>
+        <span class="status ok">Supabase接続中</span>
+        <button class="btn btn-sm" style="margin-left:12px;background:#444;color:#ccc" onclick="loadData()">更新</button>
+      </div>
+    </div>
+
+    <div class="summary">
+      <div class="card">
+        <div class="label">総テナント数</div>
+        <div class="value blue">${totalLicenses}</div>
+      </div>
+      <div class="card">
+        <div class="label">有効</div>
+        <div class="value green">${activeLicenses}</div>
+      </div>
+      <div class="card">
+        <div class="label">無効（停止中）</div>
+        <div class="value red">${blockedLicenses}</div>
+      </div>
+      <div class="card">
+        <div class="label">総クレジット残</div>
+        <div class="value orange">${totalCredits}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h2 style="margin:0;border:none;padding:0">テナント管理</h2>
+        <button class="btn btn-primary" onclick="modal={type:'add',data:{}};render()">＋ テナント追加</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>会社名</th>
+            <th>プラン</th>
+            <th>クレジット</th>
+            <th>ステータス</th>
+            <th>更新日</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${licenses.map(l => `
+            <tr>
+              <td style="font-family:monospace;font-size:11px;color:#666">${l.id}</td>
+              <td><strong>${esc(l.company_name)}</strong></td>
+              <td><span class="badge ${l.plan}">${l.plan}</span></td>
+              <td>
+                <strong style="color:${l.credits > 0 ? '#27ae60' : '#e74c3c'}">${l.credits}</strong>
+                <span style="color:#666">/ ${l.max_credits}</span>
+                <div style="background:#222;height:4px;border-radius:2px;margin-top:4px;width:80px">
+                  <div style="background:${l.credits > 0 ? '#27ae60' : '#e74c3c'};height:100%;border-radius:2px;width:${Math.min(100, (l.credits / l.max_credits) * 100)}%"></div>
+                </div>
+              </td>
+              <td><span class="badge ${l.active ? 'active' : 'blocked'}">${l.active ? '有効' : '停止中'}</span></td>
+              <td style="font-size:11px;color:#666">${l.updated_at ? new Date(l.updated_at).toLocaleString('ja-JP') : '—'}</td>
+              <td>
+                <div class="btn-group">
+                  ${l.active
+                    ? `<button class="btn btn-danger btn-sm" onclick="toggleActive('${l.id}',true)">停止</button>`
+                    : `<button class="btn btn-success btn-sm" onclick="toggleActive('${l.id}',false)">有効化</button>`
+                  }
+                  <button class="btn btn-primary btn-sm" onclick="modal={type:'credit',data:{id:'${l.id}',name:'${esc(l.company_name)}',credits:${l.credits}}};render()">クレジット</button>
+                  <button class="btn btn-sm" style="background:#444;color:#ccc" onclick="modal={type:'edit',data:${JSON.stringify(l).replace(/"/g,'&quot;')}};render()">編集</button>
+                  <button class="btn btn-sm" style="background:#333;color:#888" onclick="deleteLicense('${l.id}','${esc(l.company_name)}')">削除</button>
+                </div>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>利用ログ（最新100件）</h2>
+      <table class="log-table">
+        <thead><tr><th>日時</th><th>テナント</th><th>操作</th><th>数量</th></tr></thead>
+        <tbody>
+          ${logs.length > 0 ? logs.map(l => `
+            <tr>
+              <td class="time">${new Date(l.created_at).toLocaleString('ja-JP')}</td>
+              <td>テナント${l.tenant_id}</td>
+              <td class="op">${esc(l.operation)}</td>
+              <td>${l.amount > 0 ? '+' : ''}${l.amount}</td>
+            </tr>
+          `).join('') : '<tr><td colspan="4" style="text-align:center;color:#666;padding:20px">ログなし</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
+    ${modal ? renderModal() : ''}
+  `;
+}
+
+function renderModal() {
+  if (modal.type === 'add') {
+    return `
+      <div class="modal-overlay" onclick="if(event.target===this){modal=null;render()}">
+        <div class="modal">
+          <h3>テナント追加</h3>
+          <label>会社名</label>
+          <input id="m_name" placeholder="例: 株式会社○○建設">
+          <label>プラン</label>
+          <select id="m_plan"><option value="trial">trial</option><option value="standard">standard</option><option value="premium">premium</option></select>
+          <label>クレジット数</label>
+          <input id="m_credits" type="number" value="50">
+          <div class="actions">
+            <button class="btn" style="background:#444;color:#ccc" onclick="modal=null;render()">キャンセル</button>
+            <button class="btn btn-primary" onclick="addLicense({company_name:document.getElementById('m_name').value,plan:document.getElementById('m_plan').value,credits:document.getElementById('m_credits').value,max_credits:document.getElementById('m_credits').value})">追加</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  if (modal.type === 'credit') {
+    return `
+      <div class="modal-overlay" onclick="if(event.target===this){modal=null;render()}">
+        <div class="modal">
+          <h3>${esc(modal.data.name)} — クレジット操作</h3>
+          <p style="margin:8px 0;font-size:13px">現在: <strong style="color:#3a7bd5">${modal.data.credits}</strong></p>
+          <label>新しいクレジット数</label>
+          <input id="m_newcredit" type="number" value="${modal.data.credits}">
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <button class="btn btn-danger btn-sm" onclick="document.getElementById('m_newcredit').value=0">0にする</button>
+            <button class="btn btn-sm" style="background:#444;color:#ccc" onclick="document.getElementById('m_newcredit').value=50">50に戻す</button>
+            <button class="btn btn-sm" style="background:#444;color:#ccc" onclick="document.getElementById('m_newcredit').value=100">100にする</button>
+          </div>
+          <div class="actions">
+            <button class="btn" style="background:#444;color:#ccc" onclick="modal=null;render()">キャンセル</button>
+            <button class="btn btn-primary" onclick="setCredits('${modal.data.id}',document.getElementById('m_newcredit').value);modal=null">保存</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  if (modal.type === 'edit') {
+    const d = modal.data;
+    return `
+      <div class="modal-overlay" onclick="if(event.target===this){modal=null;render()}">
+        <div class="modal">
+          <h3>テナント編集</h3>
+          <label>会社名</label>
+          <input id="m_ename" value="${esc(d.company_name)}">
+          <label>プラン</label>
+          <select id="m_eplan"><option value="trial" ${d.plan==='trial'?'selected':''}>trial</option><option value="standard" ${d.plan==='standard'?'selected':''}>standard</option><option value="premium" ${d.plan==='premium'?'selected':''}>premium</option></select>
+          <label>最大クレジット</label>
+          <input id="m_emax" type="number" value="${d.max_credits}">
+          <label>停止時メッセージ</label>
+          <textarea id="m_emsg">${esc(d.blocked_message || '')}</textarea>
+          <div class="actions">
+            <button class="btn" style="background:#444;color:#ccc" onclick="modal=null;render()">キャンセル</button>
+            <button class="btn btn-primary" onclick="updateLicense('${d.id}',{company_name:document.getElementById('m_ename').value,plan:document.getElementById('m_eplan').value,max_credits:document.getElementById('m_emax').value,blocked_message:document.getElementById('m_emsg').value})">保存</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  return '';
+}
+
+function renderLogin() {
+  return `
+    <div class="login-overlay">
+      <div class="login-box">
+        <h2>管理ダッシュボード</h2>
+        <p style="text-align:center;font-size:12px;color:#888;margin-bottom:16px">建築ブースト クレジット管理</p>
+        <input id="login_key" type="password" placeholder="Supabase Service Key を入力">
+        <button onclick="tryLogin()">ログイン</button>
+        <div id="login_error" class="error"></div>
+      </div>
+    </div>`;
+}
+
+async function tryLogin() {
+  const key = document.getElementById('login_key').value.trim();
+  if (!key) { document.getElementById('login_error').textContent = 'キーを入力してください'; return; }
+  SUPABASE_KEY = key;
+  try {
+    const test = await fetch(`${SUPABASE_URL}/rest/v1/remote_licenses?select=id&limit=1`, {
+      headers: { 'apikey': key, 'Authorization': `Bearer ${key}` }
+    });
+    if (test.ok) {
+      authenticated = true;
+      sessionStorage.setItem('sb_key', key);
+      await loadData();
+    } else {
+      document.getElementById('login_error').textContent = '認証失敗: キーが正しくありません';
+    }
+  } catch (e) {
+    document.getElementById('login_error').textContent = '接続エラー: ' + e.message;
+  }
+}
+
+function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ── Init ──
+window.onload = function() {
+  const saved = sessionStorage.getItem('sb_key');
+  if (saved) { SUPABASE_KEY = saved; authenticated = true; loadData(); }
+  else render();
+};
+
+// 自動更新（30秒ごと）
+setInterval(() => { if (authenticated) loadData(); }, 30000);
+</script>
+
+</body>
+</html>
