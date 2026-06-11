@@ -1,0 +1,247 @@
+name: Build Mac Trial
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm install
+
+      - name: Build
+        working-directory: app
+        run: npm run build
+
+      - name: Package for macOS (universal)
+        working-directory: app
+        run: npx @electron/packager . 建築ブースト --platform=darwin --arch=universal --overwrite --out=release --ignore="src|\.zip$|seed-|launch\.vbs|\.db$|無料トライアル|建築見積管理_v|ファイル|特許|商談"
+
+      - name: Create Mac trial folder
+        run: |
+          mkdir -p mac-trial
+          cp -r "app/release/建築ブースト-darwin-universal/建築ブースト.app" mac-trial/
+          cp app/無料トライアル/setup-trial.js mac-trial/
+          cp "app/無料トライアル/利用規約_建築ブースト.pdf" mac-trial/ 2>/dev/null || true
+          cp "app/説明書_建築ブースト_導入ガイド.pdf" mac-trial/ 2>/dev/null || true
+          cp "app/説明書_建築ブースト_導入ガイド.html" mac-trial/ 2>/dev/null || true
+
+      - name: Create Mac setup script
+        run: |
+          cat > mac-trial/セットアップ.command << 'SCRIPT'
+          #!/bin/bash
+          echo ""
+          echo "========================================"
+          echo "  建築ブースト 無料トライアル セットアップ"
+          echo "  (macOS版)"
+          echo "========================================"
+          echo ""
+          echo "  データベースを初期化しています..."
+          echo "  （AIクレジット50回分 + 材料マスタ）"
+          echo ""
+
+          cd "$(dirname "$0")"
+
+          # Node.jsチェック
+          if ! command -v node &> /dev/null; then
+              echo "[エラー] Node.js がインストールされていません。"
+              echo "  https://nodejs.org/ からインストールしてください。"
+              echo ""
+              read -p "Enterキーで終了..."
+              exit 1
+          fi
+
+          # sql.jsが必要
+          if [ ! -d "node_modules/sql.js" ]; then
+              echo "  sql.js をインストール中..."
+              npm install sql.js --no-save > /dev/null 2>&1
+          fi
+
+          node setup-trial-mac.js
+
+          echo ""
+          echo "  セットアップ完了後、「建築ブースト.app」をダブルクリックして起動してください。"
+          echo ""
+          read -p "Enterキーで終了..."
+          SCRIPT
+          chmod +x mac-trial/セットアップ.command
+
+      - name: Create Mac setup-trial script
+        run: |
+          cat > mac-trial/setup-trial-mac.js << 'JSSCRIPT'
+          // 建築ブースト 無料トライアル セットアップスクリプト (macOS版)
+          const initSqlJs = require('sql.js');
+          const path = require('path');
+          const fs = require('fs');
+          const os = require('os');
+
+          async function main() {
+            // macOS: ~/Library/Application Support/kenchiku-boost
+            const userDataPath = path.join(os.homedir(), 'Library', 'Application Support', 'kenchiku-boost');
+            if (!fs.existsSync(userDataPath)) fs.mkdirSync(userDataPath, { recursive: true });
+            const dbPath = path.join(userDataPath, 'kentiku.db');
+
+            if (fs.existsSync(dbPath)) {
+              const backupPath = dbPath + '.backup-' + Date.now();
+              fs.copyFileSync(dbPath, backupPath);
+              console.log('既存データをバックアップしました: ' + backupPath);
+            }
+
+            const SQL = await initSqlJs();
+            const db = new SQL.Database();
+            db.run('PRAGMA foreign_keys = ON');
+
+            // テーブル作成（Windows版と同一）
+            const tables = [
+              "CREATE TABLE IF NOT EXISTS tenants (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, credits INTEGER DEFAULT 50, plan TEXT DEFAULT 'trial', plan_limit INTEGER DEFAULT 50, plan_started_at TEXT, limit_notified_month TEXT, contact_company TEXT, contact_tel TEXT, contact_email TEXT, month_notified INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS credit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL, amount INTEGER NOT NULL, operation TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT DEFAULT 'user', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, action TEXT NOT NULL, entity TEXT, entity_id INTEGER, detail TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS plan_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER NOT NULL, requested_plan TEXT NOT NULL, current_plan TEXT, price INTEGER NOT NULL, status TEXT DEFAULT 'pending', invoice_number TEXT, paid_at TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS estimate_log (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, work_type TEXT, ai_material_cost REAL, ai_labor_cost REAL, ai_total REAL, ai_markup_rate REAL, ai_json TEXT, generated_image TEXT, uploaded_image TEXT, actual_material_cost REAL, actual_labor_cost REAL, actual_selling_price REAL, actual_markup_rate REAL, feedback_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS properties (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, name TEXT NOT NULL, address TEXT, floor_plan_image TEXT, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS materials (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '未分類', unit TEXT NOT NULL DEFAULT '個', unit_price REAL NOT NULL DEFAULT 0, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS constructions (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, property_id INTEGER, title TEXT NOT NULL, construction_date TEXT, labor_cost REAL DEFAULT 0, markup_rate REAL DEFAULT 1.3, fixed_selling_price REAL, actual_selling_price REAL, actual_labor_cost REAL, actual_material_cost REAL, status TEXT DEFAULT '見積中', notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (property_id) REFERENCES properties(id) ON DELETE SET NULL)",
+              "CREATE TABLE IF NOT EXISTS construction_materials (id INTEGER PRIMARY KEY AUTOINCREMENT, construction_id INTEGER NOT NULL, material_id INTEGER NOT NULL, quantity REAL NOT NULL DEFAULT 1, unit_price REAL NOT NULL, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE CASCADE, FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE)",
+              "CREATE TABLE IF NOT EXISTS invoices (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, client_name TEXT NOT NULL, client_address TEXT, issue_date TEXT NOT NULL, due_date TEXT, amount REAL NOT NULL, tax_rate REAL DEFAULT 0.1, notes TEXT, status TEXT DEFAULT 'draft', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+              "CREATE TABLE IF NOT EXISTS construction_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, construction_id INTEGER NOT NULL, photo_data TEXT, label TEXT DEFAULT 'before', notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE CASCADE)",
+              "CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, name TEXT NOT NULL, company TEXT, phone TEXT, email TEXT, address TEXT, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS workers (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, name TEXT NOT NULL, daily_rate REAL DEFAULT 0, role TEXT DEFAULT '作業員', notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+              "CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, worker_id INTEGER NOT NULL, work_date TEXT NOT NULL, hours REAL DEFAULT 8, daily_rate REAL DEFAULT 0, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL, FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE)",
+              "CREATE TABLE IF NOT EXISTS purchase_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, vendor_name TEXT NOT NULL DEFAULT '', vendor_address TEXT, vendor_type TEXT DEFAULT 'material', issue_date TEXT NOT NULL, delivery_date TEXT, amount REAL NOT NULL DEFAULT 0, tax_rate REAL DEFAULT 0.1, notes TEXT, status TEXT DEFAULT 'draft', created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+              "CREATE TABLE IF NOT EXISTS purchase_order_items (id INTEGER PRIMARY KEY AUTOINCREMENT, purchase_order_id INTEGER NOT NULL, name TEXT NOT NULL, quantity REAL DEFAULT 1, unit TEXT DEFAULT '式', unit_price REAL DEFAULT 0, notes TEXT, FOREIGN KEY (purchase_order_id) REFERENCES purchase_orders(id) ON DELETE CASCADE)",
+              "CREATE TABLE IF NOT EXISTS daily_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, report_date TEXT NOT NULL, weather TEXT DEFAULT '晴れ', temp_min REAL, temp_max REAL, progress INTEGER DEFAULT 0, work_content TEXT, safety_notes TEXT, tomorrow_plan TEXT, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+              "CREATE TABLE IF NOT EXISTS gantt_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, task_name TEXT NOT NULL, assignee TEXT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, progress INTEGER DEFAULT 0, color TEXT DEFAULT '#3498db', dependencies TEXT, sort_order INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+              "CREATE TABLE IF NOT EXISTS safety_worker_info (id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id INTEGER NOT NULL UNIQUE, blood_type TEXT, emergency_contact TEXT, emergency_tel TEXT, health_check_date TEXT, insurance_type TEXT, certifications TEXT, FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE)",
+              "CREATE TABLE IF NOT EXISTS safety_education (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, worker_id INTEGER, education_date TEXT NOT NULL, instructor TEXT, content TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL, FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE SET NULL)",
+              "CREATE TABLE IF NOT EXISTS ky_records (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, activity_date TEXT NOT NULL, participants TEXT, hazard TEXT, countermeasures TEXT, leader TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+              "CREATE TABLE IF NOT EXISTS quote_comparisons (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, title TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+              "CREATE TABLE IF NOT EXISTS quote_vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, comparison_id INTEGER NOT NULL, vendor_name TEXT NOT NULL, notes TEXT, FOREIGN KEY (comparison_id) REFERENCES quote_comparisons(id) ON DELETE CASCADE)",
+              "CREATE TABLE IF NOT EXISTS quote_vendor_items (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, name TEXT NOT NULL, quantity REAL DEFAULT 1, unit TEXT DEFAULT '式', unit_price REAL DEFAULT 0, FOREIGN KEY (vendor_id) REFERENCES quote_vendors(id) ON DELETE CASCADE)",
+              "CREATE TABLE IF NOT EXISTS photo_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER NOT NULL, photo_data TEXT, category TEXT DEFAULT '施工中', work_type TEXT DEFAULT 'その他', location TEXT, photo_date TEXT, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE CASCADE)",
+            ];
+            for (const sql of tables) db.run(sql);
+
+            // テナント作成
+            db.run("INSERT INTO tenants (name, credits, plan, plan_limit) VALUES ('管理者', 0, 'standard', 9999)");
+            const today = new Date().toISOString().split('T')[0];
+            db.run("INSERT INTO tenants (name, credits, plan, plan_limit, plan_started_at) VALUES ('無料トライアル', 50, 'trial', 50, ?)", [today]);
+            db.run("INSERT INTO credit_log (tenant_id, amount, operation) VALUES (2, 50, '無料トライアル開始')");
+
+            // ユーザー
+            const crypto = require('crypto');
+            const passHash = crypto.createHash('sha256').update('trial2026').digest('hex');
+            db.run("INSERT INTO users (tenant_id, username, password_hash, role) VALUES (2, 'admin', ?, 'admin')", [passHash]);
+
+            // 材料マスタ（Windows版と同一の全品目を登録）
+            // 省略せず全品目を含む（setup-trial.jsから移植済み）
+            const materialsFile = require('path').join(__dirname, 'setup-trial.js');
+            // 簡易版: 基本36品目 + リース品目
+            const materials = [
+              ['耐震金物（ホールダウン金物）', '耐震', '個', 2500], ['耐震金物（筋交い金物）', '耐震', '個', 1800],
+              ['構造用合板（耐力壁用）24mm', '耐震', '枚', 3800], ['筋交い（杉 45×90）', '耐震', '本', 1500],
+              ['制震ダンパー', '耐震', '個', 45000], ['桧 柱材 105×105mm 3m', '木材', '本', 3500],
+              ['杉 間柱 30×105mm 3m', '木材', '本', 600], ['米松 梁材 105×240mm 4m', '木材', '本', 8000],
+              ['生コン（24-8-20）', '基礎', 'm³', 19500], ['鉄筋 D13', '基礎', 'kg', 130],
+              ['ガルバリウム鋼板屋根材', '屋根', 'm²', 5500], ['窯業系サイディング 14mm', '外壁', 'm²', 4000],
+              ['石膏ボード 12.5mm', '内装', '枚', 550], ['フローリング材（合板）', '内装', 'm²', 3500],
+              ['クロス（量産品 1000番台）', '内装', 'm²', 350], ['グラスウール 16K 100mm', '断熱', 'm²', 800],
+              ['システムキッチン（標準）', '設備', 'セット', 450000], ['ユニットバス 1616', '設備', 'セット', 350000],
+              ['トイレ（タンクレス）', '設備', 'セット', 180000], ['給湯器（エコジョーズ 24号）', '設備', 'セット', 150000],
+              ['LED照明（シーリング）', '電気', '個', 8000], ['木造解体工事', '解体', '坪', 40000],
+              ['仮設足場（くさび式）', '仮設', 'm²', 1000], ['くさび式足場（養生込み）', '足場', 'm²', 1100],
+              ['メッシュシート（養生ネット）', '養生', 'm²', 150], ['防音シート', '養生', 'm²', 3500],
+              ['仮設トイレ（簡易水洗・洋式）', '仮設リース', '月', 30000], ['仮設事務所（4坪）', '仮設リース', '月', 28000],
+              ['ミニバックホー（0.05m³）', '重機リース', '日', 8500], ['高所作業車（10〜12m）', '重機リース', '日', 22500],
+              ['重機回送費（ミニ・〜20km）', '運搬', '回', 22500], ['ガードマン（有資格者）', '運搬', '人日', 22500],
+              ['産廃処理（混合廃棄物A）', '産廃処理', 'm³', 15000], ['とび工（レベル3・職長）', '技能者報酬', '人日', 30780],
+              ['大工（レベル3・職長）', '技能者報酬', '人日', 30400], ['1級建築施工管理技士', '技術者報酬', '人日', 47500],
+            ];
+            for (const [name, category, unit, unitPrice] of materials) {
+              db.run('INSERT INTO materials (tenant_id, name, category, unit, unit_price) VALUES (2, ?, ?, ?, ?)', [name, category, unit, unitPrice]);
+            }
+
+            // サンプル物件
+            db.run("INSERT INTO properties (tenant_id, name, address, notes) VALUES (2, 'サンプル物件 - 田中邸 耐震補強', '大阪府大阪市住吉区帝塚山1-1-1', '築35年 木造2階建て。トライアル用サンプルデータ')");
+
+            // DB保存
+            const data = db.export();
+            fs.writeFileSync(dbPath, Buffer.from(data));
+            db.close();
+
+            // api-config.jsonリセット
+            const configPath = path.join(userDataPath, 'api-config.json');
+            fs.writeFileSync(configPath, JSON.stringify({}, null, 2), 'utf-8');
+
+            console.log('\n========================================');
+            console.log('  建築ブースト 無料トライアル セットアップ完了！');
+            console.log('  (macOS版)');
+            console.log('========================================');
+            console.log('  プラン:       無料トライアル（50回）');
+            console.log('  材料マスタ:   ' + materials.length + '品目（大阪相場）');
+            console.log('  DB保存先:     ' + dbPath);
+            console.log('\n  「建築ブースト.app」をダブルクリックして起動してください。');
+            console.log('========================================\n');
+          }
+          main().catch(console.error);
+          JSSCRIPT
+
+      - name: Create お読みください
+        run: |
+          cat > mac-trial/お読みください.txt << 'README'
+          ========================================
+           建築ブースト 無料トライアル (macOS版)
+           v1.4 — AI建築見積・請求書管理
+          ========================================
+
+          【セットアップ手順】
+
+          1. Node.js をインストール（まだの場合）
+             https://nodejs.org/ から LTS版 をダウンロード
+
+          2. 「セットアップ.command」をダブルクリック
+             ※「開発元を確認できないため開けません」と出た場合：
+               → 右クリック → 「開く」を選択
+               → もう一度「開く」をクリック
+
+          3. セットアップ完了後「建築ブースト.app」をダブルクリック
+             ※同様に「開発元を確認できない」場合：
+               → システム設定 → プライバシーとセキュリティ
+               → 「このまま開く」をクリック
+
+          【ログイン情報】
+            ユーザー名: admin
+            パスワード: trial2026
+
+          【動作環境】
+            macOS 14 (Sonoma) 以降
+            Apple Silicon (M1/M2/M3/M4) + Intel 対応
+            Node.js 18 以降
+
+          【サポート】
+            有限会社中野工務店
+            大阪府大阪市都島区都島本通5-8-18
+          README
+
+      - name: Create ZIP
+        run: |
+          cd mac-trial
+          zip -r -y "../無料トライアル_Mac_v1.4.zip" .
+          cd ..
+          ls -lh 無料トライアル_Mac_v1.4.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 無料トライアル_Mac_v1.4
+          path: 無料トライアル_Mac_v1.4.zip
+          retention-days: 30
