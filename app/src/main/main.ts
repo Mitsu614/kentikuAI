@@ -366,6 +366,43 @@ app.whenReady().then(async () => {
     }
   }
 
+  // ── 初回起動時に会社名を登録 ──
+  if (!isOwner) {
+    const tenant = queryOne('SELECT name FROM tenants WHERE id = ?', [getCurrentTenant()]);
+    if (tenant && (tenant.name === '無料トライアル' || !tenant.name)) {
+      const { response, checkboxChecked } = await dialog.showMessageBox({
+        type: 'question',
+        title: '初回セットアップ',
+        message: '建築ブーストをご利用いただきありがとうございます。\n\n御社名を登録してください。',
+        detail: '入力された会社名でライセンスが管理されます。',
+        buttons: ['次へ'],
+      });
+      let companyName = '';
+      while (!companyName.trim()) {
+        const input = await dialog.showMessageBox({
+          type: 'question',
+          title: '会社名の登録',
+          message: '会社名を入力してください',
+          buttons: ['OK'],
+          defaultId: 0,
+        });
+        // showMessageBoxでは入力欄が使えないのでpromptを使う
+        // Electronにはpromptがないので、BrowserWindowで入力画面を作る
+        companyName = await new Promise<string>((resolve) => {
+          const promptWin = new BrowserWindow({ width: 450, height: 220, resizable: false, minimizable: false, maximizable: false, title: '会社名の登録', parent: undefined, modal: false, webPreferences: { contextIsolation: false, nodeIntegration: true } });
+          promptWin.setMenuBarVisibility(false);
+          promptWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:24px;background:#f5f5f5;text-align:center}h2{font-size:16px;margin-bottom:16px;color:#333}input{width:90%;padding:12px;font-size:15px;border:2px solid #3a7bd5;border-radius:8px;text-align:center;outline:none}input:focus{border-color:#27ae60}button{margin-top:16px;padding:10px 40px;background:#3a7bd5;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer;font-weight:bold}button:hover{background:#2d6bc4}.note{font-size:11px;color:#888;margin-top:8px}</style></head><body><h2>御社名を入力してください</h2><input id="name" placeholder="例: 株式会社○○建設" autofocus onkeydown="if(event.key==='Enter')submit()"><br><button onclick="submit()">登録</button><p class="note">※ ライセンス管理に使用されます</p><script>const{ipcRenderer}=require('electron');function submit(){const v=document.getElementById('name').value.trim();if(v)ipcRenderer.send('company-name-result',v)}</script></body></html>`));
+          const { ipcMain: ipc } = require('electron');
+          ipc.once('company-name-result', (_: any, name: string) => { promptWin.close(); resolve(name); });
+          promptWin.on('closed', () => resolve(''));
+        });
+      }
+      if (companyName.trim()) {
+        runSql('UPDATE tenants SET name = ? WHERE id = ?', [companyName.trim(), getCurrentTenant()]);
+      }
+    }
+  }
+
   // ── リモートライセンスチェック ──
   if (!isOwner) {
     try {
