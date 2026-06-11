@@ -1,0 +1,12 @@
+{
+  "name": "kenchiku-boost-learning",
+  "version": "1.0.0",
+  "description": "建築ブースト 学習ループ中央サーバー",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
