@@ -96,6 +96,7 @@ function escapeHtml(str: string | null | undefined): string {
 }
 
 let mainWindow: BrowserWindow | null = null;
+const APP_VERSION = '2.1.0';
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
@@ -484,7 +485,7 @@ app.whenReady().then(async () => {
         company_name: tenant?.name || '不明',
         hostname: os.hostname(),
         username: os.userInfo().username,
-        app_version: '2.0.0',
+        app_version: APP_VERSION,
         event: 'startup',
         credits_remaining: tenant?.credits || 0,
       });
@@ -500,6 +501,46 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+
+  // ── 自動アップデートチェック ──
+  setTimeout(async () => {
+    try {
+      const https = require('https');
+      const updateInfo: any = await new Promise((resolve) => {
+        const req = https.get('https://api.github.com/repos/Mitsu614/kentikuAI/releases/latest', {
+          headers: { 'User-Agent': 'kenchiku-boost', 'Accept': 'application/vnd.github.v3+json' },
+          timeout: 10000,
+        }, (res: any) => {
+          let body = '';
+          res.on('data', (c: string) => body += c);
+          res.on('end', () => { try { resolve(JSON.parse(body)); } catch (_) { resolve(null); } });
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+      });
+      if (!updateInfo || !updateInfo.tag_name) return;
+      const latestVer = updateInfo.tag_name.replace(/^v/, '');
+      if (latestVer <= APP_VERSION) return;
+
+      // ダウンロードURLを取得
+      const asset = (updateInfo.assets || []).find((a: any) => a.name && a.name.endsWith('.zip'));
+      const downloadUrl = asset ? asset.browser_download_url : updateInfo.html_url;
+      const releaseNotes = updateInfo.body || '';
+
+      const { response } = await dialog.showMessageBox(mainWindow!, {
+        type: 'info',
+        title: 'アップデートのお知らせ',
+        message: `建築ブーストの新しいバージョン v${latestVer} があります。\n\n現在: v${APP_VERSION}\n最新: v${latestVer}`,
+        detail: releaseNotes.substring(0, 300) || '新機能・バグ修正が含まれています。',
+        buttons: ['ダウンロードする', '後で'],
+        defaultId: 0,
+      });
+      if (response === 0) {
+        const { shell } = require('electron');
+        shell.openExternal(downloadUrl);
+      }
+    } catch (_) {}
+  }, 15000);
 
   // 起動時バックアップ + 30分ごと
   runBackup(dbPath);
@@ -2842,7 +2883,7 @@ manDaysBreakdownの書き方例:
       try {
         const os = require('os');
         const tenant = queryOne('SELECT name, credits FROM tenants WHERE id = ?', [getCurrentTenant()]);
-        const actData = JSON.stringify({ company_name: tenant?.name || '不明', hostname: os.hostname(), username: os.userInfo().username, app_version: '2.0.0', event: `ai_estimate:${estimateResult.workType || ''}`, credits_remaining: tenant?.credits || 0 });
+        const actData = JSON.stringify({ company_name: tenant?.name || '不明', hostname: os.hostname(), username: os.userInfo().username, app_version: APP_VERSION, event: `ai_estimate:${estimateResult.workType || ''}`, credits_remaining: tenant?.credits || 0 });
         const https = require('https');
         const pr = https.request({ hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/app_activity', method: 'POST', headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }, timeout: 5000 }, () => {});
         pr.on('error', () => {}); pr.write(actData); pr.end();
