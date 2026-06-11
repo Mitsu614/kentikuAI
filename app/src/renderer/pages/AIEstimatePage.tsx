@@ -19,6 +19,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [creating, setCreating] = useState(false);
   const [estimateLog, setEstimateLog] = useState<any[]>([]);
   const [selectedLog, setSelectedLog] = useState<number | null>(null);
+  const [logPO, setLogPO] = useState<any>(null);
+  const [poLoading, setPOLoading] = useState(false);
+  const [logInvoice, setLogInvoice] = useState<any>(null);
+  const [invoiceLoading, setInvoiceLoading] = useState(false);
   const resultRef = useRef<HTMLDivElement>(null);
 
   // DB からログ読み込み
@@ -37,6 +41,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             result: parsed,
             image: l.generated_image || null,
             uploadedImage: l.uploaded_image || null,
+            constructionId: l.construction_id || null,
           };
         }));
       }
@@ -119,7 +124,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           setEstimateLog(logs.map((l: any) => {
             let parsed = null;
             try { parsed = JSON.parse(l.ai_json); } catch (_) {}
-            return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null };
+            return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null };
           }));
           // 最新のログをselectedに
           setSelectedLog(logs[0].id);
@@ -176,7 +181,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             setEstimateLog(logs.map((l: any) => {
               let parsed = null;
               try { parsed = JSON.parse(l.ai_json); } catch (_) {}
-              return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null };
+              return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null };
             }));
           }
         } catch (_) {}
@@ -191,7 +196,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
   const confidenceColor: any = { '高': '#27ae60', '中': '#f39c12', '低': '#e74c3c' };
 
-  const loadFromLog = (logItem: any) => {
+  const loadFromLog = async (logItem: any) => {
     const r = logItem.result ? { ...logItem.result } : null;
     // ログの金額（実際の売価）で上書き
     if (r && logItem.total) r.estimatedTotal = logItem.total;
@@ -199,7 +204,24 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setGeneratedImage(logItem.image || null);
     if (logItem.uploadedImage) setImageData(logItem.uploadedImage);
     setSelectedLog(logItem.id);
+    setLogPO(null);
+    setLogInvoice(null);
     setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    // 関連する発注書・請求書を取得
+    if (logItem.constructionId) {
+      setPOLoading(true);
+      setInvoiceLoading(true);
+      try {
+        const [po, inv] = await Promise.all([
+          (window as any).api.getPOByConstruction(logItem.constructionId),
+          (window as any).api.getInvoiceByConstruction(logItem.constructionId),
+        ]);
+        setLogPO(po);
+        setLogInvoice(inv);
+      } catch (_) {}
+      setPOLoading(false);
+      setInvoiceLoading(false);
+    }
   };
 
   return (
@@ -488,21 +510,50 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           {/* 内訳 */}
           {result.breakdown && result.breakdown.length > 0 && (
             <div className="card" style={{ marginTop: 16 }}>
-              <h3 style={{ marginBottom: 12 }}>費用内訳</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ margin: 0 }}>費用内訳</h3>
+                <span style={{ fontSize: 11, color: '#888' }}>項目をクリック → 発注書PDF出力</span>
+              </div>
               <table className="data-table">
                 <thead>
                   <tr>
                     <th>項目</th>
                     <th style={{ textAlign: 'right' }}>概算金額</th>
                     <th>備考</th>
+                    <th style={{ textAlign: 'center', width: 80 }}>発注書</th>
                   </tr>
                 </thead>
                 <tbody>
                   {result.breakdown.map((b: any, i: number) => (
-                    <tr key={i}>
+                    <tr key={i} style={{ cursor: 'pointer' }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#f0f7ff'}
+                      onMouseLeave={e => e.currentTarget.style.background = ''}
+                      onClick={async () => {
+                        const today = new Date().toISOString().split('T')[0];
+                        const po = {
+                          id: 0,
+                          vendor_name: '',
+                          vendor_address: '',
+                          issue_date: today,
+                          delivery_date: '',
+                          tax_rate: 0.1,
+                          notes: '',
+                          construction_title: result.workType || '',
+                        };
+                        const items = [{ name: b.item, quantity: 1, unit: '式', unit_price: b.cost || 0 }];
+                        try {
+                          await (window as any).api.generatePurchaseOrderPDF({ po, items });
+                        } catch (e: any) {
+                          alert('PDF生成に失敗: ' + (e.message || e));
+                        }
+                      }}
+                    >
                       <td>{b.item}</td>
                       <td style={{ textAlign: 'right' }}><strong>{fmt(b.cost)}</strong></td>
                       <td style={{ color: '#888', fontSize: 12 }}>{b.note}</td>
+                      <td style={{ textAlign: 'center' }}>
+                        <span style={{ fontSize: 11, color: '#3498db', fontWeight: 'bold' }}>📄 出力</span>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -613,6 +664,181 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               </div>
             )}
           </div>
+
+          {/* 請求書セクション */}
+          {invoiceLoading && (
+            <div className="card" style={{ marginTop: 16, textAlign: 'center', padding: 20, color: '#888' }}>
+              ⏳ 請求書を読み込み中...
+            </div>
+          )}
+          {logInvoice && logInvoice.invoice && (
+            <div className="card" style={{ marginTop: 16, border: '2px solid #27ae60' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ margin: 0 }}>💰 請求書</h3>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{
+                    fontSize: 11, padding: '3px 10px', borderRadius: 12, fontWeight: 'bold',
+                    background: logInvoice.invoice.status === 'paid' ? '#e8fdf0' : logInvoice.invoice.status === 'sent' ? '#e8f4fd' : logInvoice.invoice.status === 'overdue' ? '#fde8e8' : '#f0f0f0',
+                    color: logInvoice.invoice.status === 'paid' ? '#27ae60' : logInvoice.invoice.status === 'sent' ? '#3498db' : logInvoice.invoice.status === 'overdue' ? '#e74c3c' : '#999',
+                  }}>
+                    {logInvoice.invoice.status === 'draft' ? '下書き' : logInvoice.invoice.status === 'sent' ? '送付済' : logInvoice.invoice.status === 'paid' ? '入金済' : '期限超過'}
+                  </span>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={async () => {
+                      try {
+                        await (window as any).api.generatePDF({ invoice: logInvoice.invoice, materials: logInvoice.materials });
+                      } catch (e: any) {
+                        alert('PDF生成に失敗: ' + (e.message || e));
+                      }
+                    }}
+                    style={{ fontSize: 12, padding: '6px 16px', background: '#27ae60' }}
+                  >
+                    📄 請求書PDF出力
+                  </button>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13, marginBottom: 12 }}>
+                <div><span style={{ color: '#888' }}>請求先:</span> {logInvoice.invoice.client_name || '（未設定）'}</div>
+                <div><span style={{ color: '#888' }}>発行日:</span> {logInvoice.invoice.issue_date || '—'}</div>
+                <div><span style={{ color: '#888' }}>施工:</span> {logInvoice.invoice.construction_title || '—'}</div>
+                <div><span style={{ color: '#888' }}>支払期限:</span> {logInvoice.invoice.due_date || '—'}</div>
+              </div>
+              <div style={{ textAlign: 'right', fontSize: 16, fontWeight: 'bold', color: '#27ae60' }}>
+                請求金額: {fmt(logInvoice.invoice.amount || 0)}
+                <span style={{ fontSize: 12, color: '#888', marginLeft: 8 }}>
+                  (税込 {fmt(Math.round((logInvoice.invoice.amount || 0) * (1 + (logInvoice.invoice.tax_rate || 0.1))))})
+                </span>
+              </div>
+            </div>
+          )}
+          {!logInvoice && !invoiceLoading && selectedLog && estimateLog.find(l => l.id === selectedLog)?.constructionId && (
+            <div className="card" style={{ marginTop: 16, textAlign: 'center', padding: 16, background: '#f8f9fa' }}>
+              <p style={{ color: '#888', fontSize: 13, marginBottom: 8 }}>この見積に紐づく請求書がありません</p>
+              <button
+                className="btn btn-sm"
+                onClick={async () => {
+                  const log = estimateLog.find(l => l.id === selectedLog);
+                  if (!log?.constructionId) return;
+                  setInvoiceLoading(true);
+                  try {
+                    const today = new Date().toISOString().split('T')[0];
+                    await (window as any).api.createInvoice({
+                      constructionId: log.constructionId,
+                      clientName: '',
+                      issueDate: today,
+                      amount: log.total || 0,
+                      status: 'draft',
+                    });
+                    const inv = await (window as any).api.getInvoiceByConstruction(log.constructionId);
+                    setLogInvoice(inv);
+                  } catch (e: any) {
+                    alert('請求書作成に失敗: ' + (e.message || e));
+                  }
+                  setInvoiceLoading(false);
+                }}
+                style={{ fontSize: 12, background: '#27ae60', color: '#fff', border: 'none', padding: '6px 16px', borderRadius: 6, cursor: 'pointer' }}
+              >
+                💰 請求書を作成
+              </button>
+            </div>
+          )}
+
+          {/* 発注書セクション */}
+          {poLoading && (
+            <div className="card" style={{ marginTop: 16, textAlign: 'center', padding: 20, color: '#888' }}>
+              ⏳ 発注書を読み込み中...
+            </div>
+          )}
+          {logPO && (
+            <div className="card" style={{ marginTop: 16, border: '2px solid #3498db' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ margin: 0 }}>📝 発注書</h3>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{
+                    fontSize: 11, padding: '3px 10px', borderRadius: 12, fontWeight: 'bold',
+                    background: logPO.status === 'draft' ? '#f0f0f0' : logPO.status === 'sent' ? '#e8f4fd' : logPO.status === 'delivered' ? '#e8fdf0' : '#fde8e8',
+                    color: logPO.status === 'draft' ? '#999' : logPO.status === 'sent' ? '#3498db' : logPO.status === 'delivered' ? '#27ae60' : '#e74c3c',
+                  }}>
+                    {logPO.status === 'draft' ? '下書き' : logPO.status === 'sent' ? '発注済' : logPO.status === 'delivered' ? '納品済' : 'キャンセル'}
+                  </span>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={async () => {
+                      try {
+                        await (window as any).api.generatePurchaseOrderPDF({ po: logPO, items: logPO.items });
+                      } catch (e: any) {
+                        alert('PDF生成に失敗: ' + (e.message || e));
+                      }
+                    }}
+                    style={{ fontSize: 12, padding: '6px 16px' }}
+                  >
+                    📄 PDF出力
+                  </button>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13, marginBottom: 12 }}>
+                <div><span style={{ color: '#888' }}>発注先:</span> {logPO.vendor_name || '（未設定）'}</div>
+                <div><span style={{ color: '#888' }}>発行日:</span> {logPO.issue_date || '—'}</div>
+                <div><span style={{ color: '#888' }}>施工:</span> {logPO.construction_title || '—'}</div>
+                <div><span style={{ color: '#888' }}>納期:</span> {logPO.delivery_date || '—'}</div>
+              </div>
+              {logPO.items && logPO.items.length > 0 && (
+                <table className="data-table" style={{ fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th>品名</th>
+                      <th style={{ textAlign: 'center' }}>数量</th>
+                      <th style={{ textAlign: 'center' }}>単位</th>
+                      <th style={{ textAlign: 'right' }}>単価</th>
+                      <th style={{ textAlign: 'right' }}>小計</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logPO.items.map((item: any) => (
+                      <tr key={item.id}>
+                        <td>{item.name}</td>
+                        <td style={{ textAlign: 'center' }}>{item.quantity}</td>
+                        <td style={{ textAlign: 'center' }}>{item.unit || '式'}</td>
+                        <td style={{ textAlign: 'right' }}>{fmt(item.unit_price || 0)}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{fmt((item.quantity || 1) * (item.unit_price || 0))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <div style={{ textAlign: 'right', marginTop: 8, fontSize: 16, fontWeight: 'bold', color: '#3498db' }}>
+                合計: {fmt(logPO.amount || 0)}
+                <span style={{ fontSize: 12, color: '#888', marginLeft: 8 }}>
+                  (税込 {fmt(Math.round((logPO.amount || 0) * (1 + (logPO.tax_rate || 0.1))))})
+                </span>
+              </div>
+            </div>
+          )}
+          {!logPO && !poLoading && selectedLog && estimateLog.find(l => l.id === selectedLog)?.constructionId && (
+            <div className="card" style={{ marginTop: 16, textAlign: 'center', padding: 16, background: '#f8f9fa' }}>
+              <p style={{ color: '#888', fontSize: 13, marginBottom: 8 }}>この見積に紐づく発注書がありません</p>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={async () => {
+                  const log = estimateLog.find(l => l.id === selectedLog);
+                  if (!log?.constructionId) return;
+                  setPOLoading(true);
+                  try {
+                    await (window as any).api.createPOFromConstruction(log.constructionId);
+                    const po = await (window as any).api.getPOByConstruction(log.constructionId);
+                    setLogPO(po);
+                  } catch (e: any) {
+                    alert('発注書作成に失敗: ' + (e.message || e));
+                  }
+                  setPOLoading(false);
+                }}
+                style={{ fontSize: 12 }}
+              >
+                📝 発注書を作成
+              </button>
+            </div>
+          )}
 
         </div>
       )}

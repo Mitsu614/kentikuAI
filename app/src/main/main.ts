@@ -755,6 +755,27 @@ app.whenReady().then(async () => {
     runSql('DELETE FROM invoices WHERE id=?', [id]);
   });
 
+  ipcMain.handle('invoices:getByConstruction', (_e, cid: number) => {
+    const tid = getCurrentTenant();
+    const invoice = queryOne(`
+      SELECT i.*, c.title as construction_title, c.labor_cost, c.markup_rate,
+             p.name as property_name, p.address as property_address
+      FROM invoices i
+      LEFT JOIN constructions c ON i.construction_id = c.id
+      LEFT JOIN properties p ON c.property_id = p.id
+      WHERE i.construction_id = ? AND i.tenant_id = ?
+      ORDER BY i.id DESC LIMIT 1
+    `, [cid, tid]);
+    if (!invoice) return null;
+    const materials = queryAll(`
+      SELECT cm.*, m.name as material_name, m.unit, m.category
+      FROM construction_materials cm
+      LEFT JOIN materials m ON cm.material_id = m.id
+      WHERE cm.construction_id = ?
+      ORDER BY m.category, m.name
+    `, [cid]);
+    return { invoice, materials };
+  });
   ipcMain.handle('invoices:getDetail', (_e, invoiceId: number) => {
     const invoice = queryOne(`
       SELECT i.*, c.title as construction_title, c.labor_cost, c.markup_rate,
@@ -1783,6 +1804,13 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
       const total = queryOne('SELECT COALESCE(SUM(quantity * unit_price), 0) as total FROM purchase_order_items WHERE purchase_order_id=?', [item.purchase_order_id]);
       runSql('UPDATE purchase_orders SET amount=? WHERE id=?', [total?.total || 0, item.purchase_order_id]);
     }
+  });
+  ipcMain.handle('purchaseOrders:getByConstruction', (_e, cid: number) => {
+    const tid = getCurrentTenant();
+    const po = queryOne('SELECT po.*, c.title as construction_title FROM purchase_orders po LEFT JOIN constructions c ON po.construction_id = c.id WHERE po.construction_id=? AND po.tenant_id=? ORDER BY po.id DESC LIMIT 1', [cid, tid]);
+    if (!po) return null;
+    const items = queryAll('SELECT * FROM purchase_order_items WHERE purchase_order_id=? ORDER BY id', [po.id]);
+    return { ...po, items };
   });
   ipcMain.handle('purchaseOrders:createFromConstruction', (_e, cid: number) => {
     const tid = getCurrentTenant();

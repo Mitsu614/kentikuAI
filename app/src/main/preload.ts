@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('api', {
   updateInvoice: (data: any) => ipcRenderer.invoke('invoices:update', data),
   deleteInvoice: (id: number) => ipcRenderer.invoke('invoices:delete', id),
   getInvoiceDetail: (id: number) => ipcRenderer.invoke('invoices:getDetail', id),
+  getInvoiceByConstruction: (cid: number) => ipcRenderer.invoke('invoices:getByConstruction', cid),
   generatePDF: (data: any) => ipcRenderer.invoke('invoices:generatePDF', data),
 
   // ダッシュボード
@@ -149,6 +150,7 @@ contextBridge.exposeInMainWorld('api', {
   addPurchaseOrderItem: (data: any) => ipcRenderer.invoke('purchaseOrders:addItem', data),
   updatePurchaseOrderItem: (data: any) => ipcRenderer.invoke('purchaseOrders:updateItem', data),
   deletePurchaseOrderItem: (id: number) => ipcRenderer.invoke('purchaseOrders:deleteItem', id),
+  getPOByConstruction: (cid: number) => ipcRenderer.invoke('purchaseOrders:getByConstruction', cid),
   createPOFromConstruction: (cid: number) => ipcRenderer.invoke('purchaseOrders:createFromConstruction', cid),
   generatePurchaseOrderPDF: (data: any) => ipcRenderer.invoke('purchaseOrders:generatePDF', data),
 
