@@ -10,11 +10,55 @@ async function main() {
   if (!fs.existsSync(userDataPath)) fs.mkdirSync(userDataPath, { recursive: true });
   const dbPath = path.join(userDataPath, 'kentiku.db');
 
-  // 既存DBがあればバックアップ
+  // 既存DBがあればクレジット・データを引き継ぐ（アップデート対応）
   if (fs.existsSync(dbPath)) {
-    const backupPath = dbPath + '.backup-' + Date.now();
-    fs.copyFileSync(dbPath, backupPath);
-    console.log(`既存データをバックアップしました: ${backupPath}`);
+    console.log('\n========================================');
+    console.log('  既存データが見つかりました（アップデートモード）');
+    console.log('========================================');
+    console.log(`  DB: ${dbPath}`);
+
+    const SQL = await initSqlJs();
+    const existingData = fs.readFileSync(dbPath);
+    const db = new SQL.Database(existingData);
+
+    // 既存のクレジット・テナント情報を表示
+    try {
+      const tenant = db.exec("SELECT name, credits, plan, plan_limit FROM tenants WHERE id > 1 LIMIT 1");
+      if (tenant.length > 0 && tenant[0].values.length > 0) {
+        const [name, credits, plan, limit] = tenant[0].values[0];
+        console.log(`  会社名:     ${name}`);
+        console.log(`  プラン:     ${plan}`);
+        console.log(`  クレジット: ${credits} / ${limit}`);
+      }
+    } catch (_) {}
+
+    // 新テーブルがあれば追加（既存データは保持）
+    const newTables = [
+      "CREATE TABLE IF NOT EXISTS daily_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, report_date TEXT NOT NULL, weather TEXT DEFAULT '晴れ', temp_min REAL, temp_max REAL, progress INTEGER DEFAULT 0, work_content TEXT, safety_notes TEXT, tomorrow_plan TEXT, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+      "CREATE TABLE IF NOT EXISTS gantt_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, task_name TEXT NOT NULL, assignee TEXT, start_date TEXT NOT NULL, end_date TEXT NOT NULL, progress INTEGER DEFAULT 0, color TEXT DEFAULT '#3498db', dependencies TEXT, sort_order INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+      "CREATE TABLE IF NOT EXISTS safety_worker_info (id INTEGER PRIMARY KEY AUTOINCREMENT, worker_id INTEGER NOT NULL UNIQUE, blood_type TEXT, emergency_contact TEXT, emergency_tel TEXT, health_check_date TEXT, insurance_type TEXT, certifications TEXT, FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE)",
+      "CREATE TABLE IF NOT EXISTS safety_education (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, worker_id INTEGER, education_date TEXT NOT NULL, instructor TEXT, content TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL, FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE SET NULL)",
+      "CREATE TABLE IF NOT EXISTS ky_records (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, activity_date TEXT NOT NULL, participants TEXT, hazard TEXT, countermeasures TEXT, leader TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+      "CREATE TABLE IF NOT EXISTS quote_comparisons (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER, title TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL)",
+      "CREATE TABLE IF NOT EXISTS quote_vendors (id INTEGER PRIMARY KEY AUTOINCREMENT, comparison_id INTEGER NOT NULL, vendor_name TEXT NOT NULL, notes TEXT, FOREIGN KEY (comparison_id) REFERENCES quote_comparisons(id) ON DELETE CASCADE)",
+      "CREATE TABLE IF NOT EXISTS quote_vendor_items (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER NOT NULL, name TEXT NOT NULL, quantity REAL DEFAULT 1, unit TEXT DEFAULT '式', unit_price REAL DEFAULT 0, FOREIGN KEY (vendor_id) REFERENCES quote_vendors(id) ON DELETE CASCADE)",
+      "CREATE TABLE IF NOT EXISTS photo_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1, construction_id INTEGER NOT NULL, photo_data TEXT, category TEXT DEFAULT '施工中', work_type TEXT DEFAULT 'その他', location TEXT, photo_date TEXT, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE CASCADE)",
+    ];
+    let added = 0;
+    for (const sql of newTables) {
+      try { db.run(sql); added++; } catch (_) {}
+    }
+
+    // DB保存（既存データ＋新テーブル）
+    const data = db.export();
+    fs.writeFileSync(dbPath, Buffer.from(data));
+    db.close();
+
+    console.log(`  新テーブル: ${added}件追加`);
+    console.log('\n  クレジット・データはそのまま引き継がれました。');
+    console.log('  「建築ブースト.exe」を起動してください。');
+    console.log('========================================\n');
+    return;
   }
 
   const SQL = await initSqlJs();
