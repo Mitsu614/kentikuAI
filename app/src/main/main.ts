@@ -436,6 +436,28 @@ app.whenReady().then(async () => {
         }
         // リモートのクレジットをローカルに同期
         runSql('UPDATE tenants SET credits = ?, plan_limit = ? WHERE id = ?', [lic.credits, lic.credits, getCurrentTenant()]);
+      } else if (Array.isArray(licenseCheck) && licenseCheck.length === 0) {
+        // 未登録 → 自動でremote_licensesに追加
+        const tenant = queryOne('SELECT name, credits, plan_limit FROM tenants WHERE id = ?', [getCurrentTenant()]);
+        const newId = 'auto_' + Date.now().toString(36);
+        const regBody = JSON.stringify({
+          id: newId,
+          company_name: tenant?.name || '不明',
+          plan: 'trial',
+          credits: tenant?.credits || 50,
+          max_credits: tenant?.plan_limit || 50,
+          active: true,
+        });
+        await new Promise<void>((resolve) => {
+          const postReq = https.request({
+            hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/remote_licenses', method: 'POST',
+            headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+            timeout: 5000,
+          }, () => resolve());
+          postReq.on('error', () => resolve());
+          postReq.write(regBody);
+          postReq.end();
+        });
       }
     } catch (_) {
       // ネットワークエラー時はローカルのクレジットで続行
