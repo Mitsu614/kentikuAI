@@ -97,68 +97,7 @@ function escapeHtml(str: string | null | undefined): string {
 
 let mainWindow: BrowserWindow | null = null;
 
-// ── 学習ループ: 匿名統計の中央サーバー送受信 ──
-const LEARNING_API_URL = 'https://kenchiku-boost-learning.onrender.com/api/stats';
-
-// ローカル実績を匿名化して収集
-function collectAnonymousStats(): any {
-  try {
-    const stats = queryAll(`
-      SELECT
-        SUBSTR(c.notes, 1, INSTR(c.notes || CHAR(10), CHAR(10)) - 1) as work_type,
-        COUNT(*) as cnt,
-        ROUND(AVG(COALESCE(cm_total, 0))) as avg_material,
-        ROUND(AVG(c.labor_cost)) as avg_labor,
-        ROUND(AVG(c.markup_rate * 100)) as avg_markup,
-        ROUND(AVG(c.fixed_selling_price)) as avg_selling
-      FROM constructions c
-      LEFT JOIN (SELECT construction_id, SUM(quantity * unit_price) as cm_total FROM construction_materials GROUP BY construction_id) cm ON cm.construction_id = c.id
-      WHERE c.fixed_selling_price > 0
-      GROUP BY work_type
-      HAVING cnt >= 2
-      ORDER BY cnt DESC
-      LIMIT 30
-    `);
-
-    // フィードバック精度（AI予測 vs 実績の乖離）
-    const feedback = queryAll(`
-      SELECT work_type,
-        COUNT(*) as cnt,
-        ROUND(AVG(CASE WHEN ai_material_cost > 0 THEN ((actual_material_cost - ai_material_cost) / ai_material_cost) * 100 END)) as avg_mat_diff_pct,
-        ROUND(AVG(CASE WHEN ai_labor_cost > 0 THEN ((actual_labor_cost - ai_labor_cost) / ai_labor_cost) * 100 END)) as avg_labor_diff_pct,
-        ROUND(AVG(CASE WHEN ai_total > 0 THEN ((actual_selling_price - ai_total) / ai_total) * 100 END)) as avg_total_diff_pct
-      FROM estimate_log
-      WHERE actual_material_cost IS NOT NULL AND feedback_at IS NOT NULL
-      GROUP BY work_type
-      HAVING cnt >= 2
-    `);
-
-    return { stats, feedback, ts: new Date().toISOString(), version: '1.0' };
-  } catch (_) { return null; }
-}
-
-// 中央サーバーに匿名統計を送信
-async function sendStatsToServer() {
-  try {
-    const data = collectAnonymousStats();
-    if (!data || !data.stats || data.stats.length === 0) return;
-    const https = require('https');
-    const http = require('http');
-    const url = new URL(LEARNING_API_URL);
-    const mod = url.protocol === 'https:' ? https : http;
-    const body = JSON.stringify(data);
-    const req = mod.request({
-      hostname: url.hostname, port: url.port || (url.protocol === 'https:' ? 443 : 80),
-      path: url.pathname, method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 10000,
-    }, (res: any) => { res.resume(); });
-    req.on('error', () => {});
-    req.write(body);
-    req.end();
-    console.log(`学習ループ: ${data.stats.length}件の匿名統計を送信`);
-  } catch (_) {}
-}
+// ── 学習ループ: Supabaseで実績データを管理 ──
 
 // Supabaseに実績データを送信（匿名化済み）
 async function sendStatsToSupabase() {
@@ -171,9 +110,24 @@ async function sendStatsToSupabase() {
     `);
     if (!feedback || feedback.length === 0) {
       // 実績フィードバックがなくても施工データから送信
-      const stats = collectAnonymousStats();
-      if (stats && stats.stats && stats.stats.length > 0) {
-        const feedbackList = stats.stats.map((s: any) => ({
+      const stats = queryAll(`
+        SELECT
+          SUBSTR(c.notes, 1, INSTR(c.notes || CHAR(10), CHAR(10)) - 1) as work_type,
+          COUNT(*) as cnt,
+          ROUND(AVG(COALESCE(cm_total, 0))) as avg_material,
+          ROUND(AVG(c.labor_cost)) as avg_labor,
+          ROUND(AVG(c.markup_rate * 100)) as avg_markup,
+          ROUND(AVG(c.fixed_selling_price)) as avg_selling
+        FROM constructions c
+        LEFT JOIN (SELECT construction_id, SUM(quantity * unit_price) as cm_total FROM construction_materials GROUP BY construction_id) cm ON cm.construction_id = c.id
+        WHERE c.fixed_selling_price > 0
+        GROUP BY work_type
+        HAVING cnt >= 2
+        ORDER BY cnt DESC
+        LIMIT 30
+      `);
+      if (stats && stats.length > 0) {
+        const feedbackList = stats.map((s: any) => ({
           work_type: s.work_type || '不明',
           ai_material_cost: s.avg_material,
           ai_labor_cost: s.avg_labor,
@@ -203,41 +157,6 @@ async function sendStatsToSupabase() {
   } catch (e) {
     console.error('Supabase送信エラー:', e);
   }
-  // 旧サーバーにも送信（互換性維持）
-  try { sendStatsToServer(); } catch (_) {}
-}
-
-// 中央サーバーから集約統計を取得
-async function fetchAggregatedStats(): Promise<string> {
-  return new Promise((resolve) => {
-    try {
-      const https = require('https');
-      const http = require('http');
-      const url = new URL(LEARNING_API_URL);
-      const mod = url.protocol === 'https:' ? https : http;
-      const req = mod.get({ hostname: url.hostname, port: url.port || (url.protocol === 'https:' ? 443 : 80), path: url.pathname, timeout: 5000 }, (res: any) => {
-        let body = '';
-        res.on('data', (chunk: string) => { body += chunk; });
-        res.on('end', () => {
-          try {
-            const data = JSON.parse(body);
-            if (!data.stats || data.stats.length === 0) { resolve(''); return; }
-            const lines = data.stats.map((s: any) =>
-              `- ${s.work_type}: ${s.total_cnt}社の実績 | 材料費 平均${Math.round(s.avg_material||0).toLocaleString()}円 | 人件費 平均${Math.round(s.avg_labor||0).toLocaleString()}円 | 掛率平均${s.avg_markup||130}%`
-            );
-            const fbLines = (data.feedback || []).map((f: any) =>
-              `- ${f.work_type}: AI予測との乖離 材料費${f.avg_mat_diff_pct>0?'+':''}${f.avg_mat_diff_pct||0}% / 人件費${f.avg_labor_diff_pct>0?'+':''}${f.avg_labor_diff_pct||0}% / 売価${f.avg_total_diff_pct>0?'+':''}${f.avg_total_diff_pct||0}%`
-            );
-            let result = `\n## 全ユーザー集約実績（${data.contributor_count || '複数'}社のデータ）\n${lines.join('\n')}`;
-            if (fbLines.length > 0) result += `\n\n## 全ユーザーのAI予測精度フィードバック\n${fbLines.join('\n')}`;
-            resolve(result);
-          } catch (_) { resolve(''); }
-        });
-      });
-      req.on('error', () => resolve(''));
-      req.on('timeout', () => { req.destroy(); resolve(''); });
-    } catch (_) { resolve(''); }
-  });
 }
 
 // ── 月間上限到達時のメール通知 ──
@@ -2560,10 +2479,7 @@ ${pages}</body></html>`;
       const coefficients = await fetchCostCoefficients();
       globalStats = coefficientsToPromptText(coefficients);
     } catch (_) {}
-    // フォールバック: 旧サーバーの統計も取得
-    if (!globalStats) {
-      try { globalStats = await fetchAggregatedStats(); } catch (_) {}
-    }
+    // Supabase係数が取得できなかった場合は空文字のまま（ローカル実績統計で補完）
 
     const Anthropic = require('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey: config.anthropicKey });

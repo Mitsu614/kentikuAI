@@ -1,12 +1,11 @@
 // 建築ブースト サーバー監視スクリプト
-// Supabase・learning-server(Render)の状態を定期チェックし、異常時にメール通知
+// Supabaseの状態を定期チェックし、異常時にメール通知
 
 const https = require('https');
 const nodemailer = require('nodemailer');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const LEARNING_SERVER_URL = 'https://kenchiku-boost-learning.onrender.com';
 const GMAIL_USER = process.env.GMAIL_USER || 'mitsuakinakano0215@gmail.com';
 const GMAIL_PASS = process.env.GMAIL_PASS;
 const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || 'mitsuakinakano0215@gmail.com';
@@ -154,40 +153,7 @@ async function main() {
   }
 
   // ──────────────────────────────────────
-  // 2. Learning Server (Render) ヘルスチェック
-  // ──────────────────────────────────────
-  console.log('\n2. Learning Server (Render) チェック...');
-  try {
-    const lsRes = await httpGet(LEARNING_SERVER_URL);
-    if (lsRes.status === 200) {
-      console.log('  ✅ Learning Server稼働中');
-    } else {
-      alerts.push(`Learning Server異常: HTTP ${lsRes.status}`);
-      console.log(`  ❌ HTTP ${lsRes.status}`);
-    }
-
-    // 統計APIチェック
-    const statsRes = await httpGet(`${LEARNING_SERVER_URL}/api/stats`);
-    if (statsRes.status === 200) {
-      const stats = JSON.parse(statsRes.data || '{}');
-      const contributorCount = stats.contributor_count || 0;
-      const statsCount = (stats.stats || []).length;
-      console.log(`  📊 統計: ${contributorCount}社 / ${statsCount}カテゴリ`);
-      console.log(`  📊 最終更新: ${stats.updated_at || '不明'}`);
-
-      // Render Free: 512MB RAM, ディスク非永続
-      // データが消えてたら警告
-      if (contributorCount === 0 && statsCount === 0) {
-        alerts.push('Learning Serverのデータが空です。Renderの再起動でデータが消失した可能性があります。');
-      }
-    }
-  } catch (e) {
-    alerts.push(`Learning Server接続失敗: ${e.message}。Renderがスリープまたはダウンしている可能性があります。`);
-    console.log(`  ❌ 接続失敗: ${e.message}`);
-  }
-
-  // ──────────────────────────────────────
-  // 3. GitHub Actions（学習ループ）チェック
+  // 2. GitHub Actions（学習ループ）チェック
   // ──────────────────────────────────────
   console.log('\n3. GitHub Actions チェック...');
   // ※GitHub APIはトークンが必要なので、Supabaseのlearning_runs経由で間接チェック済み
@@ -209,12 +175,6 @@ async function main() {
       '  URL: https://supabase.com/dashboard/project/slhgkedzlormaovwpadi/settings/billing',
       '  手順: 上記URLにログイン → 「Upgrade to Pro」→ カード情報入力 → 月$25',
       '  Free: DB 500MB / Pro: DB 8GB',
-      '',
-      '■ Render（learning-serverダウンの場合）',
-      '  URL: https://dashboard.render.com/',
-      '  手順: ダッシュボードから「kenchiku-boost-learning」→「Manual Deploy」',
-      '  Free: 512MB RAM、15分無通信でスリープ / Starter: $7/月、常時稼働',
-      '  プランアップグレード: サービス選択 →「Settings」→「Instance Type」変更',
       '',
       '■ GitHub Actions（学習ループ停止の場合）',
       '  URL: https://github.com/Mitsu614/kentikuAI/actions/workflows/learning-loop.yml',
