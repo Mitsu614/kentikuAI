@@ -178,6 +178,14 @@ const server = http.createServer((req, res) => {
     const result = aggregate();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
+  } else if (req.url === '/api/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      supabase_configured: !!(SUPABASE_URL && SUPABASE_KEY),
+      supabase_url: SUPABASE_URL ? SUPABASE_URL.substring(0, 30) + '...' : '(not set)',
+      memory_contributions: allContributions.length,
+    }));
   } else {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('建築ブースト 学習ループサーバー稼働中');
