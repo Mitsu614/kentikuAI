@@ -403,6 +403,41 @@ app.whenReady().then(async () => {
     } catch (_) {
       // ネットワークエラー時はローカルのクレジットで続行
     }
+
+    // ── アクティビティ送信（起動通知） ──
+    try {
+      const https = require('https');
+      const os = require('os');
+      const tenant = queryOne('SELECT name, credits FROM tenants WHERE id = ?', [getCurrentTenant()]);
+      const licRow = await new Promise((resolve) => {
+        const tn = encodeURIComponent(tenant?.name || '');
+        const req = https.get(
+          `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${tn}&select=id`,
+          { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 5000 },
+          (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve(null); } }); }
+        );
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+      });
+      const licenseId = Array.isArray(licRow) && licRow.length > 0 ? licRow[0].id : null;
+      const activityData = JSON.stringify({
+        license_id: licenseId,
+        company_name: tenant?.name || '不明',
+        hostname: os.hostname(),
+        username: os.userInfo().username,
+        app_version: '2.0.0',
+        event: 'startup',
+        credits_remaining: tenant?.credits || 0,
+      });
+      const postReq = https.request({
+        hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/app_activity', method: 'POST',
+        headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+        timeout: 5000,
+      }, () => {});
+      postReq.on('error', () => {});
+      postReq.write(activityData);
+      postReq.end();
+    } catch (_) {}
   }
 
   createWindow();
@@ -2744,6 +2779,15 @@ manDaysBreakdownの書き方例:
     try {
       const estimateResult = JSON.parse(jsonStr);
       sendUsageNotification(opName, `工事種別: ${estimateResult.workType || '不明'}, 売価: ${estimateResult.estimatedTotal || '不明'}円`);
+      // アクティビティ記録（AI見積使用）
+      try {
+        const os = require('os');
+        const tenant = queryOne('SELECT name, credits FROM tenants WHERE id = ?', [getCurrentTenant()]);
+        const actData = JSON.stringify({ company_name: tenant?.name || '不明', hostname: os.hostname(), username: os.userInfo().username, app_version: '2.0.0', event: `ai_estimate:${estimateResult.workType || ''}`, credits_remaining: tenant?.credits || 0 });
+        const https = require('https');
+        const pr = https.request({ hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/app_activity', method: 'POST', headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }, timeout: 5000 }, () => {});
+        pr.on('error', () => {}); pr.write(actData); pr.end();
+      } catch (_) {}
       return estimateResult;
     } catch (e: any) {
       throw new Error('JSON解析エラー: ' + e.message + ' / ' + jsonStr.substring(0, 200));

@@ -25,7 +25,7 @@ body { font-family: 'Yu Gothic', 'Meiryo', sans-serif; background: #0f1923; colo
 .login-box .error { color: #e74c3c; font-size: 12px; margin-top: 8px; text-align: center; }
 
 /* サマリーカード */
-.summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 20px 24px; }
+.summary { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; padding: 20px 24px; }
 .card { background: #1a2332; border-radius: 10px; padding: 20px; border: 1px solid #2a3a4a; }
 .card .label { font-size: 12px; color: #888; margin-bottom: 4px; }
 .card .value { font-size: 28px; font-weight: bold; }
@@ -125,12 +125,14 @@ async function sbDelete(table, query) {
 // ── State ──
 let licenses = [];
 let logs = [];
+let activities = [];
 let modal = null; // { type: 'add' | 'edit' | 'credit', data: ... }
 
 // ── Data ──
 async function loadData() {
   licenses = await sbGet('remote_licenses', '?order=created_at.desc');
   logs = await sbGet('credit_log', '?order=created_at.desc&limit=100');
+  activities = await sbGet('app_activity', '?order=created_at.desc&limit=200');
   render();
 }
 
@@ -190,6 +192,9 @@ function render() {
   const activeLicenses = licenses.filter(l => l.active).length;
   const blockedLicenses = licenses.filter(l => !l.active).length;
   const totalCredits = licenses.reduce((s, l) => s + (l.credits || 0), 0);
+  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStartups = activities.filter(a => a.event === 'startup' && a.created_at && a.created_at.startsWith(todayStr)).length;
+  const todayEstimates = activities.filter(a => a.event && a.event.startsWith('ai_estimate') && a.created_at && a.created_at.startsWith(todayStr)).length;
 
   app.innerHTML = `
     <div class="header">
@@ -210,12 +215,20 @@ function render() {
         <div class="value green">${activeLicenses}</div>
       </div>
       <div class="card">
-        <div class="label">無効（停止中）</div>
+        <div class="label">停止中</div>
         <div class="value red">${blockedLicenses}</div>
       </div>
       <div class="card">
         <div class="label">総クレジット残</div>
         <div class="value orange">${totalCredits}</div>
+      </div>
+      <div class="card">
+        <div class="label">本日の起動数</div>
+        <div class="value blue">${todayStartups}</div>
+      </div>
+      <div class="card">
+        <div class="label">本日のAI見積</div>
+        <div class="value green">${todayEstimates}</div>
       </div>
     </div>
 
@@ -269,18 +282,20 @@ function render() {
     </div>
 
     <div class="section">
-      <h2>利用ログ（最新100件）</h2>
+      <h2>アクティビティログ（起動・AI利用）</h2>
       <table class="log-table">
-        <thead><tr><th>日時</th><th>テナント</th><th>操作</th><th>数量</th></tr></thead>
+        <thead><tr><th>日時</th><th>会社名</th><th>イベント</th><th>PC名</th><th>ユーザー</th><th>クレジット残</th></tr></thead>
         <tbody>
-          ${logs.length > 0 ? logs.map(l => `
+          ${activities.length > 0 ? activities.map(a => `
             <tr>
-              <td class="time">${new Date(l.created_at).toLocaleString('ja-JP')}</td>
-              <td>テナント${l.tenant_id}</td>
-              <td class="op">${esc(l.operation)}</td>
-              <td>${l.amount > 0 ? '+' : ''}${l.amount}</td>
+              <td class="time">${new Date(a.created_at).toLocaleString('ja-JP')}</td>
+              <td><strong>${esc(a.company_name)}</strong></td>
+              <td><span class="op">${a.event === 'startup' ? '🟢 起動' : a.event && a.event.startsWith('ai_estimate') ? '🤖 AI見積: ' + esc(a.event.replace('ai_estimate:','')) : esc(a.event)}</span></td>
+              <td style="font-size:11px;color:#888">${esc(a.hostname)}</td>
+              <td style="font-size:11px;color:#888">${esc(a.username)}</td>
+              <td>${a.credits_remaining != null ? a.credits_remaining : '—'}</td>
             </tr>
-          `).join('') : '<tr><td colspan="4" style="text-align:center;color:#666;padding:20px">ログなし</td></tr>'}
+          `).join('') : '<tr><td colspan="6" style="text-align:center;color:#666;padding:20px">まだアクティビティなし（新ビルド配布後に記録されます）</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -358,8 +373,9 @@ function renderLogin() {
       <div class="login-box">
         <h2>管理ダッシュボード</h2>
         <p style="text-align:center;font-size:12px;color:#888;margin-bottom:16px">建築ブースト クレジット管理</p>
-        <input id="login_key" type="password" placeholder="Supabase Service Key を入力">
-        <button onclick="tryLogin()">ログイン</button>
+        <input id="login_key" type="password" placeholder="パスワードを入力" onkeydown="if(event.key==='Enter')quickLogin()">
+        <button onclick="quickLogin()">ログイン</button>
+        <p style="text-align:center;font-size:10px;color:#555;margin-top:8px">パスワード: 管理者パスワード</p>
         <div id="login_error" class="error"></div>
       </div>
     </div>`;
@@ -378,11 +394,25 @@ async function tryLogin() {
       sessionStorage.setItem('sb_key', key);
       await loadData();
     } else {
-      document.getElementById('login_error').textContent = '認証失敗: キーが正しくありません';
+      const errText = await test.text();
+      document.getElementById('login_error').textContent = '認証失敗 (' + test.status + '): ' + errText.substring(0, 100);
     }
   } catch (e) {
     document.getElementById('login_error').textContent = '接続エラー: ' + e.message;
   }
+}
+
+// 管理者パスワードで簡易ログイン（キー入力不要）
+async function quickLogin() {
+  const pw = document.getElementById('login_key').value.trim();
+  if (pw === 'REMOVED') {
+    SUPABASE_KEY = 'REMOVED';
+    authenticated = true;
+    sessionStorage.setItem('sb_key', SUPABASE_KEY);
+    await loadData();
+    return;
+  }
+  tryLogin();
 }
 
 function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
