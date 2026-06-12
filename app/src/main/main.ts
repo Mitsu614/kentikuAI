@@ -688,10 +688,35 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('constructions:update', (_e, data: any) => {
+    const tid = getCurrentTenant();
+    // 変更前の値を取得（学習用）
+    const before = queryOne('SELECT labor_cost, markup_rate, title FROM constructions WHERE id = ?', [data.id]);
+
     runSql(
       'UPDATE constructions SET property_id=?, title=?, construction_date=?, labor_cost=?, markup_rate=?, notes=?, status=? WHERE id=?',
       [data.propertyId, data.title, data.constructionDate, data.laborCost, data.markupRate, data.notes || null, data.status || '見積中', data.id]
     );
+
+    // 学習: 掛率変更を記録
+    if (before && data.markupRate && before.markup_rate !== data.markupRate) {
+      try {
+        runSql(
+          'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=?, confidence=confidence+0.3',
+          [tid, '単価', '掛率の傾向', `AI推定${before.markup_rate}→修正${data.markupRate}（好みの掛率: ${data.markupRate}）`, 'edit', `好みの掛率: ${data.markupRate}（最新修正）`]
+        );
+      } catch (_) {}
+    }
+    // 学習: 人件費変更を記録
+    if (before && data.laborCost != null && before.labor_cost !== data.laborCost) {
+      try {
+        const diff = data.laborCost - (before.labor_cost || 0);
+        runSql(
+          'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=?, confidence=confidence+0.2',
+          [tid, '単価', '人件費の傾向', `AI推定から${diff > 0 ? '+' : ''}${Math.round(diff).toLocaleString()}円修正が多い`, 'edit', `AI推定から${diff > 0 ? '+' : ''}${Math.round(diff).toLocaleString()}円修正（最新）`]
+        );
+      } catch (_) {}
+    }
+
     recalcConstruction(data.id);
   });
 
@@ -766,25 +791,86 @@ app.whenReady().then(async () => {
       [data.constructionId, data.materialId, data.quantity, data.unitPrice]
     );
     recalcConstruction(data.constructionId);
+    // 学習: 手動追加された材料を記録
+    try {
+      const mat = queryOne('SELECT name, category FROM materials WHERE id = ?', [data.materialId]);
+      if (mat) {
+        const con = queryOne('SELECT title FROM constructions WHERE id = ?', [data.constructionId]);
+        runSql(
+          'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=value||? , confidence=confidence+0.1',
+          [getCurrentTenant(), '材料', `${mat.category}で追加されやすい材料`, `${mat.name}`, 'edit', `、${mat.name}`]
+        );
+      }
+    } catch (_) {}
     return id;
   });
 
   ipcMain.handle('constructionMaterials:update', (_e, data: any) => {
+    const tid = getCurrentTenant();
+    // 変更前の値を取得（学習用）
+    const before = queryOne('SELECT cm.quantity, cm.unit_price, m.name, m.unit_price as master_price, m.category FROM construction_materials cm LEFT JOIN materials m ON cm.material_id = m.id WHERE cm.id = ?', [data.id]);
+
     // 材料マスタ側も更新
     if (data.materialId) {
       runSql('UPDATE materials SET name=?, unit=? WHERE id=?', [data.name || '', data.unit || '式', data.materialId]);
     }
     // 明細の数量・単価を更新
     runSql('UPDATE construction_materials SET quantity=?, unit_price=? WHERE id=?', [data.quantity || 1, data.unitPrice || 0, data.id]);
+
+    // ── 学習: 単価変更を検知して材料マスタ＋chat_learningsに反映 ──
+    if (before) {
+      const newPrice = data.unitPrice || 0;
+      const oldPrice = before.unit_price || 0;
+      const newQty = data.quantity || 1;
+      const oldQty = before.quantity || 1;
+      const matName = data.name || before.name || '';
+      const category = before.category || 'その他';
+
+      // 単価が変更された場合 → 材料マスタの単価を更新＋学習記録
+      if (newPrice !== oldPrice && newPrice > 0) {
+        if (data.materialId) {
+          runSql('UPDATE materials SET unit_price = ? WHERE id = ? AND tenant_id = ?', [newPrice, data.materialId, tid]);
+        }
+        const pctChange = oldPrice > 0 ? Math.round(((newPrice - oldPrice) / oldPrice) * 100) : 0;
+        try {
+          runSql(
+            'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=?, confidence=confidence+0.2',
+            [tid, '単価', `${matName}の単価`, `${newPrice.toLocaleString()}円（AI見積から${pctChange > 0 ? '+' : ''}${pctChange}%修正）`, 'edit', `${newPrice.toLocaleString()}円（AI見積から${pctChange > 0 ? '+' : ''}${pctChange}%修正）`]
+          );
+        } catch (_) {}
+      }
+
+      // 数量が変更された場合 → 学習記録
+      if (newQty !== oldQty) {
+        try {
+          runSql(
+            'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=?, confidence=confidence+0.2',
+            [tid, '数量', `${matName}の数量傾向`, `AI推定${oldQty}→実際${newQty}（${category}）`, 'edit', `AI推定${oldQty}→実際${newQty}（${category}）`]
+          );
+        } catch (_) {}
+      }
+    }
+
     // constructionIdを取得して再計算
     const cm = queryOne('SELECT construction_id FROM construction_materials WHERE id = ?', [data.id]);
     if (cm) recalcConstruction(cm.construction_id);
   });
 
   ipcMain.handle('constructionMaterials:remove', (_e, id: number) => {
-    const cm = queryOne('SELECT construction_id FROM construction_materials WHERE id = ?', [id]);
+    const cm = queryOne('SELECT cm.construction_id, m.name, m.category FROM construction_materials cm LEFT JOIN materials m ON cm.material_id = m.id WHERE cm.id = ?', [id]);
     runSql('DELETE FROM construction_materials WHERE id=?', [id]);
-    if (cm) recalcConstruction(cm.construction_id);
+    if (cm) {
+      recalcConstruction(cm.construction_id);
+      // 学習: 削除された材料を記録
+      try {
+        if (cm.name) {
+          runSql(
+            'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=value||?, confidence=confidence+0.1',
+            [getCurrentTenant(), '材料', `${cm.category || 'その他'}で不要になりやすい材料`, `${cm.name}`, 'edit', `、${cm.name}`]
+          );
+        }
+      } catch (_) {}
+    }
   });
 
   // ── 見積もり計算 ──
