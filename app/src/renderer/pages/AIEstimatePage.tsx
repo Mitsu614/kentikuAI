@@ -382,8 +382,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         </div>
       )}
 
-      {/* 画像アップロードエリア */}
-      {mode === 'single' ? (
+      {/* 画像アップロードエリア（チャットモード以外） */}
+      {mode !== 'chat' && (mode === 'single' ? (
         <div className="card" style={{ textAlign: 'center', marginTop: 12 }}>
           {!imageData ? (
             <div
@@ -464,10 +464,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             2枚の写真の差分からAIが工事内容を判定し、同様の工事の見積もりを算出します
           </p>
         </div>
-      )}
+      ))}
 
-      {/* コメント欄 + 場所 + 解析ボタン */}
-      {!result && (
+      {/* コメント欄 + 場所 + 解析ボタン（チャットモード以外） */}
+      {mode !== 'chat' && !result && (
         <div className="card" style={{ marginTop: 16 }}>
           <h3 style={{ marginBottom: 10 }}>📝 工事内容・補足情報</h3>
           <div style={{ marginBottom: 12 }}>
@@ -770,11 +770,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 {analyzing ? '解析中...' : '🔄 再解析'}
               </button>
               <button className="btn" onClick={() => {
-                const summary = `この見積結果について相談があります。\n\n工事種別: ${result.workType}\n売価: ¥${Math.round(result.estimatedTotal||0).toLocaleString()}\n材料費: ¥${Math.round(result.estimatedMaterialCost||0).toLocaleString()}\n人件費: ¥${Math.round(result.estimatedLaborCost||0).toLocaleString()}\n${result.breakdown ? '内訳: ' + result.breakdown.map((b:any)=>b.item).join('、') : ''}`;
+                const r = result;
                 setChatMessages([
-                  { role: 'assistant', content: `先ほどの見積結果を確認しました。\n\n工事種別: ${result.workType}\n売価: ¥${Math.round(result.estimatedTotal||0).toLocaleString()}\n\nこの見積について、何でもご質問ください。\n例：「材料をもっと安いものに変えたい」「工期を短くしたい」「追加で○○もやりたい」` },
+                  { role: 'assistant', content: `先ほどの見積結果を確認しました。\n\n工事種別: ${r.workType}\n売価: ¥${Math.round(r.estimatedTotal||0).toLocaleString()}\n材料費: ¥${Math.round(r.estimatedMaterialCost||0).toLocaleString()}\n人件費: ¥${Math.round(r.estimatedLaborCost||0).toLocaleString()}\n${r.breakdown ? '内訳:\n' + r.breakdown.map((b:any)=>`  ${b.item}: ¥${Math.round(b.cost||0).toLocaleString()}`).join('\n') : ''}\n\nこの見積について、何でもご質問ください。\n例：「材料をもっと安いものに変えたい」「工期を短くしたい」「追加で○○もやりたい」` },
                 ]);
                 setChatEstimate(null);
+                setResult(null);
                 setMode('chat');
               }} style={{ height: 60, background: '#8e44ad', color: '#fff', border: 'none', borderRadius: 8, padding: '0 16px', cursor: 'pointer', fontSize: 13, fontWeight: 'bold' }}>
                 💬 チャットで相談
