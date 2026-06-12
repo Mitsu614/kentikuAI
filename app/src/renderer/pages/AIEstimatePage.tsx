@@ -747,9 +747,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </div>
           )}
 
-          {/* 再解析ボタ�� */}
+          {/* 再解析・チャット相談 */}
           <div className="card" style={{ marginTop: 16, textAlign: 'center', background: '#f8f9fa' }}>
-            <p style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>内容を修正して再解析できます</p>
+            <p style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>内容を修正して再解析、またはチャットで詳細を相談できます</p>
             <div style={{ marginBottom: 8 }}>
               <input
                 type="text"
@@ -768,6 +768,16 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               />
               <button className="btn btn-primary" onClick={analyze} disabled={analyzing} style={{ height: 60 }}>
                 {analyzing ? '解析中...' : '🔄 再解析'}
+              </button>
+              <button className="btn" onClick={() => {
+                const summary = `この見積結果について相談があります。\n\n工事種別: ${result.workType}\n売価: ¥${Math.round(result.estimatedTotal||0).toLocaleString()}\n材料費: ¥${Math.round(result.estimatedMaterialCost||0).toLocaleString()}\n人件費: ¥${Math.round(result.estimatedLaborCost||0).toLocaleString()}\n${result.breakdown ? '内訳: ' + result.breakdown.map((b:any)=>b.item).join('、') : ''}`;
+                setChatMessages([
+                  { role: 'assistant', content: `先ほどの見積結果を確認しました。\n\n工事種別: ${result.workType}\n売価: ¥${Math.round(result.estimatedTotal||0).toLocaleString()}\n\nこの見積について、何でもご質問ください。\n例：「材料をもっと安いものに変えたい」「工期を短くしたい」「追加で○○もやりたい」` },
+                ]);
+                setChatEstimate(null);
+                setMode('chat');
+              }} style={{ height: 60, background: '#8e44ad', color: '#fff', border: 'none', borderRadius: 8, padding: '0 16px', cursor: 'pointer', fontSize: 13, fontWeight: 'bold' }}>
+                💬 チャットで相談
               </button>
             </div>
           </div>
