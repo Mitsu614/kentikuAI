@@ -748,6 +748,9 @@ app.whenReady().then(async () => {
     }
   }, 12000);
 
+  // トンネル変数（外出先アクセス用）
+  let activeTunnel: any = null;
+
   // スマホ用Webサーバー起動
   try {
     setConfigLoader(loadApiConfig);
@@ -755,8 +758,29 @@ app.whenReady().then(async () => {
     startServer(distPath);
     setTimeout(() => {
       const url = getServerUrl();
-      if (url) console.log(`\n📱 スマホからアクセス: ${url}\n`);
+      if (url) console.log(`\n📱 スマホからアクセス（同一Wi-Fi）: ${url}\n`);
     }, 1000);
+    // 外出先からもアクセスできるようにトンネルを自動起動
+    setTimeout(async () => {
+      try {
+        const localtunnel = require('localtunnel');
+        const tunnel = await localtunnel({ port: 3456 });
+        activeTunnel = tunnel;
+        tunnel.on('close', () => { activeTunnel = null; });
+        console.log(`\n🌐 外出先からアクセス: ${tunnel.url}\n`);
+        // トンネルURLをSupabaseに記録（ダッシュボードから確認可能に）
+        try {
+          const https = require('https');
+          const os = require('os');
+          const tenant = queryOne('SELECT name FROM tenants WHERE id = ?', [getCurrentTenant()]);
+          const actData = JSON.stringify({ company_name: tenant?.name || '不明', hostname: os.hostname(), username: os.userInfo().username, app_version: APP_VERSION, event: 'tunnel_started:' + tunnel.url, credits_remaining: 0 });
+          const pr = https.request({ hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/app_activity', method: 'POST', headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }, timeout: 5000 }, () => {});
+          pr.on('error', () => {}); pr.write(actData); pr.end();
+        } catch (_) {}
+      } catch (e: any) {
+        console.log('トンネル起動スキップ:', e?.message || e);
+      }
+    }, 5000);
   } catch (e) {
     console.error('Web server start failed:', e);
   }
@@ -1600,8 +1624,6 @@ app.whenReady().then(async () => {
   });
 
   // ── 外部公開トンネル ──
-  let activeTunnel: any = null;
-
   ipcMain.handle('tunnel:start', async () => {
     if (activeTunnel) return activeTunnel.url;
     const localtunnel = require('localtunnel');
