@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('api', {
   startTunnel: () => ipcRenderer.invoke('tunnel:start'),
   stopTunnel: () => ipcRenderer.invoke('tunnel:stop'),
   tunnelStatus: () => ipcRenderer.invoke('tunnel:status'),
+  getLocalIp: () => ipcRenderer.invoke('system:localIp'),
 
   // 設定
   loadConfig: () => ipcRenderer.invoke('config:load'),

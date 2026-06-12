@@ -8,12 +8,16 @@ export default function SettingsPage() {
   const [dbMsg, setDbMsg] = useState('');
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [tunnelLoading, setTunnelLoading] = useState(false);
+  const [localIp, setLocalIp] = useState<string>('');
 
   useEffect(() => {
     (window as any).api.loadConfig().then((c: any) => setConfig(c));
     // トンネル状態確認
     (window as any).api.tunnelStatus?.().then((s: any) => {
       if (s?.active) setTunnelUrl(s.url);
+    }).catch(() => {});
+    (window as any).api.getLocalIp?.().then((ip: string) => {
+      if (ip) setLocalIp(ip);
     }).catch(() => {});
   }, []);
 
@@ -182,9 +186,31 @@ export default function SettingsPage() {
         {saved && <span style={{ color: '#27ae60', fontSize: 13, marginLeft: 8 }}>✓ 保存しました</span>}
       </div>
 
+      {/* スマホアクセス — ローカルIP */}
+      {localIp && (
+        <div className="card" style={{ border: '2px solid #3498db' }}>
+          <h3 style={{ marginBottom: 8 }}>📱 スマホからアクセス（同一Wi-Fi）</h3>
+          <p style={{ color: '#666', fontSize: 12, marginBottom: 8 }}>同じWi-Fiに接続されたスマホのブラウザで以下のURLを開いてください：</p>
+          <div style={{
+            background: '#f0f7ff', border: '2px solid #3498db', borderRadius: 8,
+            padding: '10px 16px', fontSize: 16, fontWeight: 'bold', color: '#3498db',
+            cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}
+            onClick={() => { navigator.clipboard.writeText(`http://${localIp}:3456`); alert('URLをコピーしました'); }}
+          >
+            <span>http://{localIp}:3456</span>
+            <span style={{ fontSize: 11, fontWeight: 'normal', color: '#888' }}>クリックでコピー</span>
+          </div>
+          <div style={{ marginTop: 8, textAlign: 'center' }}>
+            <img src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(`http://${localIp}:3456`)}`} alt="QR" style={{ width: 120, height: 120, borderRadius: 8, border: '1px solid #ddd' }} />
+            <div style={{ fontSize: 11, color: '#aaa', marginTop: 4 }}>QRコードで即アクセス</div>
+          </div>
+        </div>
+      )}
+
       {/* 外出先アクセス */}
       <div className="card" style={{ border: '2px solid #e67e22', background: tunnelUrl ? '#fffbf0' : '#fff' }}>
-        <h3 style={{ marginBottom: 12 }}>📱 外出先からアクセス</h3>
+        <h3 style={{ marginBottom: 12 }}>🌐 外出先からアクセス</h3>
         <p style={{ color: '#666', fontSize: 13, marginBottom: 16 }}>
           ONにすると、外出先のスマホやPCからインターネット経由でこのアプリにアクセスできます。<br/>
           現場で写真を撮ってそのままAI見積もりに送れます。
