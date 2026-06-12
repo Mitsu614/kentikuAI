@@ -154,6 +154,9 @@ contextBridge.exposeInMainWorld('api', {
   createPOFromConstruction: (cid: number) => ipcRenderer.invoke('purchaseOrders:createFromConstruction', cid),
   generatePurchaseOrderPDF: (data: any) => ipcRenderer.invoke('purchaseOrders:generatePDF', data),
 
+  // AIチャット見積
+  aiChat: (data: any) => ipcRenderer.invoke('ai:chat', data),
+
   // 予実管理
   getBudgetSummary: () => ipcRenderer.invoke('budget:summary'),
   updateBudgetActual: (data: any) => ipcRenderer.invoke('budget:updateActual', data),

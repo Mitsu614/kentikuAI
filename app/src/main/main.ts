@@ -2894,6 +2894,96 @@ manDaysBreakdownの書き方例:
     }
   });
 
+  // ── AIチャット見積（対話型）──
+  ipcMain.handle('ai:chat', async (_e, data: { messages: any[], imageBase64?: string }) => {
+    const creditResult = useCredits(1, 'チャット見積');
+    if (!creditResult.success) {
+      throw new Error('ERROR: 今月のクレジット上限に達しました。');
+    }
+    const config = loadApiConfig();
+    if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。');
+
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: config.anthropicKey });
+
+    // 相場DB参照用の簡易コスト情報
+    const statsRows = queryAll(`
+      SELECT SUBSTR(c.notes, 1, INSTR(c.notes || CHAR(10), CHAR(10)) - 1) as type_tag,
+        COUNT(*) as cnt, ROUND(AVG(COALESCE(cm_total, 0))) as avg_mat, ROUND(AVG(c.labor_cost)) as avg_labor, ROUND(AVG(c.markup_rate * 100)) as avg_markup
+      FROM constructions c LEFT JOIN (SELECT construction_id, SUM(quantity * unit_price) as cm_total FROM construction_materials GROUP BY construction_id) cm ON cm.construction_id = c.id
+      GROUP BY SUBSTR(c.notes, 1, INSTR(c.notes || CHAR(10), CHAR(10)) - 1) HAVING cnt >= 2 ORDER BY cnt DESC LIMIT 20
+    `);
+    const pastWork = statsRows.map((s: any) => `${(s.type_tag||'').split('\n')[0]}: ${s.cnt}件 材料平均${Math.round(s.avg_mat||0).toLocaleString()}円 労務平均${Math.round(s.avg_labor||0).toLocaleString()}円`).join('\n');
+
+    const systemPrompt = `あなたは大阪の建築見積の専門家（実務経験20年以上）です。ユーザーと対話しながら建築工事の見積を作成してください。
+
+## ルール
+- 工事内容をヒアリングして、必要な情報を質問してください（規模、材料グレード、場所など）
+- 十分な情報が集まったら、見積結果をJSON形式で出力してください
+- JSONを出力する場合は \`\`\`json ... \`\`\` で囲んでください
+- まだ情報が足りない場合は質問を続けてください
+- 親しみやすく、分かりやすい言葉で話してください
+- 専門用語を使う場合は簡単な説明を添えてください
+
+## 見積JSON形式（十分な情報が集まった場合のみ出力）
+\`\`\`json
+{
+  "workType": "工事の種類",
+  "description": "工事内容の要約",
+  "estimatedScale": "推定規模",
+  "estimatedMaterialCost": 材料費,
+  "estimatedLaborCost": 人件費,
+  "estimatedTotal": 売価（粗利込み）,
+  "confidence": "高/中/低",
+  "breakdown": [{"item": "項目名", "cost": 金額, "note": "根拠"}],
+  "manDaysBreakdown": [{"trade": "職種", "workers": 人数, "days": 日数, "manDays": 人工, "dailyRate": 日額}],
+  "recommendations": "提案・注意点",
+  "imagePrompt": "完成イメージ用英語プロンプト"
+}
+\`\`\`
+
+## 粗利率ルール
+- 原価500万未満: 粗利30%（掛率1.43）
+- 500万〜1000万: 粗利25%（掛率1.33）
+- 1000万〜3000万: 粗利20%（掛率1.25）
+- 3000万以上: 粗利15%（掛率1.18）
+
+## 過去実績
+${pastWork || 'まだ実績なし'}`;
+
+    const messages = data.messages.map((m: any) => {
+      if (m.role === 'user' && m.image) {
+        return {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: m.image.startsWith('data:image/png') ? 'image/png' : 'image/jpeg', data: m.image.replace(/^data:image\/\w+;base64,/, '') } },
+            { type: 'text', text: m.content || '写真を見て見積もりしてください' },
+          ],
+        };
+      }
+      return { role: m.role, content: m.content };
+    });
+
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 4000,
+      temperature: 0.3,
+      system: systemPrompt,
+      messages,
+    });
+
+    const text = response.content[0].type === 'text' ? response.content[0].text : '';
+
+    // JSONが含まれていれば見積結果として抽出
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+    let estimate = null;
+    if (jsonMatch) {
+      try { estimate = JSON.parse(jsonMatch[1]); } catch (_) {}
+    }
+
+    return { text, estimate };
+  });
+
   // ── AI画像生成（完成イメージ — 元画像ベース編集）──
   ipcMain.handle('ai:generateImage', async (_e, data: any) => {
     // クレジットチェック（画像生成 = 3ストック）

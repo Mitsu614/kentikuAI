@@ -4,7 +4,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [imageData, setImageData] = useState<string | null>(null);
   const [beforeImage, setBeforeImage] = useState<string | null>(null);
   const [afterImage, setAfterImage] = useState<string | null>(null);
-  const [mode, setMode] = useState<'single' | 'beforeafter'>('single');
+  const [mode, setMode] = useState<'single' | 'beforeafter' | 'chat'>('single');
   const [location, setLocation] = useState('');
   const [comment, setComment] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
@@ -23,6 +23,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [poLoading, setPOLoading] = useState(false);
   const [logInvoice, setLogInvoice] = useState<any>(null);
   const [invoiceLoading, setInvoiceLoading] = useState(false);
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatEstimate, setChatEstimate] = useState<any>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
 
   // DB からログ読み込み
@@ -248,8 +253,134 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           >
             🔄 ビフォーアフターで見積
           </button>
+          <button
+            className={`btn ${mode === 'chat' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => { setMode('chat'); if (chatMessages.length === 0) setChatMessages([{ role: 'assistant', content: 'こんにちは！建築見積のAIアシスタントです。\n\nどんな工事の見積もりをしたいですか？\n例：「キッチンリフォーム」「外壁塗装」「3階建てマンションの足場」\n\n写真があれば添付もできます。' }]); }}
+            style={{ padding: '8px 20px', fontSize: 13 }}
+          >
+            💬 チャットで見積
+          </button>
         </div>
       </div>
+
+      {/* チャットモード */}
+      {mode === 'chat' && (
+        <div className="card" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 200px)', minHeight: 400 }}>
+          {/* チャット履歴 */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {chatMessages.map((msg, i) => (
+              <div key={i} style={{
+                alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                maxWidth: '80%',
+                padding: '10px 14px',
+                borderRadius: msg.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                background: msg.role === 'user' ? '#3a7bd5' : '#f0f2f5',
+                color: msg.role === 'user' ? '#fff' : '#333',
+                fontSize: 13,
+                lineHeight: 1.6,
+                whiteSpace: 'pre-wrap',
+              }}>
+                {msg.image && <img src={msg.image} style={{ maxWidth: '100%', maxHeight: 150, borderRadius: 8, marginBottom: 6, display: 'block' }} alt="" />}
+                {msg.content}
+              </div>
+            ))}
+            {chatLoading && (
+              <div style={{ alignSelf: 'flex-start', padding: '10px 14px', borderRadius: '16px 16px 16px 4px', background: '#f0f2f5', fontSize: 13, color: '#888' }}>
+                ⏳ 考え中...
+              </div>
+            )}
+            {chatEstimate && (
+              <div style={{ alignSelf: 'flex-start', maxWidth: '90%', padding: '12px 16px', borderRadius: 12, background: '#f0fff4', border: '2px solid #27ae60', fontSize: 13 }}>
+                <div style={{ fontWeight: 'bold', color: '#27ae60', marginBottom: 6 }}>見積結果</div>
+                <div style={{ fontSize: 11, marginBottom: 4 }}>工事種別: {chatEstimate.workType}</div>
+                <div style={{ fontSize: 20, fontWeight: 'bold', color: '#27ae60', margin: '6px 0' }}>¥{Math.round(chatEstimate.estimatedTotal || 0).toLocaleString()}</div>
+                {chatEstimate.breakdown && chatEstimate.breakdown.map((b: any, j: number) => (
+                  <div key={j} style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e0e0e0', padding: '2px 0' }}>
+                    <span>{b.item}</span>
+                    <span style={{ fontWeight: 'bold' }}>¥{Math.round(b.cost || 0).toLocaleString()}</span>
+                  </div>
+                ))}
+                <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>
+                  <button className="btn btn-primary btn-sm" onClick={() => {
+                    setResult(chatEstimate);
+                    setMode('single');
+                    setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+                  }} style={{ fontSize: 11 }}>見積詳細を見る</button>
+                  <button className="btn btn-sm" style={{ fontSize: 11, background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer' }} onClick={async () => {
+                    if (confirm('この見積から物件・施工・請求書・発注書を自動作成しますか？')) {
+                      try {
+                        const created = await (window as any).api.autoCreateFromEstimate({ result: chatEstimate });
+                        setAutoCreated(created);
+                        alert('自動登録完了！');
+                      } catch (e: any) { alert('エラー: ' + e.message); }
+                    }
+                  }}>一括登録</button>
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+          {/* 入力エリア */}
+          <div style={{ borderTop: '1px solid #eee', padding: '10px 12px', display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <button className="btn btn-secondary btn-sm" onClick={async () => {
+              const img = await window.api.selectImage();
+              if (img) {
+                setChatMessages(prev => [...prev, { role: 'user', content: '写真を添付しました', image: img }]);
+                setChatLoading(true);
+                setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+                try {
+                  const res = await (window as any).api.aiChat({ messages: [...chatMessages, { role: 'user', content: 'この写真を見て見積もりしてください', image: img }] });
+                  setChatMessages(prev => [...prev, { role: 'assistant', content: res.text }]);
+                  if (res.estimate) setChatEstimate(res.estimate);
+                } catch (e: any) { setChatMessages(prev => [...prev, { role: 'assistant', content: 'エラー: ' + e.message }]); }
+                setChatLoading(false);
+                setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+              }
+            }} style={{ fontSize: 12, padding: '8px 12px' }}>📷</button>
+            <textarea
+              value={chatInput}
+              onChange={e => setChatInput(e.target.value)}
+              onKeyDown={async e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  if (!chatInput.trim() || chatLoading) return;
+                  const userMsg = chatInput.trim();
+                  setChatInput('');
+                  setChatMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+                  setChatLoading(true);
+                  setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+                  try {
+                    const allMsgs = [...chatMessages, { role: 'user', content: userMsg }].filter(m => m.role !== 'system');
+                    const res = await (window as any).api.aiChat({ messages: allMsgs });
+                    setChatMessages(prev => [...prev, { role: 'assistant', content: res.text }]);
+                    if (res.estimate) setChatEstimate(res.estimate);
+                  } catch (e: any) { setChatMessages(prev => [...prev, { role: 'assistant', content: 'エラー: ' + e.message }]); }
+                  setChatLoading(false);
+                  setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+                }
+              }}
+              placeholder="工事の内容を入力... (Enter で送信、Shift+Enter で改行)"
+              style={{ flex: 1, minHeight: 40, maxHeight: 100, padding: '8px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 13, resize: 'none', fontFamily: 'inherit', lineHeight: 1.5 }}
+            />
+            <button className="btn btn-primary" disabled={chatLoading || !chatInput.trim()} onClick={async () => {
+              if (!chatInput.trim() || chatLoading) return;
+              const userMsg = chatInput.trim();
+              setChatInput('');
+              setChatMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+              setChatLoading(true);
+              setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+              try {
+                const allMsgs = [...chatMessages, { role: 'user', content: userMsg }].filter(m => m.role !== 'system');
+                const res = await (window as any).api.aiChat({ messages: allMsgs });
+                setChatMessages(prev => [...prev, { role: 'assistant', content: res.text }]);
+                if (res.estimate) setChatEstimate(res.estimate);
+              } catch (e: any) { setChatMessages(prev => [...prev, { role: 'assistant', content: 'エラー: ' + e.message }]); }
+              setChatLoading(false);
+              setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+            }} style={{ padding: '8px 20px', fontSize: 13 }}>送信</button>
+          </div>
+        </div>
+      )}
 
       {/* 画像アップロードエリア */}
       {mode === 'single' ? (
