@@ -2786,6 +2786,12 @@ ${pastWorkSummary || 'まだ実績なし'}
 ※上記は${totalCount}件の実績データを工事タイプ別に集約した統計値です。この統計を見積もりの根拠として活用してください。
 ${feedbackSummary}
 ${globalStats}
+${(() => {
+  const chatMemos = queryAll('SELECT category, key, value FROM chat_learnings WHERE tenant_id = ? ORDER BY category', [getCurrentTenant()]);
+  if (chatMemos.length === 0) return '';
+  return '\n## ★ この会社の好み・傾向（チャットから学習済み）★\n以下はこの会社のユーザーがチャットで伝えた好みです。必ず反映してください。\n' +
+    chatMemos.map((m: any) => `- [${m.category}] ${m.key}: ${m.value}`).join('\n') + '\n';
+})()}
 ## 登録済み材料カテゴリ
 ${categories}
 
@@ -2915,6 +2921,13 @@ manDaysBreakdownの書き方例:
     `);
     const pastWork = statsRows.map((s: any) => `${(s.type_tag||'').split('\n')[0]}: ${s.cnt}件 材料平均${Math.round(s.avg_mat||0).toLocaleString()}円 労務平均${Math.round(s.avg_labor||0).toLocaleString()}円`).join('\n');
 
+    // 過去のチャット学習メモを取得
+    const tid = getCurrentTenant();
+    const learnings = queryAll('SELECT category, key, value FROM chat_learnings WHERE tenant_id = ? ORDER BY category, key', [tid]);
+    const learningText = learnings.length > 0
+      ? '\n## この会社の好み・傾向（過去のチャットから学習済み）\n' + learnings.map((l: any) => `- [${l.category}] ${l.key}: ${l.value}`).join('\n') + '\n\n★上記の好みを必ず反映して見積・提案してください。\n'
+      : '';
+
     const systemPrompt = `あなたは大阪の建築見積の専門家（実務経験20年以上）です。ユーザーと対話しながら建築工事の見積を作成してください。
 
 ## ルール
@@ -2924,6 +2937,7 @@ manDaysBreakdownの書き方例:
 - まだ情報が足りない場合は質問を続けてください
 - 親しみやすく、分かりやすい言葉で話してください
 - 専門用語を使う場合は簡単な説明を添えてください
+- ユーザーが好みや修正を伝えた場合、会話の最後に学習メモJSON（\`\`\`learning ... \`\`\`）を出力してください
 
 ## 見積JSON形式（十分な情報が集まった場合のみ出力）
 \`\`\`json
@@ -2948,6 +2962,13 @@ manDaysBreakdownの書き方例:
 - 1000万〜3000万: 粗利20%（掛率1.25）
 - 3000万以上: 粗利15%（掛率1.18）
 
+## 学習メモ形式（ユーザーが好みや修正を伝えた場合、通常の返答に加えて以下も出力）
+\`\`\`learning
+[{"category":"材料","key":"塗料の好み","value":"フッ素系を優先"},{"category":"単価","key":"足場単価","value":"1,200円/m²が標準"}]
+\`\`\`
+categoryは: 材料 / 単価 / 工法 / 業者 / その他
+★学習メモは好みや修正があった場合のみ出力。なければ出力不要。
+${learningText}
 ## 過去実績
 ${pastWork || 'まだ実績なし'}`;
 
@@ -2981,7 +3002,27 @@ ${pastWork || 'まだ実績なし'}`;
       try { estimate = JSON.parse(jsonMatch[1]); } catch (_) {}
     }
 
-    return { text, estimate };
+    // 学習メモが含まれていればDBに保存
+    const learningMatch = text.match(/```learning\s*([\s\S]*?)\s*```/);
+    if (learningMatch) {
+      try {
+        const memos = JSON.parse(learningMatch[1]);
+        for (const memo of memos) {
+          if (memo.category && memo.key && memo.value) {
+            runSql(
+              'INSERT INTO chat_learnings (tenant_id, category, key, value) VALUES (?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=?, confidence=confidence+0.1',
+              [tid, memo.category, memo.key, memo.value, memo.value]
+            );
+          }
+        }
+        console.log(`チャット学習: ${memos.length}件の好みを記憶しました`);
+      } catch (_) {}
+    }
+
+    // 学習メモ部分はユーザーに見せない
+    const cleanText = text.replace(/```learning[\s\S]*?```/g, '').trim();
+
+    return { text: cleanText, estimate };
   });
 
   // ── AI画像生成（完成イメージ — 元画像ベース編集）──

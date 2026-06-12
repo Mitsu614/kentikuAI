@@ -405,6 +405,15 @@ function createTables() {
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE CASCADE
   )`);
+  // チャット学習メモ（ユーザーの好み・修正傾向を記憶）
+  db.run(`CREATE TABLE IF NOT EXISTS chat_learnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER DEFAULT 1,
+    category TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+    source TEXT DEFAULT 'chat', confidence REAL DEFAULT 1.0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(tenant_id, category, key)
+  )`);
+
   db.run(`CREATE TABLE IF NOT EXISTS invoices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     construction_id INTEGER, client_name TEXT NOT NULL, client_address TEXT,
