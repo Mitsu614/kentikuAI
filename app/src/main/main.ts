@@ -1623,6 +1623,20 @@ app.whenReady().then(async () => {
     return `data:image/${mimeExt};base64,${buffer.toString('base64')}`;
   });
 
+  // ── ローカルIPアドレス取得 ──
+  ipcMain.handle('system:localIp', () => {
+    const os = require('os');
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name]) {
+        if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('192.168.56')) {
+          return net.address;
+        }
+      }
+    }
+    return '';
+  });
+
   // ── 外部公開トンネル ──
   ipcMain.handle('tunnel:start', async () => {
     if (activeTunnel) return activeTunnel.url;
