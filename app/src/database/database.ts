@@ -466,6 +466,9 @@ function migrate() {
     if (!tenantCols.find((c: any) => c.name === 'month_notified')) {
       db.run('ALTER TABLE tenants ADD COLUMN month_notified INTEGER DEFAULT 0');
     }
+    if (!tenantCols.find((c: any) => c.name === 'last_report_at')) {
+      db.run('ALTER TABLE tenants ADD COLUMN last_report_at TEXT');
+    }
   } catch (_) {}
   // estimate_log に generated_image カラム追加
   try {

@@ -597,6 +597,157 @@ app.whenReady().then(async () => {
     }
   }, 5000);
 
+  // ── 月次レポート自動送信 + 更新前レビューリマインダー ──
+  setTimeout(async () => {
+    try {
+      const tenants = queryAll('SELECT * FROM tenants WHERE id > 1 AND plan_started_at IS NOT NULL');
+      for (const t of tenants) {
+        const started = new Date(t.plan_started_at);
+        const now = new Date();
+        const diffDays = Math.floor((now.getTime() - started.getTime()) / (1000 * 60 * 60 * 24));
+        const monthsSinceStart = Math.floor(diffDays / 30);
+
+        // 月初（毎月1日〜3日）かつ前回送信から25日以上経過している場合のみ送信
+        const today = now.getDate();
+        const lastReport = t.last_report_at ? new Date(t.last_report_at) : null;
+        const daysSinceLastReport = lastReport ? Math.floor((now.getTime() - lastReport.getTime()) / (1000 * 60 * 60 * 24)) : 999;
+
+        if (today <= 3 && daysSinceLastReport >= 25 && monthsSinceStart >= 1) {
+          // 利用統計を集計
+          const usage = getMonthlyUsage(t.id);
+          const totalEstimates = queryOne('SELECT COUNT(*) as cnt FROM estimate_log WHERE tenant_id = ?', [t.id])?.cnt || 0;
+          const totalConstructions = queryOne('SELECT COUNT(*) as cnt FROM constructions WHERE tenant_id = ?', [t.id])?.cnt || 0;
+          const totalInvoices = queryOne('SELECT COUNT(*) as cnt FROM invoices WHERE tenant_id = ?', [t.id])?.cnt || 0;
+          const totalPOs = queryOne('SELECT COUNT(*) as cnt FROM purchase_orders WHERE tenant_id = ?', [t.id])?.cnt || 0;
+          const thisMonthEstimates = queryOne("SELECT COUNT(*) as cnt FROM estimate_log WHERE tenant_id = ? AND created_at >= date('now', 'start of month')", [t.id])?.cnt || 0;
+          const learnings = queryOne('SELECT COUNT(*) as cnt FROM chat_learnings WHERE tenant_id = ?', [t.id])?.cnt || 0;
+
+          // 時間削減の推定（1件あたり4時間→30秒 = 3.99時間削減）
+          const hoursSaved = Math.round(totalEstimates * 3.99);
+          const moneySaved = hoursSaved * 3750; // 日当3万円÷8時間=3,750円/時
+
+          const nodemailer = require('nodemailer');
+          const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
+          });
+
+          // 顧客向けレポート
+          if (t.contact_email) {
+            await transporter.sendMail({
+              from: '建築ブースト <mitsuakinakano0215@gmail.com>',
+              to: t.contact_email,
+              subject: `【建築ブースト】月次ご利用レポート（${now.getFullYear()}年${now.getMonth() + 1}月）`,
+              text: [
+                `${t.contact_company || t.name} 様`,
+                '',
+                'いつも建築ブーストをご利用いただきありがとうございます。',
+                '月次のご利用レポートをお送りいたします。',
+                '',
+                '━━━━━━━━━━━━━━━━━━━━━━━━',
+                `  ${now.getFullYear()}年${now.getMonth() + 1}月 ご利用レポート`,
+                '━━━━━━━━━━━━━━━━━━━━━━━━',
+                '',
+                '【今月の利用状況】',
+                `  AI見積回数:     ${thisMonthEstimates}件`,
+                `  クレジット残:   ${usage.remaining} / ${usage.limit}`,
+                '',
+                '【累計の成果】',
+                `  AI見積 累計:    ${totalEstimates}件`,
+                `  施工案件:       ${totalConstructions}件`,
+                `  請求書作成:     ${totalInvoices}件`,
+                `  発注書作成:     ${totalPOs}件`,
+                `  AI学習データ:   ${learnings}件（御社専用に最適化中）`,
+                '',
+                '【削減効果（推定）】',
+                `  削減時間:       約${hoursSaved}時間`,
+                `  コスト削減:     約${Math.round(moneySaved).toLocaleString()}円相当`,
+                `  ※ 見積1件あたり約4時間の削減で算出`,
+                '',
+                '━━━━━━━━━━━━━━━━━━━━━━━━',
+                '',
+                'ご不明な点やご要望がございましたら、お気軽にご連絡ください。',
+                '',
+                '有限会社中野工務店',
+                'TEL: 080-6138-0698',
+                'MAIL: mitsuakinakano0215@gmail.com',
+              ].join('\n'),
+            });
+          }
+
+          // 管理者向け通知
+          await transporter.sendMail({
+            from: '建築ブースト <mitsuakinakano0215@gmail.com>',
+            to: 'mitsuakinakano0215@gmail.com',
+            subject: `【月次レポート送信】${t.contact_company || t.name} — ${thisMonthEstimates}件利用`,
+            text: [
+              `月次レポートを送信しました。`,
+              '',
+              `■ 会社名: ${t.contact_company || t.name}`,
+              `■ 利用開始: ${t.plan_started_at}（${monthsSinceStart}ヶ月目）`,
+              `■ 今月AI見積: ${thisMonthEstimates}件`,
+              `■ 累計AI見積: ${totalEstimates}件`,
+              `■ クレジット残: ${usage.remaining} / ${usage.limit}`,
+              `■ 学習データ: ${learnings}件`,
+              `■ 推定削減時間: ${hoursSaved}時間（${Math.round(moneySaved).toLocaleString()}円相当）`,
+              thisMonthEstimates === 0 ? '\n⚠️ 今月の利用が0件です。フォロー電話をおすすめします。' : '',
+              '',
+              `■ 連絡先: ${t.contact_tel || '未登録'} / ${t.contact_email || '未登録'}`,
+            ].filter(Boolean).join('\n'),
+          });
+
+          // 送信日を記録
+          runSql('UPDATE tenants SET last_report_at = ? WHERE id = ?', [now.toISOString(), t.id]);
+          console.log(`月次レポート送信: ${t.contact_company || t.name}`);
+        }
+
+        // ── 更新2ヶ月前（10ヶ月目）のレビューリマインダー ──
+        if (monthsSinceStart === 10 && !(t as any).review_notified) {
+          const nodemailer = require('nodemailer');
+          const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
+          });
+          const totalEstimates = queryOne('SELECT COUNT(*) as cnt FROM estimate_log WHERE tenant_id = ?', [t.id])?.cnt || 0;
+          const hoursSaved = Math.round(totalEstimates * 3.99);
+
+          await transporter.sendMail({
+            from: '建築ブースト <mitsuakinakano0215@gmail.com>',
+            to: 'mitsuakinakano0215@gmail.com',
+            subject: `【要対応】更新2ヶ月前 — ${t.contact_company || t.name} レビュー訪問してください`,
+            text: [
+              `${t.contact_company || t.name} の年間契約が残り2ヶ月です。`,
+              '',
+              '★ レビュー訪問を実施してください ★',
+              '',
+              '【訪問時のアジェンダ】',
+              '1. 1年間の成果を数字で振り返る',
+              `   - AI見積 累計${totalEstimates}件`,
+              `   - 推定${hoursSaved}時間の削減`,
+              '2. 困っていることはないかヒアリング',
+              '3. 来期のプラン提案（アップグレード検討）',
+              '4. 更新手続きの案内',
+              '',
+              '【お客様情報】',
+              `■ 会社名: ${t.contact_company || t.name}`,
+              `■ 利用開始: ${t.plan_started_at}`,
+              `■ 更新期限: あと約2ヶ月`,
+              `■ 電話: ${t.contact_tel || '未登録'}`,
+              `■ メール: ${t.contact_email || '未登録'}`,
+              '',
+              '---',
+              '建築ブースト 自動リマインダー',
+            ].join('\n'),
+          });
+          try { runSql("UPDATE tenants SET month_notified = 10 WHERE id = ?", [t.id]); } catch (_) {}
+          console.log(`更新レビューリマインダー送信: ${t.contact_company || t.name}`);
+        }
+      }
+    } catch (e: any) {
+      console.error('Monthly report failed:', e?.message || e);
+    }
+  }, 12000);
+
   // スマホ用Webサーバー起動
   try {
     setConfigLoader(loadApiConfig);
