@@ -96,7 +96,7 @@ function escapeHtml(str: string | null | undefined): string {
 }
 
 let mainWindow: BrowserWindow | null = null;
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
