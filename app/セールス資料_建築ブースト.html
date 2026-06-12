@@ -4,26 +4,26 @@
 <meta charset="utf-8">
 <title>建築ブースト セールス資料 — 経営者向け</title>
 <style>
-@page { size: A4 portrait; margin: 0; }
+@page { size: A4 portrait; margin: 10mm 12mm; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Yu Gothic', 'Meiryo', sans-serif; color: #1a1a1a; background: #fff; font-size: 11pt; line-height: 1.7; }
-.page { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 18mm 20mm; position: relative; page-break-after: always; }
+body { font-family: 'Yu Gothic', 'Meiryo', sans-serif; color: #1a1a1a; background: #fff; font-size: 9.5pt; line-height: 1.6; }
+.page { width: 210mm; height: 297mm; margin: 0 auto; padding: 12mm 14mm 16mm; position: relative; page-break-after: always; overflow: hidden; }
 .page:last-child { page-break-after: auto; }
 
 /* ヘッダー */
-.hero { background: linear-gradient(135deg, #0f1923, #1a2d42); color: #fff; padding: 32px 28px; border-radius: 0; margin: -18mm -20mm 20px; padding-top: 28mm; padding-left: 24mm; padding-right: 24mm; }
-.hero h1 { font-size: 28pt; letter-spacing: 3px; margin-bottom: 6px; }
+.hero { background: linear-gradient(135deg, #0f1923, #1a2d42); color: #fff; padding: 20px 20px; border-radius: 0; margin: -12mm -14mm 14px; padding-top: 18mm; padding-left: 18mm; padding-right: 18mm; }
+.hero h1 { font-size: 24pt; letter-spacing: 3px; margin-bottom: 4px; }
 .hero h1 span { color: #5cb85c; }
-.hero .sub { font-size: 13pt; opacity: 0.85; margin-bottom: 4px; }
-.hero .sub2 { font-size: 10pt; opacity: 0.6; }
+.hero .sub { font-size: 12pt; opacity: 0.85; margin-bottom: 2px; }
+.hero .sub2 { font-size: 9pt; opacity: 0.6; }
 
 /* 共通 */
-h2 { font-size: 15pt; color: #1a2d42; margin: 22px 0 10px; padding-bottom: 4px; border-bottom: 2px solid #1a2d42; }
-h3 { font-size: 12pt; color: #1a2d42; margin: 14px 0 6px; }
-p { margin: 5px 0; }
-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 10pt; }
-th { background: #1a2d42; color: #fff; padding: 8px 10px; text-align: left; font-size: 9.5pt; }
-td { padding: 7px 10px; border-bottom: 1px solid #e0e0e0; }
+h2 { font-size: 13pt; color: #1a2d42; margin: 14px 0 6px; padding-bottom: 3px; border-bottom: 2px solid #1a2d42; }
+h3 { font-size: 10.5pt; color: #1a2d42; margin: 8px 0 4px; }
+p { margin: 3px 0; font-size: 9.5pt; }
+table { width: 100%; border-collapse: collapse; margin: 5px 0; font-size: 9pt; }
+th { background: #1a2d42; color: #fff; padding: 5px 8px; text-align: left; font-size: 8.5pt; }
+td { padding: 4px 8px; border-bottom: 1px solid #e0e0e0; font-size: 9pt; }
 tr:nth-child(even) td { background: #f9fafb; }
 .num { text-align: right; font-weight: bold; }
 .red { color: #e74c3c; font-weight: bold; }
@@ -31,16 +31,16 @@ tr:nth-child(even) td { background: #f9fafb; }
 .blue { color: #3a7bd5; font-weight: bold; }
 
 /* ボックス */
-.pain-box { background: #fef5f5; border-left: 4px solid #e74c3c; padding: 12px 16px; margin: 10px 0; border-radius: 0 6px 6px 0; }
-.gain-box { background: #f0fff4; border-left: 4px solid #27ae60; padding: 12px 16px; margin: 10px 0; border-radius: 0 6px 6px 0; }
-.calc-box { background: #f0f4ff; border: 1px solid #3a7bd5; padding: 14px 18px; margin: 10px 0; border-radius: 8px; }
-.calc-box .result { font-size: 18pt; font-weight: 900; color: #3a7bd5; text-align: center; margin: 8px 0; }
-.quote-box { background: #f8f8f8; border-left: 4px solid #888; padding: 10px 16px; margin: 10px 0; font-style: italic; font-size: 10pt; color: #555; }
+.pain-box { background: #fef5f5; border-left: 4px solid #e74c3c; padding: 8px 12px; margin: 6px 0; border-radius: 0 6px 6px 0; }
+.gain-box { background: #f0fff4; border-left: 4px solid #27ae60; padding: 8px 12px; margin: 6px 0; border-radius: 0 6px 6px 0; }
+.calc-box { background: #f0f4ff; border: 1px solid #3a7bd5; padding: 10px 14px; margin: 6px 0; border-radius: 8px; }
+.calc-box .result { font-size: 15pt; font-weight: 900; color: #3a7bd5; text-align: center; margin: 5px 0; }
+.quote-box { background: #f8f8f8; border-left: 4px solid #888; padding: 8px 12px; margin: 6px 0; font-style: italic; font-size: 9pt; color: #555; }
 
 /* フッター */
-.footer { position: absolute; bottom: 10mm; left: 20mm; right: 20mm; font-size: 8pt; color: #aaa; text-align: center; border-top: 1px solid #eee; padding-top: 6px; }
+.footer { position: absolute; bottom: 6mm; left: 14mm; right: 14mm; font-size: 7pt; color: #aaa; text-align: center; border-top: 1px solid #eee; padding-top: 4px; }
 
-.small { font-size: 9pt; color: #888; }
+.small { font-size: 8pt; color: #888; }
 .highlight { background: #fff3cd; padding: 2px 6px; border-radius: 3px; }
 </style>
 </head>
@@ -81,9 +81,30 @@ tr:nth-child(even) td { background: #f9fafb; }
 </tbody>
 </table>
 
-<div class="quote-box">
-「忙しいのに利益が残らない」——その原因は、見積業務に社長の時間が奪われていることかもしれません。
-</div>
+<!-- 年間コスト内訳グラフ -->
+<h3 style="text-align:center;margin-top:10px">年間コスト内訳（見積関連 380万円）</h3>
+<svg width="460" height="130" viewBox="0 0 460 130" style="display:block;margin:4px auto">
+  <!-- 横棒グラフ -->
+  <rect x="120" y="5" width="216" height="22" rx="3" fill="#e74c3c"/>
+  <text x="115" y="20" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">見積作業</text>
+  <text x="340" y="20" font-size="9" font-family="Yu Gothic" fill="#fff" font-weight="bold">180万円</text>
+
+  <rect x="120" y="32" width="152" height="22" rx="3" fill="#e67e22"/>
+  <text x="115" y="47" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">残業コスト</text>
+  <text x="276" y="47" font-size="9" font-family="Yu Gothic" fill="#fff" font-weight="bold">125万円</text>
+
+  <rect x="120" y="59" width="60" height="22" rx="3" fill="#f39c12"/>
+  <text x="115" y="74" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">見積ミス</text>
+  <text x="184" y="74" font-size="9" font-family="Yu Gothic" fill="#333" font-weight="bold">50万円</text>
+
+  <rect x="120" y="86" width="32" height="22" rx="3" fill="#3498db"/>
+  <text x="115" y="101" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">下見・交通費</text>
+  <text x="156" y="101" font-size="9" font-family="Yu Gothic" fill="#333" font-weight="bold">30万円</text>
+
+  <rect x="120" y="113" width="28" height="14" rx="3" fill="#95a5a6"/>
+  <text x="115" y="124" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">事務転記</text>
+  <text x="152" y="124" font-size="9" font-family="Yu Gothic" fill="#333">22.5万円</text>
+</svg>
 
 <div class="footer">建築ブースト セールス資料 ｜ 有限会社中野工務店 ｜ 特許出願中</div>
 </div>
@@ -108,17 +129,16 @@ tr:nth-child(even) td { background: #f9fafb; }
 
 <div class="pain-box">
 <h3>❸ 残業 — 見積は「後回し」にされる</h3>
-<p>日中は現場、夕方から事務所で見積。帰るのは<span class="red">21時、22時</span>。</p>
-<p>残業代が発生しない経営者の残業こそ、一番のコスト。</p>
+<p>日中は現場、夕方から事務所で見積。帰るのは<span class="red">21時、22時</span>。残業代が発生しない経営者の残業こそ、一番のコスト。</p>
+</div>
 <table>
 <thead><tr><th>残業</th><th>時間</th><th>年間換算（日当3万円ベース）</th></tr></thead>
 <tbody>
 <tr><td>毎日2時間の見積残業</td><td>月40時間</td><td class="num red">年間180万円</td></tr>
 <tr><td>月2回の休日出勤（見積のため）</td><td>月16時間</td><td class="num red">年間72万円</td></tr>
-<tr style="background:#fff3cd"><td><strong>残業コスト合計</strong></td><td></td><td class="num red" style="font-size:12pt">年間252万円</td></tr>
+<tr style="background:#fff3cd"><td><strong>残業コスト合計</strong></td><td></td><td class="num red" style="font-size:11pt">年間252万円</td></tr>
 </tbody>
 </table>
-</div>
 
 <h2>見えない最大のリスク</h2>
 
@@ -160,6 +180,24 @@ tr:nth-child(even) td { background: #f9fafb; }
 <tr><td>見積精度</td><td>経験頼み</td><td class="green">AIが学習・向上</td><td class="green">継続改善</td></tr>
 </tbody>
 </table>
+
+<!-- 見積時間比較グラフ -->
+<h3 style="text-align:center;margin-top:8px">見積作成時間の比較</h3>
+<svg width="440" height="90" viewBox="0 0 440 90" style="display:block;margin:4px auto">
+  <text x="60" y="25" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">従来</text>
+  <rect x="65" y="10" width="320" height="24" rx="3" fill="#e74c3c"/>
+  <text x="230" y="26" font-size="10" font-family="Yu Gothic" fill="#fff" font-weight="bold">4時間（240分）</text>
+
+  <text x="60" y="60" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">建築ブースト</text>
+  <rect x="65" y="45" width="2" height="24" rx="1" fill="#27ae60"/>
+  <text x="72" y="61" font-size="10" font-family="Yu Gothic" fill="#27ae60" font-weight="bold">30秒</text>
+  <text x="130" y="61" font-size="9" font-family="Yu Gothic" fill="#888">（99.8%短縮）</text>
+
+  <line x1="65" y1="75" x2="385" y2="75" stroke="#ddd" stroke-width="0.5"/>
+  <text x="65" y="85" font-size="7" font-family="Yu Gothic" fill="#aaa">0</text>
+  <text x="225" y="85" font-size="7" font-family="Yu Gothic" fill="#aaa">2時間</text>
+  <text x="385" y="85" font-size="7" font-family="Yu Gothic" fill="#aaa">4時間</text>
+</svg>
 
 <h2>導入後の1日（社長の場合）</h2>
 
@@ -211,6 +249,25 @@ tr:nth-child(even) td { background: #f9fafb; }
 </tbody>
 </table>
 
+<!-- ROI比較グラフ -->
+<h3 style="text-align:center;margin-top:8px">投資 vs リターン</h3>
+<svg width="440" height="110" viewBox="0 0 440 110" style="display:block;margin:4px auto">
+  <text x="55" y="30" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">投資</text>
+  <rect x="60" y="15" width="33" height="26" rx="3" fill="#3a7bd5"/>
+  <text x="98" y="33" font-size="10" font-family="Yu Gothic" fill="#3a7bd5" font-weight="bold">140万円</text>
+
+  <text x="55" y="67" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">削減効果</text>
+  <rect x="60" y="52" width="124" height="26" rx="3" fill="#27ae60"/>
+  <text x="188" y="70" font-size="10" font-family="Yu Gothic" fill="#27ae60" font-weight="bold">522万円</text>
+
+  <text x="55" y="104" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#333">売上増</text>
+  <rect x="60" y="89" width="330" height="26" rx="3" fill="#27ae60" opacity="0.7"/>
+  <text x="394" y="107" font-size="10" font-family="Yu Gothic" fill="#27ae60" font-weight="bold">1,400万円〜</text>
+
+  <!-- 14倍ラベル -->
+  <text x="350" y="33" font-size="14" font-family="Yu Gothic" fill="#e74c3c" font-weight="bold">ROI 約14倍</text>
+</svg>
+
 <div class="calc-box">
 <h3 style="text-align:center;margin-bottom:8px">投資対効果まとめ</h3>
 <table>
@@ -228,19 +285,19 @@ tr:nth-child(even) td { background: #f9fafb; }
 <div class="footer">建築ブースト セールス資料 ｜ 有限会社中野工務店 ｜ 特許出願中</div>
 </div>
 
-<!-- ====== P5: 料金＋クロージング — クロージング（第6原則） ====== -->
+<!-- ====== P5: 料金 — クロージング（第6原則） ====== -->
 <div class="page">
 <h2>料金プラン（年間契約）</h2>
 
 <table>
-<thead><tr><th>プラン</th><th>年額（税込）</th><th>月あたり</th><th>AIストック</th><th>想定利用者</th></tr></thead>
+<thead><tr><th>プラン</th><th>年額（税込）</th><th>月あたり</th><th>クレジット</th><th>想定利用者</th></tr></thead>
 <tbody>
 <tr style="background:#e8fdf0"><td><strong>スタンダード</strong></td><td class="num green" style="font-size:12pt">1,200,000円/年</td><td class="num">100,000円</td><td>月50回</td><td>個人〜15名規模</td></tr>
 <tr><td><strong>プロ</strong></td><td class="num blue" style="font-size:12pt">3,000,000円/年</td><td class="num">250,000円</td><td>月200回</td><td>複数担当者・多案件</td></tr>
 <tr><td><strong>法人カスタム</strong></td><td class="num">個別見積</td><td class="num">—</td><td>個別設定</td><td>多店舗・独自要件</td></tr>
 </tbody>
 </table>
-<p class="small">※ 初期費用: 198,000円（税込）｜ 追加AIストック: 50回 5,500円〜</p>
+<p class="small">※ 初期費用: 198,000円（税込）｜ 追加クレジット: 50回 5,500円〜</p>
 
 <h2>月10万円は「高い」ですか？</h2>
 
@@ -255,14 +312,32 @@ tr:nth-child(even) td { background: #f9fafb; }
 </tbody>
 </table>
 
-<div class="gain-box">
-<h3>つまり——</h3>
-<p>建築ブーストの月額は、<strong>社長の残業3.3日分</strong>。</p>
-<p>事務員を雇うより<strong>2.5分の1</strong>。</p>
-<p>見積ミス1件分の<strong>5分の1</strong>。</p>
-<p style="font-size:13pt;margin-top:8px"><strong>見積2件で元が取れます。</strong></p>
+<!-- 月額コスト比較グラフ -->
+<svg width="440" height="100" viewBox="0 0 440 100" style="display:block;margin:6px auto">
+  <text x="100" y="16" font-size="8" text-anchor="end" font-family="Yu Gothic" fill="#333">見積ミス1件</text>
+  <rect x="105" y="4" width="250" height="18" rx="3" fill="#e74c3c" opacity="0.8"/>
+  <text x="360" y="17" font-size="9" font-family="Yu Gothic" fill="#e74c3c" font-weight="bold">50万円</text>
+
+  <text x="100" y="36" font-size="8" text-anchor="end" font-family="Yu Gothic" fill="#333">事務員1人</text>
+  <rect x="105" y="24" width="125" height="18" rx="3" fill="#e67e22" opacity="0.8"/>
+  <text x="234" y="37" font-size="9" font-family="Yu Gothic" fill="#e67e22" font-weight="bold">25万円</text>
+
+  <text x="100" y="56" font-size="8" text-anchor="end" font-family="Yu Gothic" fill="#333">社長の残業</text>
+  <rect x="105" y="44" width="75" height="18" rx="3" fill="#f39c12" opacity="0.8"/>
+  <text x="184" y="57" font-size="9" font-family="Yu Gothic" fill="#f39c12" font-weight="bold">15万円</text>
+
+  <text x="100" y="78" font-size="9" text-anchor="end" font-family="Yu Gothic" fill="#27ae60" font-weight="bold">建築ブースト</text>
+  <rect x="105" y="65" width="50" height="20" rx="3" fill="#27ae60"/>
+  <text x="160" y="80" font-size="10" font-family="Yu Gothic" fill="#27ae60" font-weight="bold">10万円</text>
+
+  <text x="300" y="80" font-size="11" font-family="Yu Gothic" fill="#1a2d42" font-weight="bold">見積2件で元が取れる</text>
+</svg>
+
+<div class="footer">建築ブースト セールス資料 ｜ 有限会社中野工務店 ｜ 特許出願中</div>
 </div>
 
+<!-- ====== P6: 月25万＋導入フロー — クロージング続き（第6原則） ====== -->
+<div class="page">
 <h2>月25万円は「高い」ですか？（プロプランの場合）</h2>
 
 <table>
@@ -272,17 +347,15 @@ tr:nth-child(even) td { background: #f9fafb; }
 <tr><td>社長＋事務員の見積残業（2人分）</td><td class="num red">300,000円</td></tr>
 <tr><td>外注の積算事務所に依頼（月10件）</td><td class="num red">300,000〜500,000円</td></tr>
 <tr><td>見積の遅れで失注（月1件）</td><td class="num red">粗利50〜100万円</td></tr>
-<tr><td>粗利計算ミスで赤字工事（年2件）</td><td class="num red">月換算 80,000円</td></tr>
-<tr style="background:#e8fdf0"><td><strong>建築ブースト（プロプラン）</strong></td><td class="num green" style="font-size:14pt">250,000円</td></tr>
+<tr style="background:#e8fdf0"><td><strong>建築ブースト（プロプラン）</strong></td><td class="num green" style="font-size:13pt">250,000円</td></tr>
 </tbody>
 </table>
 
 <div class="gain-box">
 <h3>プロプランなら——</h3>
-<p>月200回のAI見積で、<strong>複数の担当者が同時に見積対応</strong>可能。</p>
 <p>人を1人雇うより<strong>10万円安く</strong>、しかも<strong>休まない・辞めない・ミスしない</strong>。</p>
 <p>積算事務所への外注を<strong>完全に内製化</strong>できます。</p>
-<p style="font-size:13pt;margin-top:8px"><strong>「人を雇うか、建築ブーストを入れるか」——答えは明確です。</strong></p>
+<p style="font-size:12pt;margin-top:6px"><strong>「人を雇うか、建築ブーストを入れるか」——答えは明確です。</strong></p>
 </div>
 
 <h2>導入の流れ</h2>
@@ -300,7 +373,7 @@ tr:nth-child(even) td { background: #f9fafb; }
 <div class="footer">建築ブースト セールス資料 ｜ 有限会社中野工務店 ｜ 特許出願中</div>
 </div>
 
-<!-- ====== P6: フォローアップ — 第7原則 ====== -->
+<!-- ====== P7: フォローアップ — 第7原則 ====== -->
 <div class="page">
 <h2>よくあるご質問</h2>
 
