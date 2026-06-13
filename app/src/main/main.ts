@@ -1619,6 +1619,9 @@ app.whenReady().then(async () => {
     const [salt, hash] = (user.password_hash || '').split(':');
     const inputHash = crypto.createHash('sha256').update(salt + password).digest('hex');
     if (hash !== inputHash) return { ok: false, error: 'ユーザー名またはパスワードが違います' };
+    // 承認待ちチェック
+    const tenant = queryOne('SELECT plan FROM tenants WHERE id = ?', [user.tenant_id]);
+    if (tenant?.plan === 'pending') return { ok: false, error: '管理者の承認待ちです。しばらくお待ちください。' };
     // テナント切替
     setCurrentTenant(user.tenant_id);
     currentSession = { username: user.username, tenantId: user.tenant_id, role: user.role };
@@ -1638,6 +1641,63 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('auth:isOwner', () => {
     return require('os').hostname() === 'DESKTOP-MRETEV6' && require('os').userInfo().username === 'mitsu';
+  });
+
+  ipcMain.handle('auth:register', async (_e, data: any) => {
+    const { username, password, company, email, tel } = data;
+    // ユーザー名重複チェック
+    const existing = queryOne('SELECT id FROM users WHERE username = ?', [username]);
+    if (existing) return { ok: false, error: 'このユーザー名は既に使われています' };
+
+    // テナント作成（承認待ち状態）
+    const tenantId = runSql(
+      'INSERT INTO tenants (name, plan, plan_limit, contact_company, contact_email, contact_tel) VALUES (?, ?, ?, ?, ?, ?)',
+      [company, 'pending', 0, company, email || '', tel || '']
+    );
+
+    // ユーザー作成
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.createHash('sha256').update(salt + password).digest('hex');
+    const saltedHash = `${salt}:${hash}`;
+    runSql('INSERT INTO users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
+      [username, saltedHash, 'admin', tenantId]);
+
+    logAudit('register', 'user', tenantId, `${company} (${username}) — 承認待ち`);
+
+    // メール通知
+    try {
+      const nodemailer = require('nodemailer');
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
+      });
+      await transporter.sendMail({
+        from: '建築ブースト <mitsuakinakano0215@gmail.com>',
+        to: 'mitsuakinakano0215@gmail.com',
+        subject: `【新規登録申請】${company} — ${username}`,
+        text: [
+          '新規ユーザー登録申請がありました。',
+          '',
+          '【申請者情報】',
+          `■ 会社名: ${company}`,
+          `■ ユーザー名: ${username}`,
+          `■ メール: ${email || '未入力'}`,
+          `■ 電話: ${tel || '未入力'}`,
+          `■ テナントID: ${tenantId}`,
+          `■ 日時: ${new Date().toLocaleString('ja-JP')}`,
+          `■ PC: ${require('os').hostname()}`,
+          '',
+          '承認するには管理画面でプランを "standard" に変更してください。',
+          '',
+          '---',
+          '建築ブースト 自動通知',
+        ].join('\n'),
+      });
+    } catch (e: any) {
+      console.error('Registration notification failed:', e?.message || e);
+    }
+
+    return { ok: true };
   });
 
   // ── ユーザー管理 ──
