@@ -403,9 +403,9 @@ function PlanManagement() {
         <div style={{ flex: 1, minWidth: 280 }}>
           <div style={{ fontSize: 13, color: '#888', marginBottom: 4 }}>今月のAIストック使用量</div>
           <div style={{ fontSize: 20, fontWeight: 'bold', color: barColor }}>
-            {planInfo.used} <span style={{ fontSize: 14, fontWeight: 'normal', color: '#888' }}>/ {planInfo.limit} 回</span>
+            {planInfo.used} <span style={{ fontSize: 14, fontWeight: 'normal', color: '#888' }}>/ {planInfo.limit} 単位</span>
             <span style={{ fontSize: 14, fontWeight: 'normal', marginLeft: 8, color: barColor }}>
-              （残り {planInfo.remaining} 回）
+              （残り {planInfo.remaining} 単位）
             </span>
           </div>
           {/* プログレスバー */}
@@ -424,10 +424,10 @@ function PlanManagement() {
         }}>
           {usagePercent >= 100
             ? planInfo.plan === 'trial'
-              ? '🎁 無料トライアル（50回）を使い切りました。引き続きご利用いただくには有料プランへの移行が必要です。下記プランからお選びください。'
+              ? '🎁 クレジットを使い切りました。引き続きご利用いただくにはプランのアップグレードが必要です。下記プランからお選びください。'
               : '⚠️ 今月のAIストックの上限に達しました。追加ストックが必要な場合は管理者にお問い合わせください。'
             : planInfo.plan === 'trial'
-              ? `🎁 無料トライアル中です（残り${planInfo.remaining}回）。`
+              ? `🎁 残りクレジット: ${planInfo.remaining}単位`
               : '⚠️ AIストックの残りが少なくなっています。'}
         </div>
       )}
@@ -482,10 +482,10 @@ function PlanManagement() {
                 <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 4 }}>{p.name}</div>
                 <div style={{ fontSize: 20, fontWeight: 'bold', color: key === 'trial' ? '#27ae60' : '#2c3e50', marginBottom: 4 }}>
                   {key === 'trial' ? '無料' : `¥${p.price.toLocaleString()}`}
-                  <span style={{ fontSize: 11, fontWeight: 'normal' }}>{key === 'trial' ? '（1回限り）' : '/月'}</span>
+                  <span style={{ fontSize: 11, fontWeight: 'normal' }}>/年</span>
                 </div>
                 <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
-                  月 {key === 'enterprise' ? '個別設定' : p.monthlyLimit + '回'}
+                  月 {key === 'enterprise' ? '個別設定' : p.monthlyLimit + '単位'}
                 </div>
                 <div style={{ fontSize: 11, color: '#aaa', marginBottom: 8 }}>{p.description}</div>
                 {canRequest && (
