@@ -141,18 +141,20 @@ async function loadData() {
 
 // ── Actions ──
 async function toggleActive(id, current) {
-  await sbPatch('remote_licenses', `?id=eq.${id}`, {
+  const result = await sbPatch('remote_licenses', `?id=eq.${id}`, {
     active: !current,
     updated_at: new Date().toISOString()
   });
+  if (result !== null) alert(current ? '停止しました' : '有効化しました');
   await loadData();
 }
 
 async function setCredits(id, credits) {
-  await sbPatch('remote_licenses', `?id=eq.${id}`, {
+  const result = await sbPatch('remote_licenses', `?id=eq.${id}`, {
     credits: parseInt(credits),
     updated_at: new Date().toISOString()
   });
+  if (result !== null) alert('クレジットを ' + credits + ' に変更しました');
   await loadData();
 }
 
@@ -341,7 +343,7 @@ function renderModal() {
           </div>
           <div class="actions">
             <button class="btn" style="background:#444;color:#ccc" onclick="modal=null;render()">キャンセル</button>
-            <button class="btn btn-primary" onclick="setCredits('${modal.data.id}',document.getElementById('m_newcredit').value);modal=null">保存</button>
+            <button class="btn btn-primary" onclick="setCredits('${modal.data.id}',document.getElementById('m_newcredit').value).then(()=>{modal=null;render()})">保存</button>
           </div>
         </div>
       </div>`;
