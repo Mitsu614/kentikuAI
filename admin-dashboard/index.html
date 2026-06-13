@@ -376,7 +376,7 @@ function renderLogin() {
       <div class="login-box">
         <h2>管理ダッシュボード</h2>
         <p style="text-align:center;font-size:12px;color:#888;margin-bottom:16px">建築ブースト クレジット管理</p>
-        <input id="login_key" type="password" placeholder="パスワードを入力" onkeydown="if(event.key==='Enter')quickLogin()">
+        <input id="login_key" type="password" placeholder="Supabase シークレットキーを入力" onkeydown="if(event.key==='Enter')quickLogin()">
         <button onclick="quickLogin()">ログイン</button>
         <p style="text-align:center;font-size:10px;color:#555;margin-top:8px">パスワード: 管理者パスワード</p>
         <div id="login_error" class="error"></div>
@@ -385,23 +385,16 @@ function renderLogin() {
 }
 
 async function tryLogin() {
-  const pw = document.getElementById('login_key').value.trim();
-  if (!pw) { document.getElementById('login_error').textContent = 'パスワードを入力してください'; return; }
-  // パスワードはSHA-256ハッシュで比較（平文をコードに置かない）
-  async function sha256(str) { const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)); return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join(''); }
-  const pwHash = await sha256(pw);
-  if (pwHash !== 'be851ed9441afe26d42fdf92b2eaa06269ff5029a110669023de9ea8e4faa4e8') {
-    document.getElementById('login_error').textContent = 'パスワードが違います';
-    return;
-  }
-  SUPABASE_KEY = SUPABASE_ANON_KEY;
+  const key = document.getElementById('login_key').value.trim();
+  if (!key) { document.getElementById('login_error').textContent = 'シークレットキーを入力してください'; return; }
+  SUPABASE_KEY = key;
   try {
     const test = await fetch(`${SUPABASE_URL}/rest/v1/remote_licenses?select=id&limit=1`, {
-      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+      headers: { 'apikey': key, 'Authorization': `Bearer ${key}` }
     });
     if (test.ok) {
       authenticated = true;
-      sessionStorage.setItem('sb_auth', 'true');
+      sessionStorage.setItem('sb_key', key);
       await loadData();
     } else {
       document.getElementById('login_error').textContent = 'Supabase接続エラー';
@@ -419,8 +412,8 @@ function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt
 
 // ── Init ──
 window.onload = function() {
-  const saved = sessionStorage.getItem('sb_auth');
-  if (saved) { SUPABASE_KEY = SUPABASE_ANON_KEY; authenticated = true; loadData(); }
+  const saved = sessionStorage.getItem('sb_key');
+  if (saved) { SUPABASE_KEY = saved; authenticated = true; loadData(); }
   else render();
 };
 
