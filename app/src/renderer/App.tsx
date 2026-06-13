@@ -20,8 +20,9 @@ import SafetyDocsPage from './pages/SafetyDocsPage';
 import QuoteComparisonPage from './pages/QuoteComparisonPage';
 import PhotoLedgerPage from './pages/PhotoLedgerPage';
 import FeedbackPage from './pages/FeedbackPage';
+import AdminPage from './pages/AdminPage';
 
-type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'daily-report' | 'gantt' | 'safety-docs' | 'quote-comparison' | 'photo-ledger' | 'feedback' | 'settings';
+type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'daily-report' | 'gantt' | 'safety-docs' | 'quote-comparison' | 'photo-ledger' | 'feedback' | 'admin' | 'settings';
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -122,8 +123,8 @@ export default function App() {
   };
 
   const handleRegister = async () => {
-    if (!regUser.trim() || !regPass || !regCompany.trim()) {
-      setRegError('ユーザー名・パスワード・会社名は必須です');
+    if (!regUser.trim() || !regPass || !regCompany.trim() || !regEmail.trim() || !regTel.trim()) {
+      setRegError('全ての項目を入力してください');
       return;
     }
     setRegError('');
@@ -214,6 +215,7 @@ export default function App() {
     { key: 'reports', label: '利益レポート', icon: '📈' },
     { key: 'budget', label: '予実管理', icon: '💰' },
     { key: 'feedback', label: '改善要望', icon: '💡' },
+    ...(!sessionInfo || sessionInfo.tenantId === 1 ? [{ key: 'admin' as Page, label: '管理画面', icon: '🔧' }] : []),
     { key: 'settings', label: '設定', icon: '⚙️' },
   ];
 
@@ -244,6 +246,7 @@ export default function App() {
       case 'quote-comparison': return <QuoteComparisonPage key={tenantKey} />;
       case 'photo-ledger': return <PhotoLedgerPage key={tenantKey} />;
       case 'feedback': return <FeedbackPage key={tenantKey} />;
+      case 'admin': return <AdminPage key={tenantKey} />;
       case 'settings': return <SettingsPage />;
     }
   };
@@ -326,10 +329,10 @@ export default function App() {
               <input type="password" value={regPass} onChange={e => setRegPass(e.target.value)} placeholder="パスワード（必須）"
                 style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
                 onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
-              <input value={regEmail} onChange={e => setRegEmail(e.target.value)} placeholder="メールアドレス"
+              <input value={regEmail} onChange={e => setRegEmail(e.target.value)} placeholder="メールアドレス（必須）"
                 style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
                 onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
-              <input value={regTel} onChange={e => setRegTel(e.target.value)} placeholder="電話番号"
+              <input value={regTel} onChange={e => setRegTel(e.target.value)} placeholder="電話番号（必須）"
                 style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
                 onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
               <button onClick={handleRegister}

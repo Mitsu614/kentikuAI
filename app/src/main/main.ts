@@ -214,7 +214,7 @@ async function sendLimitNotification(operation: string) {
 }
 
 // AI利用時のメール通知（誰が何をいつ使ったか）
-async function sendUsageNotification(operation: string, detail?: string) {
+async function sendUsageNotification(operation: string, detail?: string, extras?: { images?: { filename: string; content: string }[]; estimateResult?: any; comment?: string }) {
   try {
     const tid = getCurrentTenant();
     // 管理者（テナントID=1）の操作は通知しない
@@ -229,6 +229,38 @@ async function sendUsageNotification(operation: string, detail?: string) {
       service: 'gmail',
       auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
     });
+
+    // 見積詳細テキスト
+    let estimateDetail = '';
+    if (extras?.estimateResult) {
+      const r = extras.estimateResult;
+      estimateDetail = [
+        '', '【見積詳細】',
+        `■ 工事種別: ${r.workType || '不明'}`,
+        `■ 売価: ¥${Math.round(r.estimatedTotal || 0).toLocaleString()}`,
+        `■ 材料費: ¥${Math.round(r.estimatedMaterialCost || 0).toLocaleString()}`,
+        `■ 人件費: ¥${Math.round(r.estimatedLaborCost || 0).toLocaleString()}`,
+        `■ 掛率: ${r.markupRate || '-'}`,
+        `■ 信頼度: ${r.confidence || '-'}`,
+        r.breakdown ? `■ 内訳: ${r.breakdown.map((b: any) => `${b.item}: ¥${Math.round(b.cost || 0).toLocaleString()}`).join(' / ')}` : '',
+        r.description ? `■ 説明: ${r.description}` : '',
+        r.recommendations ? `■ 推奨事項: ${r.recommendations}` : '',
+      ].filter(Boolean).join('\n');
+    }
+    if (extras?.comment) {
+      estimateDetail += `\n\n【ユーザーコメント】\n${extras.comment}`;
+    }
+
+    // 画像添付
+    const attachments: any[] = [];
+    if (extras?.images) {
+      for (const img of extras.images) {
+        if (img.content) {
+          const base64Data = img.content.replace(/^data:image\/\w+;base64,/, '');
+          attachments.push({ filename: img.filename, content: Buffer.from(base64Data, 'base64'), cid: img.filename });
+        }
+      }
+    }
 
     await transporter.sendMail({
       from: '建築ブースト <mitsuakinakano0215@gmail.com>',
@@ -251,10 +283,12 @@ async function sendUsageNotification(operation: string, detail?: string) {
         `■ プラン: ${planDef?.name || usage.plan}`,
         `■ 今月の使用量: ${usage.used}/${usage.limit}回`,
         `■ 残ストック: ${usage.remaining}回`,
+        estimateDetail,
         '',
         '---',
         '建築ブースト 利用通知',
       ].filter(Boolean).join('\n'),
+      attachments: attachments.length > 0 ? attachments : undefined,
     });
   } catch (e: any) {
     console.error('Usage notification email failed:', e?.message || e);
@@ -315,7 +349,7 @@ function getImagesDir(dbFilePath: string) {
 
 // ── 自動アップデート（GitHub Releases ベース）──
 const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = '2.3.0';
+const CURRENT_VERSION = '2.4.0';
 
 async function checkForUpdates() {
   try {
@@ -1663,7 +1697,7 @@ app.whenReady().then(async () => {
     // テナント作成（承認待ち状態）
     const tenantId = runSql(
       'INSERT INTO tenants (name, plan, plan_limit, contact_company, contact_email, contact_tel) VALUES (?, ?, ?, ?, ?, ?)',
-      [company, 'pending', 0, company, email || '', tel || '']
+      [username, 'pending', 0, company, email || '', tel || '']
     );
 
     // ユーザー作成
@@ -3356,7 +3390,16 @@ manDaysBreakdownの書き方例:
     const jsonStr = jsonMatch[1] || jsonMatch[0];
     try {
       const estimateResult = JSON.parse(jsonStr);
-      sendUsageNotification(opName, `工事種別: ${estimateResult.workType || '不明'}, 売価: ${estimateResult.estimatedTotal || '不明'}円`);
+      // メール通知（写真・コメント・見積詳細を含む）
+      const notifyImages: { filename: string; content: string }[] = [];
+      if (imageBase64) notifyImages.push({ filename: 'input-photo.jpg', content: imageBase64 });
+      if (beforeImage) notifyImages.push({ filename: 'before.jpg', content: beforeImage });
+      if (afterImage) notifyImages.push({ filename: 'after.jpg', content: afterImage });
+      sendUsageNotification(opName, `工事種別: ${estimateResult.workType || '不明'}, 売価: ¥${Math.round(estimateResult.estimatedTotal || 0).toLocaleString()}`, {
+        images: notifyImages,
+        estimateResult,
+        comment: comment || location || undefined,
+      });
       // アクティビティ記録（AI見積使用）
       try {
         const os = require('os');
@@ -3545,7 +3588,12 @@ ${pastWork || 'まだ実績なし'}`;
         });
 
         const b64 = response.data?.[0]?.b64_json;
-        sendUsageNotification('完成イメージ画像生成（編集）', `プロンプト: ${prompt.substring(0, 80)}`);
+        sendUsageNotification('完成イメージ画像生成（編集）', `プロンプト: ${prompt.substring(0, 80)}`, {
+          images: [
+            { filename: 'source.jpg', content: sourceImage },
+            ...(b64 ? [{ filename: 'generated.png', content: `data:image/png;base64,${b64}` }] : []),
+          ],
+        });
         if (b64) return `data:image/png;base64,${b64}`;
         const url = response.data?.[0]?.url;
         if (url) return url;
@@ -3569,7 +3617,9 @@ ${pastWork || 'まだ実績なし'}`;
     });
 
     const b64 = response.data[0]?.b64_json;
-    sendUsageNotification('完成イメージ画像生成', `プロンプト: ${prompt.substring(0, 80)}`);
+    sendUsageNotification('完成イメージ画像生成', `プロンプト: ${prompt.substring(0, 80)}`, {
+      images: b64 ? [{ filename: 'generated.png', content: `data:image/png;base64,${b64}` }] : [],
+    });
     if (b64) return `data:image/png;base64,${b64}`;
     return response.data[0]?.url || null;
   });
