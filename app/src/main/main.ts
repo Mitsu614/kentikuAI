@@ -556,8 +556,8 @@ app.whenReady().then(async () => {
   if (!isOwner) {
     try {
       const https = require('https');
-      const tenant = queryOne('SELECT name FROM tenants WHERE id = ?', [getCurrentTenant()]);
-      const tenantName = encodeURIComponent(tenant?.name || '');
+      const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [getCurrentTenant()]);
+      const tenantName = encodeURIComponent(tenant?.contact_company || tenant?.name || '');
       const licenseCheck: any = await new Promise((resolve) => {
         const req = https.get(
           `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${tenantName}&select=id,active,credits,blocked_message,plan,max_credits`,
@@ -589,11 +589,11 @@ app.whenReady().then(async () => {
         runSql('UPDATE tenants SET credits = ?, plan_limit = ?, plan = ? WHERE id = ?', [lic.credits, remoteLimit, remotePlan, getCurrentTenant()]);
       } else if (Array.isArray(licenseCheck) && licenseCheck.length === 0) {
         // 未登録 → 自動でremote_licensesに追加
-        const tenant = queryOne('SELECT name, credits, plan_limit FROM tenants WHERE id = ?', [getCurrentTenant()]);
+        const tenant = queryOne('SELECT name, credits, plan_limit, contact_company FROM tenants WHERE id = ?', [getCurrentTenant()]);
         const newId = 'auto_' + Date.now().toString(36);
         const regBody = JSON.stringify({
           id: newId,
-          company_name: tenant?.name || '不明',
+          company_name: tenant?.contact_company || tenant?.name || '不明',
           plan: 'trial',
           credits: tenant?.credits || 50,
           max_credits: tenant?.plan_limit || 50,
