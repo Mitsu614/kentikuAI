@@ -84,7 +84,7 @@ export function getMonthlyUsage(tenantId?: number): { used: number; limit: numbe
   const tenant = queryOne('SELECT plan, plan_limit FROM tenants WHERE id = ?', [tid]);
   const plan = tenant?.plan || 'standard';
   const planDef = PLANS[plan];
-  const limit = tenant?.plan_limit || planDef?.monthlyLimit || 200;
+  const limit = tenant?.plan_limit || planDef?.monthlyLimit || 50;
 
   // トライアルは全期間通算、有料プランは月次リセット
   let row;
@@ -572,7 +572,7 @@ function migrate() {
       db.run("ALTER TABLE tenants ADD COLUMN plan TEXT DEFAULT 'standard'");
     }
     if (!tenantCols.find((c: any) => c.name === 'plan_limit')) {
-      db.run('ALTER TABLE tenants ADD COLUMN plan_limit INTEGER DEFAULT 200');
+      db.run('ALTER TABLE tenants ADD COLUMN plan_limit INTEGER DEFAULT 50');
     }
     if (!tenantCols.find((c: any) => c.name === 'plan_started_at')) {
       db.run('ALTER TABLE tenants ADD COLUMN plan_started_at TEXT');
