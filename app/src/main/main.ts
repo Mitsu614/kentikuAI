@@ -568,6 +568,30 @@ app.whenReady().then(async () => {
     }
   }
 
+  // ── クレジット残量をSupabaseに同期 ──
+  async function syncCreditsToRemote() {
+    if (isOwner) return;
+    try {
+      const https = require('https');
+      const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [getCurrentTenant()]);
+      const companyName = encodeURIComponent(tenant?.contact_company || tenant?.name || '');
+      const usage = getMonthlyUsage();
+      const body = JSON.stringify({ credits: usage.remaining, updated_at: new Date().toISOString() });
+      await new Promise<void>((resolve) => {
+        const req = https.request({
+          hostname: 'slhgkedzlormaovwpadi.supabase.co',
+          path: `/rest/v1/remote_licenses?company_name=eq.${companyName}`,
+          method: 'PATCH',
+          headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
+          timeout: 5000,
+        }, () => resolve());
+        req.on('error', () => resolve());
+        req.write(body);
+        req.end();
+      });
+    } catch (_) {}
+  }
+
   // ── リモートライセンスチェック（関数化して定期実行） ──
   async function syncRemoteLicense(isStartup = false) {
     if (isOwner) return;
@@ -3005,6 +3029,7 @@ ${pages}</body></html>`;
       if (ocrCreditResult.limitReached) await sendLimitNotification('OCR取込');
       throw new Error('ERROR: 今月のAIストックの上限に達しました。管理者に連絡済みです。追加ストックについてはご連絡をお待ちください。');
     }
+    syncCreditsToRemote();
     const config = loadApiConfig();
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。サポートにお問い合わせください。');
 
@@ -3137,6 +3162,7 @@ ${pages}</body></html>`;
       }
       throw new Error('ERROR: 今月のAIストックの上限に達しました。管理者に連絡済みです。追加ストックについてはご連絡をお待ちください。');
     }
+    syncCreditsToRemote();
 
     const config = loadApiConfig();
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。サポートにお問い合わせください。設定画面から入力してください。');
@@ -3498,6 +3524,7 @@ manDaysBreakdownの書き方例:
     if (!creditResult.success) {
       throw new Error('ERROR: 今月のクレジット上限に達しました。');
     }
+    syncCreditsToRemote();
     const config = loadApiConfig();
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。');
 
@@ -3626,6 +3653,7 @@ ${pastWork || 'まだ実績なし'}`;
       if (imgCreditResult.limitReached) await sendLimitNotification('画像生成');
       throw new Error('ERROR: 今月のAIストックの上限に達しました。管理者に連絡済みです。追加ストックについてはご連絡をお待ちください。');
     }
+    syncCreditsToRemote();
     const config = loadApiConfig();
     if (!config.openaiKey) throw new Error('画像生成機能の初期化に失敗しました。サポートにお問い合わせください。');
 
