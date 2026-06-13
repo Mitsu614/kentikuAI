@@ -568,8 +568,9 @@ app.whenReady().then(async () => {
     }
   }
 
-  // ── リモートライセンスチェック ──
-  if (!isOwner) {
+  // ── リモートライセンスチェック（関数化して定期実行） ──
+  async function syncRemoteLicense(isStartup = false) {
+    if (isOwner) return;
     try {
       const https = require('https');
       const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [getCurrentTenant()]);
@@ -590,13 +591,10 @@ app.whenReady().then(async () => {
       if (Array.isArray(licenseCheck) && licenseCheck.length > 0) {
         const lic = licenseCheck[0];
         if (!lic.active) {
-          dialog.showErrorBox('ご利用停止', lic.blocked_message || 'ご利用期間が終了しました。ご契約については担当者にお問い合わせください。');
-          app.quit();
-          return;
-        }
-        if (lic.credits <= 0) {
-          dialog.showErrorBox('クレジット残量不足', 'AIクレジットが0です。追加クレジットについては担当者にお問い合わせください。');
-          app.quit();
+          if (isStartup) {
+            dialog.showErrorBox('ご利用停止', lic.blocked_message || 'ご利用期間が終了しました。ご契約については担当者にお問い合わせください。');
+            app.quit();
+          }
           return;
         }
         // リモートのプラン・クレジットをローカルに同期
@@ -629,6 +627,12 @@ app.whenReady().then(async () => {
     } catch (_) {
       // ネットワークエラー時はローカルのクレジットで続行
     }
+  }
+
+  // 起動時に1回実行 + 5分ごとに定期チェック
+  if (!isOwner) {
+    await syncRemoteLicense(true);
+    setInterval(() => syncRemoteLicense(false), 5 * 60 * 1000);
 
     // ── アクティビティ送信（起動通知） ──
     try {
@@ -3919,7 +3923,6 @@ ${pastWork || 'まだ実績なし'}`;
     logAudit('import', 'data', 0, `インポート: ${raw.tenantName} - 物件${imported.properties} 材料${imported.materials} 施工${imported.constructions} 請求書${imported.invoices} 写真${imported.photos}`);
     return { success: true, imported, tenantName: raw.tenantName };
   });
-});
 
   // ── フィードバック・改善要望 ──
   ipcMain.handle('feedback:list', () => listFeedbackRequests());
@@ -4007,6 +4010,8 @@ ${pastWork || 'まだ実績なし'}`;
       data: log,
     };
   });
+
+});
 
 // ── 終了時にテナントデータを自動スナップショット ──
 function silentSnapshot() {
