@@ -19,8 +19,9 @@ import GanttPage from './pages/GanttPage';
 import SafetyDocsPage from './pages/SafetyDocsPage';
 import QuoteComparisonPage from './pages/QuoteComparisonPage';
 import PhotoLedgerPage from './pages/PhotoLedgerPage';
+import FeedbackPage from './pages/FeedbackPage';
 
-type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'daily-report' | 'gantt' | 'safety-docs' | 'quote-comparison' | 'photo-ledger' | 'settings';
+type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'daily-report' | 'gantt' | 'safety-docs' | 'quote-comparison' | 'photo-ledger' | 'feedback' | 'settings';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
@@ -30,13 +31,38 @@ export default function App() {
   const [tenantKey, setTenantKey] = useState(0);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('darkMode') === 'true');
   const [showNewTenant, setShowNewTenant] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [showOnlineToast, setShowOnlineToast] = useState(false);
   const [newTenantName, setNewTenantName] = useState('');
+  const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('onboarding_done'));
+  const [onboardingStep, setOnboardingStep] = useState(0);
+
+  const onboardingSteps = [
+    { icon: '👋', title: 'ようこそ！建築ブーストへ', description: '建築見積をAIが自動作成する、建設業専用の管理システムです。\n初めてでも3ステップで見積が作れます。' },
+    { icon: '📷', title: 'ステップ1: 写真を撮る', description: '現場の写真を1枚撮るだけ。\nAIが工事の内容を自動判定し、材料費・人件費を計算します。' },
+    { icon: '🤖', title: 'ステップ2: AIが見積作成', description: '写真+コメントで見積を自動生成。\nチャットで「外壁塗装」と話しかけるだけでもOK。' },
+    { icon: '📄', title: 'ステップ3: 書類を自動出力', description: '見積書・請求書・発注書をワンクリックでPDF出力。\n物件・施工・請求書が自動で紐づきます。' },
+    { icon: '💡', title: '困ったら「改善要望」へ', description: 'サイドバーの「改善要望」からいつでもご意見をお寄せください。\nお客様の声がサービス改善に直結します。' },
+  ];
+
+  const closeOnboarding = () => {
+    setShowOnboarding(false);
+    localStorage.setItem('onboarding_done', 'true');
+  };
 
   useEffect(() => { loadTenants(); }, []);
   useEffect(() => {
     document.body.classList.toggle('dark-mode', darkMode);
     localStorage.setItem('darkMode', String(darkMode));
   }, [darkMode]);
+
+  useEffect(() => {
+    const handleOnline = () => { setIsOnline(true); setShowOnlineToast(true); setTimeout(() => setShowOnlineToast(false), 3000); };
+    const handleOffline = () => { setIsOnline(false); setShowOnlineToast(false); };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => { window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
+  }, []);
 
   const loadTenants = async () => {
     try {
@@ -94,6 +120,7 @@ export default function App() {
     { key: 'calendar', label: 'カレンダー', icon: '📅' },
     { key: 'reports', label: '利益レポート', icon: '📈' },
     { key: 'budget', label: '予実管理', icon: '💰' },
+    { key: 'feedback', label: '改善要望', icon: '💡' },
     { key: 'settings', label: '設定', icon: '⚙️' },
   ];
 
@@ -123,6 +150,7 @@ export default function App() {
       case 'safety-docs': return <SafetyDocsPage key={tenantKey} />;
       case 'quote-comparison': return <QuoteComparisonPage key={tenantKey} />;
       case 'photo-ledger': return <PhotoLedgerPage key={tenantKey} />;
+      case 'feedback': return <FeedbackPage key={tenantKey} />;
       case 'settings': return <SettingsPage />;
     }
   };
@@ -187,6 +215,67 @@ export default function App() {
           ))}
         </ul>
       </aside>
+      {/* オンボーディング */}
+      {showOnboarding && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 10000,
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: 20, padding: '40px 36px', maxWidth: 480, width: '90%',
+            textAlign: 'center', boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+          }}>
+            <div style={{ fontSize: 64, marginBottom: 16 }}>{onboardingSteps[onboardingStep].icon}</div>
+            <h2 style={{ fontSize: 22, marginBottom: 12, color: '#1a2332' }}>{onboardingSteps[onboardingStep].title}</h2>
+            <p style={{ fontSize: 16, lineHeight: 1.8, color: '#555', whiteSpace: 'pre-wrap', marginBottom: 24 }}>
+              {onboardingSteps[onboardingStep].description}
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginBottom: 20 }}>
+              {onboardingSteps.map((_, i) => (
+                <div key={i} style={{
+                  width: 10, height: 10, borderRadius: '50%',
+                  background: i === onboardingStep ? '#3a7bd5' : '#ddd',
+                  transition: 'background 0.3s',
+                }} />
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+              {onboardingStep > 0 && (
+                <button onClick={() => setOnboardingStep(s => s - 1)}
+                  style={{ padding: '12px 24px', fontSize: 16, borderRadius: 10, border: '2px solid #ddd', background: '#fff', cursor: 'pointer', minHeight: 48 }}>
+                  戻る
+                </button>
+              )}
+              {onboardingStep < onboardingSteps.length - 1 ? (
+                <button onClick={() => setOnboardingStep(s => s + 1)}
+                  style={{ padding: '12px 32px', fontSize: 16, borderRadius: 10, border: 'none', background: '#3a7bd5', color: '#fff', cursor: 'pointer', fontWeight: 'bold', minHeight: 48 }}>
+                  次へ
+                </button>
+              ) : (
+                <button onClick={closeOnboarding}
+                  style={{ padding: '12px 32px', fontSize: 16, borderRadius: 10, border: 'none', background: '#27ae60', color: '#fff', cursor: 'pointer', fontWeight: 'bold', minHeight: 48 }}>
+                  始める！
+                </button>
+              )}
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <span onClick={closeOnboarding} style={{ fontSize: 13, color: '#aaa', cursor: 'pointer' }}>スキップ</span>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* オフライン/オンライン表示 */}
+      {!isOnline && (
+        <div className="offline-banner">
+          ⚠ オフライン — 入力内容はローカルに自動保存されます
+        </div>
+      )}
+      {showOnlineToast && (
+        <div className="online-banner">
+          ✓ オンラインに復帰しました — データを同期中...
+        </div>
+      )}
       <main className="main-content">
         {renderPage()}
       </main>

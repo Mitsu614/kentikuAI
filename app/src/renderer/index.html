@@ -4,8 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>建築ブースト</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#3a7bd5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
   <div id="root"></div>
+  <script>
+    if ('serviceWorker' in navigator && !window.api) {
+      navigator.serviceWorker.register('/sw.js')
+        .then(reg => console.log('SW registered:', reg.scope))
+        .catch(err => console.log('SW registration failed:', err));
+    }
+  </script>
 </body>
 </html>

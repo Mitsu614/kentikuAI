@@ -200,4 +200,21 @@ contextBridge.exposeInMainWorld('api', {
   addPhotoLedgerEntry: (data: any) => ipcRenderer.invoke('photoLedger:add', data),
   deletePhotoLedgerEntry: (id: number) => ipcRenderer.invoke('photoLedger:delete', id),
   generatePhotoLedgerPDF: (data: any) => ipcRenderer.invoke('photoLedger:generatePDF', data),
+
+  // フィードバック・改善要望
+  listFeedback: () => ipcRenderer.invoke('feedback:list'),
+  listAllFeedback: () => ipcRenderer.invoke('feedback:listAll'),
+  createFeedback: (data: any) => ipcRenderer.invoke('feedback:create', data),
+  updateFeedbackStatus: (id: number, status: string, reply?: string) => ipcRenderer.invoke('feedback:updateStatus', id, status, reply),
+
+  // 受注/失注トラッキング
+  listOutcomes: () => ipcRenderer.invoke('outcomes:list'),
+  createOutcome: (data: any) => ipcRenderer.invoke('outcomes:create', data),
+  updateOutcome: (data: any) => ipcRenderer.invoke('outcomes:update', data),
+  deleteOutcome: (id: number) => ipcRenderer.invoke('outcomes:delete', id),
+  getOutcomeStats: () => ipcRenderer.invoke('outcomes:stats'),
+  getSimilarEstimates: (workType: string) => ipcRenderer.invoke('outcomes:similar', workType),
+
+  // 見積共有
+  getShareUrl: (logId: number) => ipcRenderer.invoke('estimates:shareUrl', logId),
 });

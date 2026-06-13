@@ -39,7 +39,7 @@ export function startServer(distPath: string) {
   app.use(express.json({ limit: '50mb' }));
 
   // ── 認証ミドルウェア（レート制限・セッション有効期限付き）──
-  const sessions = new Map<string, number>(); // token -> 有効期限タイムスタンプ
+  const sessions = new Map<string, { expiry: number; tenantId: number; username: string }>(); // token -> セッション情報
   const SESSION_TTL = 24 * 60 * 60 * 1000; // 24時間
   const authAttempts = new Map<string, { count: number; lastAttempt: number }>();
   const MAX_AUTH_ATTEMPTS = 5;
@@ -48,14 +48,13 @@ export function startServer(distPath: string) {
   // 期限切れセッションの定期クリーンアップ
   setInterval(() => {
     const now = Date.now();
-    for (const [token, expiry] of sessions) {
-      if (now > expiry) sessions.delete(token);
+    for (const [token, session] of sessions) {
+      if (now > session.expiry) sessions.delete(token);
     }
   }, 60 * 60 * 1000); // 1時間ごと
 
   app.post('/api/auth', (req: any, res: any) => {
-    const cfg = getConfigFn?.() || {};
-    if (!cfg.serverPassword) return res.json({ ok: true, token: 'none' });
+    const { username, password } = req.body || {};
 
     // レート制限チェック
     const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
@@ -64,18 +63,35 @@ export function startServer(distPath: string) {
       return res.status(429).json({ error: 'ログイン試行回数が上限に達しました。15分後に再試行してください。' });
     }
 
+    // ユーザー名+パスワード認証（テナント紐づけ）
+    if (username && password) {
+      const user = queryOne('SELECT id, username, role, tenant_id, password_hash FROM users WHERE username = ?', [username]);
+      if (user) {
+        const [salt, hash] = (user.password_hash || '').split(':');
+        const inputHash = crypto.createHash('sha256').update(salt + password).digest('hex');
+        if (hash === inputHash) {
+          authAttempts.delete(clientIp);
+          const token = crypto.randomBytes(32).toString('hex');
+          sessions.set(token, { expiry: Date.now() + SESSION_TTL, tenantId: user.tenant_id, username: user.username });
+          return res.json({ ok: true, token, tenantId: user.tenant_id, username: user.username });
+        }
+      }
+    }
+
+    // 従来のパスワード認証（後方互換）
+    const cfg = getConfigFn?.() || {};
+    if (!cfg.serverPassword) return res.json({ ok: true, token: 'none' });
     if (req.body?.password === cfg.serverPassword) {
-      // ログイン成功 → 試行回数リセット
       authAttempts.delete(clientIp);
       const token = crypto.randomBytes(32).toString('hex');
-      sessions.set(token, Date.now() + SESSION_TTL);
+      sessions.set(token, { expiry: Date.now() + SESSION_TTL, tenantId: getCurrentTenant(), username: 'admin' });
       return res.json({ ok: true, token });
     }
 
     // ログイン失敗 → 試行回数カウント
     const current = authAttempts.get(clientIp) || { count: 0, lastAttempt: 0 };
     authAttempts.set(clientIp, { count: current.count + 1, lastAttempt: Date.now() });
-    res.status(401).json({ error: 'パスワードが違います' });
+    res.status(401).json({ error: 'ユーザー名またはパスワードが違います' });
   });
 
   app.use((req: any, res: any, next: any) => {
@@ -88,43 +104,71 @@ export function startServer(distPath: string) {
     // 認証チェック（有効期限も確認）
     const token = req.headers['x-auth-token'] || req.query?.token;
     if (token && sessions.has(token)) {
-      const expiry = sessions.get(token)!;
-      if (Date.now() > expiry) {
+      const session = sessions.get(token)!;
+      if (Date.now() > session.expiry) {
         sessions.delete(token);
         return res.status(401).json({ error: 'セッションが期限切れです。再ログインしてください。' });
       }
-      // セッション延長（アクティブなユーザーは延長）
-      sessions.set(token, Date.now() + SESSION_TTL);
+      // セッション延長 + テナントIDをリクエストに付与
+      session.expiry = Date.now() + SESSION_TTL;
+      req.tenantId = session.tenantId;
       return next();
     }
     // ログインページ
     if (req.path === '/api/auth') return next();
     if (req.path === '/login') {
-      res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>ログイン</title>
-<style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;margin:0}
-.box{background:#fff;padding:32px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.1);width:320px;text-align:center}
-input{width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;margin:12px 0;font-size:16px;box-sizing:border-box}
-button{width:100%;padding:12px;background:#3a7bd5;color:#fff;border:none;border-radius:6px;font-size:16px;cursor:pointer}
-.err{color:#e74c3c;font-size:13px}</style></head><body>
-<div class="box"><h2>建築ブースト</h2><p id="e" class="err"></p>
-<input id="p" type="password" placeholder="パスワード" autofocus>
-<button onclick="login()">ログイン</button></div>
-<script>async function login(){const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('p').value})});const j=await r.json();if(j.ok){localStorage.setItem('auth_token',j.token);location.href='/?token='+j.token}else{document.getElementById('e').textContent=j.error}}</script>
-</body></html>`);
+      res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>ログイン - 建築ブースト</title>
+<style>body{font-family:'Segoe UI','Yu Gothic UI','Meiryo',sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;margin:0}
+.box{background:#fff;padding:36px;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,0.12);width:360px;text-align:center}
+h2{color:#1a2332;margin-bottom:8px}
+.sub{color:#888;font-size:13px;margin-bottom:20px}
+input{width:100%;padding:14px;border:2px solid #e0e0e0;border-radius:10px;margin:8px 0;font-size:16px;box-sizing:border-box;min-height:48px;outline:none;transition:border-color 0.2s}
+input:focus{border-color:#3a7bd5}
+button{width:100%;padding:14px;background:#3a7bd5;color:#fff;border:none;border-radius:10px;font-size:16px;cursor:pointer;min-height:52px;font-weight:bold;margin-top:12px;transition:background 0.2s}
+button:hover{background:#2a6bc5}
+.err{color:#e74c3c;font-size:14px;min-height:20px}</style></head><body>
+<div class="box">
+<h2>建築ブースト</h2>
+<p class="sub">AI建築見積管理システム</p>
+<p id="e" class="err"></p>
+<input id="u" type="text" placeholder="ユーザー名" autofocus>
+<input id="p" type="password" placeholder="パスワード">
+<button onclick="login()">ログイン</button>
+</div>
+<script>
+document.getElementById('p').addEventListener('keydown',function(e){if(e.key==='Enter')login()});
+async function login(){
+  const u=document.getElementById('u').value;
+  const p=document.getElementById('p').value;
+  if(!u||!p){document.getElementById('e').textContent='ユーザー名とパスワードを入力してください';return}
+  const r=await fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+  const j=await r.json();
+  if(j.ok){localStorage.setItem('auth_token',j.token);location.href='/?token='+j.token}
+  else{document.getElementById('e').textContent=j.error}
+}
+</script></body></html>`);
       return;
     }
     res.redirect('/login');
+  });
+
+  // Service Worker はキャッシュ禁止で配信
+  app.get('/sw.js', (_req: any, res: any) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Content-Type', 'application/javascript');
+    res.sendFile(path.join(distPath, 'sw.js'));
   });
 
   // 静的ファイル配信（renderer）
   app.use(express.static(distPath));
 
   // ── API Routes（テナント分離付き）──
-  const tid = () => getCurrentTenant();
+  // Web版: セッションのテナントIDを優先、なければデスクトップの現在テナント
+  const tid = (req?: any) => req?.tenantId || getCurrentTenant();
 
   // 物件
-  app.get('/api/properties', (_req: any, res: any) => {
-    res.json(queryAll('SELECT * FROM properties WHERE tenant_id = ? ORDER BY created_at DESC', [tid()]));
+  app.get('/api/properties', (req: any, res: any) => {
+    res.json(queryAll('SELECT * FROM properties WHERE tenant_id = ? ORDER BY created_at DESC', [tid(req)]));
   });
   app.post('/api/properties', (req: any, res: any) => {
     const d = req.body;
@@ -144,8 +188,8 @@ button{width:100%;padding:12px;background:#3a7bd5;color:#fff;border:none;border-
   });
 
   // 材料マスタ
-  app.get('/api/materials', (_req: any, res: any) => {
-    res.json(queryAll('SELECT * FROM materials WHERE tenant_id = ? ORDER BY category, name', [tid()]));
+  app.get('/api/materials', (req: any, res: any) => {
+    res.json(queryAll('SELECT * FROM materials WHERE tenant_id = ? ORDER BY category, name', [tid(req)]));
   });
   app.post('/api/materials', (req: any, res: any) => {
     const d = req.body;
@@ -165,12 +209,12 @@ button{width:100%;padding:12px;background:#3a7bd5;color:#fff;border:none;border-
   });
 
   // 施工（経費・売上付き）
-  app.get('/api/constructions', (_req: any, res: any) => {
+  app.get('/api/constructions', (req: any, res: any) => {
     const rows = queryAll(`
       SELECT c.*, p.name as property_name,
         (SELECT COALESCE(SUM(cm.quantity * cm.unit_price), 0) FROM construction_materials cm WHERE cm.construction_id = c.id) as material_cost
       FROM constructions c LEFT JOIN properties p ON c.property_id = p.id WHERE c.tenant_id = ? ORDER BY c.construction_date DESC
-    `, [tid()]);
+    `, [tid(req)]);
     res.json(rows.map((r: any) => {
       const matCost = r.material_cost || 0;
       const laborCost = r.labor_cost || 0;
@@ -231,13 +275,13 @@ button{width:100%;padding:12px;background:#3a7bd5;color:#fff;border:none;border-
   });
 
   // 請求書
-  app.get('/api/invoices', (_req: any, res: any) => {
+  app.get('/api/invoices', (req: any, res: any) => {
     const rows = queryAll(`
       SELECT i.*, c.title as construction_title, c.labor_cost, c.markup_rate, p.name as property_name,
         (SELECT COALESCE(SUM(cm.quantity * cm.unit_price), 0) FROM construction_materials cm WHERE cm.construction_id = c.id) as material_cost
       FROM invoices i LEFT JOIN constructions c ON i.construction_id = c.id LEFT JOIN properties p ON c.property_id = p.id
       WHERE i.tenant_id = ? ORDER BY i.issue_date DESC
-    `, [tid()]);
+    `, [tid(req)]);
     res.json(rows.map((r: any) => {
       const matCost = r.material_cost || 0;
       const laborCost = r.labor_cost || 0;
@@ -264,8 +308,8 @@ button{width:100%;padding:12px;background:#3a7bd5;color:#fff;border:none;border-
   });
 
   // ダッシュボード
-  app.get('/api/dashboard', (_req: any, res: any) => {
-    const constructions = queryAll('SELECT id, labor_cost, markup_rate FROM constructions WHERE tenant_id = ?', [tid()]);
+  app.get('/api/dashboard', (req: any, res: any) => {
+    const constructions = queryAll('SELECT id, labor_cost, markup_rate FROM constructions WHERE tenant_id = ?', [tid(req)]);
     let totalMaterialCost = 0, totalLaborCost = 0, totalSelling = 0, totalGrossProfit = 0;
     for (const c of constructions) {
       const mat = queryOne('SELECT SUM(quantity * unit_price) as total FROM construction_materials WHERE construction_id=?', [c.id]);
@@ -282,6 +326,49 @@ button{width:100%;padding:12px;background:#3a7bd5;color:#fff;border:none;border-
       totalMaterialCost, totalLaborCost, totalSelling, totalGrossProfit,
       profitRate: totalSelling > 0 ? Math.round((totalGrossProfit / totalSelling) * 1000) / 10 : 0,
     });
+  });
+
+  // 見積共有ページ
+  app.get('/share/estimate/:id', (req: any, res: any) => {
+    try {
+      const log = queryOne('SELECT el.*, c.title as construction_title FROM estimate_log el LEFT JOIN constructions c ON c.id = el.construction_id WHERE el.id = ?', [parseInt(req.params.id)]);
+      if (!log) return res.status(404).send('見積が見つかりません');
+      let breakdown: any[] = [];
+      try { const parsed = JSON.parse(log.ai_json); breakdown = parsed?.breakdown || []; } catch (_) {}
+      res.send(`<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${log.construction_title || log.work_type || '見積'} - 建築ブースト</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Segoe UI','Yu Gothic UI','Meiryo',sans-serif;background:#f5f5f5;color:#333;padding:20px}
+  .card{background:#fff;border-radius:12px;padding:24px;box-shadow:0 2px 12px rgba(0,0,0,0.08);max-width:600px;margin:0 auto}
+  h1{font-size:20px;color:#1a2332;margin-bottom:16px;text-align:center}
+  .total{font-size:32px;font-weight:bold;color:#27ae60;text-align:center;margin:16px 0}
+  table{width:100%;border-collapse:collapse;margin-top:16px}
+  th{background:#f8f9fa;padding:10px;text-align:left;font-size:13px;color:#666}
+  td{padding:10px;border-bottom:1px solid #f0f0f0;font-size:14px}
+  .footer{text-align:center;margin-top:20px;color:#aaa;font-size:12px}
+  .badge{display:inline-block;background:#3a7bd5;color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;margin-bottom:12px}
+</style></head><body>
+<div class="card">
+  <div style="text-align:center"><span class="badge">建築ブースト AI見積</span></div>
+  <h1>${log.construction_title || log.work_type || 'AI見積結果'}</h1>
+  <div class="total">¥${Math.round(log.ai_total || 0).toLocaleString('ja-JP')}</div>
+  <table>
+    <thead><tr><th>項目</th><th style="text-align:right">金額</th></tr></thead>
+    <tbody>
+      ${breakdown.map((b: any) => '<tr><td>' + (b.item || b.name || '') + '</td><td style="text-align:right;font-weight:bold">¥' + Math.round(b.cost || b.amount || 0).toLocaleString('ja-JP') + '</td></tr>').join('')}
+      <tr style="border-top:2px solid #333;font-weight:bold"><td>合計</td><td style="text-align:right;color:#27ae60">¥${Math.round(log.ai_total || 0).toLocaleString('ja-JP')}</td></tr>
+    </tbody>
+  </table>
+  <div class="footer">
+    <p>建築ブースト — AI建築見積管理システム</p>
+    <p style="margin-top:4px">作成日: ${log.created_at || ''}</p>
+  </div>
+</div></body></html>`);
+    } catch (e: any) {
+      res.status(500).send('エラー: ' + e.message);
+    }
   });
 
   // SPA fallback
