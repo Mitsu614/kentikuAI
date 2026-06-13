@@ -434,38 +434,8 @@ async function checkForUpdates() {
 }
 
 app.whenReady().then(async () => {
-  // ── 改ざん検知（dist/main.js のハッシュチェック）──
+  // ── 改ざん検知（自動アップデート対応のため無効化）──
   const isOwner = require('os').hostname() === 'DESKTOP-MRETEV6' && require('os').userInfo().username === 'mitsu';
-  if (!isOwner) {
-    try {
-      const mainJsPath = path.join(__dirname, 'main.js');
-      const mainJsHash = crypto.createHash('sha256').update(fs.readFileSync(mainJsPath)).digest('hex');
-      const hashFile = path.join(app.getPath('userData'), '.integrity');
-      if (fs.existsSync(hashFile)) {
-        const savedHash = fs.readFileSync(hashFile, 'utf-8').trim();
-        if (savedHash && savedHash !== mainJsHash) {
-          // メールで通知
-          try {
-            const nodemailer = require('nodemailer');
-            const transporter = nodemailer.createTransport({
-              service: 'gmail',
-              auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
-            });
-            transporter.sendMail({
-              from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-              to: 'mitsuakinakano0215@gmail.com',
-              subject: '【警告】建築ブースト 改ざん検知',
-              text: `改ざんが検知されました。\n\nマシン: ${require('os').hostname()}\nユーザー: ${require('os').userInfo().username}\n日時: ${new Date().toLocaleString('ja-JP')}\n\n保存ハッシュ: ${savedHash}\n現在ハッシュ: ${mainJsHash}`,
-            }).catch(() => {});
-          } catch (_) {}
-          dialog.showErrorBox('セキュリティエラー', 'アプリケーションファイルが改ざんされた可能性があります。\n正規の建築ブーストを再インストールしてください。');
-          app.quit();
-          return;
-        }
-      }
-      fs.writeFileSync(hashFile, mainJsHash, 'utf-8');
-    } catch (_) {}
-  }
 
   // ── 自動アップデートチェック ──
   checkForUpdates();
