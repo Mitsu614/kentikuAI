@@ -555,7 +555,7 @@ app.whenReady().then(async () => {
       const tenantName = encodeURIComponent(tenant?.name || '');
       const licenseCheck: any = await new Promise((resolve) => {
         const req = https.get(
-          `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${tenantName}&select=id,active,credits,blocked_message`,
+          `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${tenantName}&select=id,active,credits,blocked_message,plan,max_credits`,
           { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 8000 },
           (res: any) => {
             let body = '';
@@ -578,8 +578,10 @@ app.whenReady().then(async () => {
           app.quit();
           return;
         }
-        // リモートのクレジットをローカルに同期
-        runSql('UPDATE tenants SET credits = ?, plan_limit = ? WHERE id = ?', [lic.credits, lic.credits, getCurrentTenant()]);
+        // リモートのプラン・クレジットをローカルに同期
+        const remotePlan = lic.plan || 'standard';
+        const remoteLimit = lic.max_credits || lic.credits || 50;
+        runSql('UPDATE tenants SET credits = ?, plan_limit = ?, plan = ? WHERE id = ?', [lic.credits, remoteLimit, remotePlan, getCurrentTenant()]);
       } else if (Array.isArray(licenseCheck) && licenseCheck.length === 0) {
         // 未登録 → 自動でremote_licensesに追加
         const tenant = queryOne('SELECT name, credits, plan_limit FROM tenants WHERE id = ?', [getCurrentTenant()]);
