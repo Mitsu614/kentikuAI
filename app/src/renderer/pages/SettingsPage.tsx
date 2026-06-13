@@ -394,7 +394,7 @@ function PlanManagement() {
           <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2c3e50' }}>
             {planInfo.planName}
             <span style={{ fontSize: 14, fontWeight: 'normal', color: '#888', marginLeft: 8 }}>
-              ¥{(planInfo.price || 0).toLocaleString()}/月（税込）
+              ¥{(planInfo.price || 0).toLocaleString()}/年（税込）
             </span>
           </div>
           <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>{planInfo.description}</div>
@@ -603,7 +603,7 @@ function PlanAdmin() {
   const changePlan = async (tenantId: number, tenantName: string, newPlan: string) => {
     const planDef = plans[newPlan];
     if (!planDef) return;
-    if (!confirm(`「${tenantName}」のプランを「${planDef.name}（¥${planDef.price.toLocaleString()}/月）」に変更しますか？\n\n入金確認済みの場合のみ実行してください。`)) return;
+    if (!confirm(`「${tenantName}」のプランを「${planDef.name}（¥${planDef.price.toLocaleString()}/年）」に変更しますか？\n\n入金確認済みの場合のみ実行してください。`)) return;
     try {
       await (window as any).api.setPlan(newPlan, tenantId);
       setMsg(`${tenantName} → ${planDef.name}プランに変更しました`);
