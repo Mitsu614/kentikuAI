@@ -387,7 +387,10 @@ function renderLogin() {
 async function tryLogin() {
   const pw = document.getElementById('login_key').value.trim();
   if (!pw) { document.getElementById('login_error').textContent = 'パスワードを入力してください'; return; }
-  if (pw !== 'REMOVED') {
+  // パスワードはSHA-256ハッシュで比較（平文をコードに置かない）
+  async function sha256(str) { const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)); return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join(''); }
+  const pwHash = await sha256(pw);
+  if (pwHash !== 'be851ed9441afe26d42fdf92b2eaa06269ff5029a110669023de9ea8e4faa4e8') {
     document.getElementById('login_error').textContent = 'パスワードが違います';
     return;
   }
