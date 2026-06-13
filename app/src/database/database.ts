@@ -217,6 +217,101 @@ export function logAudit(action: string, entity: string, entityId: number | null
   } catch (_) {}
 }
 
+// ── フィードバック・改善要望 ──
+export function listFeedbackRequests(tenantId?: number) {
+  const tid = tenantId ?? currentTenantId;
+  return queryAll('SELECT * FROM feedback_requests WHERE tenant_id = ? ORDER BY id DESC', [tid]);
+}
+
+export function listAllFeedbackRequests() {
+  return queryAll('SELECT fr.*, t.name as tenant_name FROM feedback_requests fr JOIN tenants t ON t.id = fr.tenant_id ORDER BY fr.id DESC');
+}
+
+export function createFeedbackRequest(data: { category: string; title: string; description?: string; priority?: string }, tenantId?: number): number {
+  const tid = tenantId ?? currentTenantId;
+  return runSql(
+    'INSERT INTO feedback_requests (tenant_id, category, title, description, priority) VALUES (?, ?, ?, ?, ?)',
+    [tid, data.category, data.title, data.description || '', data.priority || 'normal']
+  );
+}
+
+export function updateFeedbackStatus(id: number, status: string, adminReply?: string) {
+  if (adminReply) {
+    db.run('UPDATE feedback_requests SET status = ?, admin_reply = ? WHERE id = ?', [status, adminReply, id]);
+  } else {
+    db.run('UPDATE feedback_requests SET status = ? WHERE id = ?', [status, id]);
+  }
+  saveToFile();
+}
+
+// ── 受注/失注トラッキング ──
+export function listEstimateOutcomes(tenantId?: number) {
+  const tid = tenantId ?? currentTenantId;
+  return queryAll(`
+    SELECT eo.*, c.title as construction_title, el.work_type, el.ai_total
+    FROM estimate_outcomes eo
+    LEFT JOIN constructions c ON c.id = eo.construction_id
+    LEFT JOIN estimate_log el ON el.id = eo.estimate_log_id
+    WHERE eo.tenant_id = ?
+    ORDER BY eo.id DESC
+  `, [tid]);
+}
+
+export function createEstimateOutcome(data: {
+  construction_id?: number;
+  estimate_log_id?: number;
+  outcome: string;
+  actual_amount?: number;
+  win_reason?: string;
+  loss_reason?: string;
+  competitor?: string;
+  feedback_notes?: string;
+}, tenantId?: number): number {
+  const tid = tenantId ?? currentTenantId;
+  return runSql(
+    'INSERT INTO estimate_outcomes (tenant_id, construction_id, estimate_log_id, outcome, actual_amount, win_reason, loss_reason, competitor, feedback_notes, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [tid, data.construction_id || null, data.estimate_log_id || null, data.outcome,
+     data.actual_amount || null, data.win_reason || null, data.loss_reason || null,
+     data.competitor || null, data.feedback_notes || null, new Date().toISOString()]
+  );
+}
+
+export function updateEstimateOutcome(data: { id: number; outcome: string; actual_amount?: number; win_reason?: string; loss_reason?: string; competitor?: string; feedback_notes?: string }) {
+  db.run(
+    'UPDATE estimate_outcomes SET outcome = ?, actual_amount = ?, win_reason = ?, loss_reason = ?, competitor = ?, feedback_notes = ?, decided_at = ? WHERE id = ?',
+    [data.outcome, data.actual_amount || null, data.win_reason || null, data.loss_reason || null,
+     data.competitor || null, data.feedback_notes || null, new Date().toISOString(), data.id]
+  );
+  saveToFile();
+}
+
+export function deleteEstimateOutcome(id: number) {
+  db.run('DELETE FROM estimate_outcomes WHERE id = ?', [id]);
+  saveToFile();
+}
+
+export function getOutcomeStats(tenantId?: number) {
+  const tid = tenantId ?? currentTenantId;
+  const total = queryOne('SELECT COUNT(*) as cnt FROM estimate_outcomes WHERE tenant_id = ?', [tid])?.cnt || 0;
+  const won = queryOne("SELECT COUNT(*) as cnt FROM estimate_outcomes WHERE tenant_id = ? AND outcome = 'won'", [tid])?.cnt || 0;
+  const lost = queryOne("SELECT COUNT(*) as cnt FROM estimate_outcomes WHERE tenant_id = ? AND outcome = 'lost'", [tid])?.cnt || 0;
+  const pending = queryOne("SELECT COUNT(*) as cnt FROM estimate_outcomes WHERE tenant_id = ? AND outcome = 'pending'", [tid])?.cnt || 0;
+  const winRate = total > 0 ? Math.round((won / (won + lost || 1)) * 100) : 0;
+  return { total, won, lost, pending, winRate };
+}
+
+export function getSimilarEstimates(workType: string, tenantId?: number) {
+  const tid = tenantId ?? currentTenantId;
+  return queryAll(`
+    SELECT el.*, c.title as construction_title, eo.outcome, eo.actual_amount
+    FROM estimate_log el
+    LEFT JOIN constructions c ON c.id = el.construction_id
+    LEFT JOIN estimate_outcomes eo ON eo.estimate_log_id = el.id
+    WHERE el.tenant_id = ? AND el.work_type LIKE ?
+    ORDER BY el.created_at DESC LIMIT 10
+  `, [tid, `%${workType}%`]);
+}
+
 function createTables() {
   db.run(`CREATE TABLE IF NOT EXISTS tenants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -423,6 +518,37 @@ function createTables() {
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL
   )`);
+
+  // フィードバック・改善要望
+  db.run(`CREATE TABLE IF NOT EXISTS feedback_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER DEFAULT 1,
+    category TEXT NOT NULL DEFAULT 'improvement',
+    title TEXT NOT NULL,
+    description TEXT,
+    priority TEXT DEFAULT 'normal',
+    status TEXT DEFAULT 'new',
+    admin_reply TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  // 受注/失注トラッキング
+  db.run(`CREATE TABLE IF NOT EXISTS estimate_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER DEFAULT 1,
+    construction_id INTEGER,
+    estimate_log_id INTEGER,
+    outcome TEXT NOT NULL DEFAULT 'pending',
+    actual_amount REAL,
+    win_reason TEXT,
+    loss_reason TEXT,
+    competitor TEXT,
+    feedback_notes TEXT,
+    decided_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL,
+    FOREIGN KEY (estimate_log_id) REFERENCES estimate_log(id) ON DELETE SET NULL
+  )`);
 }
 
 function migrate() {
@@ -517,6 +643,10 @@ function migrate() {
     if (!elCols2.find((c: any) => c.name === 'feedback_at')) {
       db.run('ALTER TABLE estimate_log ADD COLUMN feedback_at DATETIME');
     }
+  } catch (_) {}
+  // マイナス単価の「諸経費」を「値引き」にリネーム
+  try {
+    db.run("UPDATE materials SET name = '値引き' WHERE name = '諸経費' AND unit_price < 0");
   } catch (_) {}
   // デフォルトテナント作成
   const tenants = queryAll('SELECT id FROM tenants');

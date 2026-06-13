@@ -15,6 +15,7 @@ export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onN
   const [allConstructions, setAllConstructions] = useState<any[]>([]);
   const [usage, setUsage] = useState<{ used: number; limit: number; remaining: number; plan: string } | null>(null);
   const [showDetail, setShowDetail] = useState<'material' | 'labor' | 'sales' | 'profit' | null>(null);
+  const [outcomeStats, setOutcomeStats] = useState<{total: number; won: number; lost: number; pending: number; winRate: number} | null>(null);
 
   useEffect(() => { loadAll(); }, []);
 
@@ -39,6 +40,10 @@ export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onN
     setInvoices(inv);
     setAllConstructions(constructions);
     setRecentConstructions(constructions.slice(0, 5));
+    try {
+      const os = await (window as any).api.getOutcomeStats?.();
+      if (os) setOutcomeStats(os);
+    } catch (_) {}
   };
 
   const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
@@ -240,6 +245,31 @@ export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onN
           </div>
         );
       })()}
+
+      {/* 受注率ダッシュボード */}
+      {outcomeStats && outcomeStats.total > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h2 style={{ marginBottom: 12 }}>受注実績</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            <div style={{ textAlign: 'center', padding: 16, background: '#f0f7ff', borderRadius: 10 }}>
+              <div style={{ fontSize: 28, fontWeight: 'bold', color: '#3a7bd5' }}>{outcomeStats.total}</div>
+              <div style={{ fontSize: 13, color: '#888', marginTop: 4 }}>見積総数</div>
+            </div>
+            <div style={{ textAlign: 'center', padding: 16, background: '#e8f8f0', borderRadius: 10 }}>
+              <div style={{ fontSize: 28, fontWeight: 'bold', color: '#27ae60' }}>{outcomeStats.won}</div>
+              <div style={{ fontSize: 13, color: '#888', marginTop: 4 }}>受注</div>
+            </div>
+            <div style={{ textAlign: 'center', padding: 16, background: '#fef0f0', borderRadius: 10 }}>
+              <div style={{ fontSize: 28, fontWeight: 'bold', color: '#e74c3c' }}>{outcomeStats.lost}</div>
+              <div style={{ fontSize: 13, color: '#888', marginTop: 4 }}>失注</div>
+            </div>
+            <div style={{ textAlign: 'center', padding: 16, background: outcomeStats.winRate >= 50 ? '#e8f8f0' : '#fff8e1', borderRadius: 10, border: '2px solid', borderColor: outcomeStats.winRate >= 50 ? '#27ae60' : '#f39c12' }}>
+              <div style={{ fontSize: 28, fontWeight: 'bold', color: outcomeStats.winRate >= 50 ? '#27ae60' : '#f39c12' }}>{outcomeStats.winRate}%</div>
+              <div style={{ fontSize: 13, color: '#888', marginTop: 4 }}>受注率</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 月別売上グラフ */}
       {(() => {

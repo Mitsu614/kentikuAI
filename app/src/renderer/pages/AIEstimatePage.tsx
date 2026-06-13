@@ -265,28 +265,66 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
 
       {/* チャットモード */}
       {mode === 'chat' && (
-        <div className="card" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 200px)', minHeight: 400 }}>
+        <div className="card" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 200px)', minHeight: 400, background: '#e8ecf1', padding: 0, overflow: 'hidden' }}>
           {/* チャット履歴 */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
             {chatMessages.map((msg, i) => (
               <div key={i} style={{
                 alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                maxWidth: '80%',
-                padding: '10px 14px',
-                borderRadius: msg.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-                background: msg.role === 'user' ? '#3a7bd5' : '#f0f2f5',
-                color: msg.role === 'user' ? '#fff' : '#333',
-                fontSize: 13,
-                lineHeight: 1.6,
-                whiteSpace: 'pre-wrap',
+                maxWidth: '75%',
+                display: 'flex',
+                flexDirection: msg.role === 'user' ? 'row-reverse' : 'row',
+                alignItems: 'flex-end',
+                gap: 8,
               }}>
-                {msg.image && <img src={msg.image} style={{ maxWidth: '100%', maxHeight: 150, borderRadius: 8, marginBottom: 6, display: 'block' }} alt="" />}
-                {msg.content}
+                {msg.role !== 'user' && (
+                  <div style={{
+                    width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                    background: 'linear-gradient(135deg, #3a7bd5, #27ae60)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: '#fff', fontSize: 16, fontWeight: 'bold',
+                  }}>AI</div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start', gap: 2 }}>
+                  <div style={{
+                    padding: '12px 16px',
+                    borderRadius: msg.role === 'user' ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+                    background: msg.role === 'user' ? 'linear-gradient(135deg, #3a7bd5, #2a6bc5)' : '#fff',
+                    color: msg.role === 'user' ? '#fff' : '#333',
+                    fontSize: 15,
+                    lineHeight: 1.7,
+                    whiteSpace: 'pre-wrap',
+                    boxShadow: msg.role === 'user' ? '0 2px 8px rgba(58,123,213,0.3)' : '0 1px 4px rgba(0,0,0,0.1)',
+                    border: msg.role === 'user' ? 'none' : '1px solid #e8e8e8',
+                  }}>
+                    {msg.image && <img src={msg.image} style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 10, marginBottom: 8, display: 'block' }} alt="" />}
+                    {msg.content}
+                  </div>
+                  <span style={{ fontSize: 11, color: '#aaa', padding: '0 4px' }}>
+                    {new Date().getHours()}:{String(new Date().getMinutes()).padStart(2, '0')}
+                  </span>
+                </div>
               </div>
             ))}
             {chatLoading && (
-              <div style={{ alignSelf: 'flex-start', padding: '10px 14px', borderRadius: '16px 16px 16px 4px', background: '#f0f2f5', fontSize: 13, color: '#888' }}>
-                ⏳ 考え中...
+              <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                  background: 'linear-gradient(135deg, #3a7bd5, #27ae60)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: '#fff', fontSize: 16, fontWeight: 'bold',
+                }}>AI</div>
+                <div style={{
+                  padding: '14px 20px', borderRadius: '18px 18px 18px 4px',
+                  background: '#fff', border: '1px solid #e8e8e8',
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.1)',
+                  fontSize: 15, color: '#888',
+                  display: 'flex', gap: 6, alignItems: 'center',
+                }}>
+                  <span style={{ animation: 'pulse 1.4s infinite', width: 8, height: 8, borderRadius: '50%', background: '#aaa', display: 'inline-block' }} />
+                  <span style={{ animation: 'pulse 1.4s infinite 0.2s', width: 8, height: 8, borderRadius: '50%', background: '#aaa', display: 'inline-block' }} />
+                  <span style={{ animation: 'pulse 1.4s infinite 0.4s', width: 8, height: 8, borderRadius: '50%', background: '#aaa', display: 'inline-block' }} />
+                </div>
               </div>
             )}
             {chatEstimate && (
@@ -321,8 +359,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div ref={chatEndRef} />
           </div>
           {/* 入力エリア */}
-          <div style={{ borderTop: '1px solid #eee', padding: '10px 12px', display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-            <button className="btn btn-secondary btn-sm" onClick={async () => {
+          <div style={{ borderTop: '2px solid #f0f0f0', padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'flex-end', background: '#fafafa' }}>
+            <button onClick={async () => {
               const img = await window.api.selectImage();
               if (img) {
                 setChatMessages(prev => [...prev, { role: 'user', content: '写真を添付しました', image: img }]);
@@ -336,7 +374,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 setChatLoading(false);
                 setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
               }
-            }} style={{ fontSize: 12, padding: '8px 12px' }}>📷</button>
+            }} style={{ fontSize: 20, padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer', borderRadius: '50%', transition: 'background 0.2s' }}>📷</button>
             <textarea
               value={chatInput}
               onChange={e => setChatInput(e.target.value)}
@@ -360,7 +398,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 }
               }}
               placeholder="工事の内容を入力... (Enter で送信、Shift+Enter で改行)"
-              style={{ flex: 1, minHeight: 40, maxHeight: 100, padding: '8px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 13, resize: 'none', fontFamily: 'inherit', lineHeight: 1.5 }}
+              style={{ flex: 1, minHeight: 48, maxHeight: 120, padding: '12px 16px', border: '2px solid #e0e0e0', borderRadius: 24, fontSize: 16, resize: 'none', fontFamily: 'inherit', lineHeight: 1.5, outline: 'none', transition: 'border-color 0.2s' }}
+              onFocus={e => e.target.style.borderColor = '#3a7bd5'}
+              onBlur={e => e.target.style.borderColor = '#e0e0e0'}
             />
             <button className="btn btn-primary" disabled={chatLoading || !chatInput.trim()} onClick={async () => {
               if (!chatInput.trim() || chatLoading) return;
@@ -377,7 +417,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               } catch (e: any) { setChatMessages(prev => [...prev, { role: 'assistant', content: 'エラー: ' + e.message }]); }
               setChatLoading(false);
               setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-            }} style={{ padding: '8px 20px', fontSize: 13 }}>送信</button>
+            }} style={{ padding: '12px 24px', fontSize: 16, borderRadius: 24, minHeight: 48 }}>送信</button>
           </div>
         </div>
       )}

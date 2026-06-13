@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { initDatabase, queryAll, queryOne, runSql, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest } from '../database/database';
+import { initDatabase, queryAll, queryOne, runSql, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients } from './supabase-sync';
@@ -3422,9 +3422,10 @@ ${pastWork || 'まだ実績なし'}`;
     const aiMaterialCost = result.estimatedMaterialCost || 0;
     const diff = aiMaterialCost - breakdownTotal;
     if (Math.abs(diff) >= 1) {
+      const adjName = diff > 0 ? '諸経費' : '値引き';
       const adjMatId = runSql(
         'INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?)',
-        ['諸経費', 'AI見積', '式', diff, '明細差額の自動調整', tid]
+        [adjName, 'AI見積', '式', diff, '明細差額の自動調整', tid]
       );
       runSql(
         'INSERT INTO construction_materials (construction_id, material_id, quantity, unit_price) VALUES (?, ?, ?, ?)',
@@ -3599,6 +3600,93 @@ ${pastWork || 'まだ実績なし'}`;
     return { success: true, imported, tenantName: raw.tenantName };
   });
 });
+
+  // ── フィードバック・改善要望 ──
+  ipcMain.handle('feedback:list', () => listFeedbackRequests());
+  ipcMain.handle('feedback:listAll', () => listAllFeedbackRequests());
+  ipcMain.handle('feedback:create', async (_e, data: any) => {
+    const id = createFeedbackRequest(data);
+    logAudit('create', 'feedback', id, `改善要望: ${data.title}`);
+    // メール通知
+    try {
+      const tid = getCurrentTenant();
+      const tenant = queryOne('SELECT name, contact_company, contact_tel, contact_email FROM tenants WHERE id = ?', [tid]);
+      const nodemailer = require('nodemailer');
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
+      });
+      await transporter.sendMail({
+        from: '建築ブースト <mitsuakinakano0215@gmail.com>',
+        to: 'mitsuakinakano0215@gmail.com',
+        subject: `【改善要望】${tenant?.name || 'テナント'} — ${data.title}`,
+        text: [
+          `テナント「${tenant?.name || ''}」から改善要望が届きました。`,
+          '',
+          '【要望内容】',
+          `■ カテゴリ: ${data.category}`,
+          `■ タイトル: ${data.title}`,
+          `■ 優先度: ${data.priority || 'normal'}`,
+          `■ 詳細:`,
+          data.description || '(なし)',
+          '',
+          '【お客様情報】',
+          `■ 会社名: ${tenant?.contact_company || tenant?.name || '未登録'}`,
+          `■ 電話番号: ${tenant?.contact_tel || '未登録'}`,
+          `■ メールアドレス: ${tenant?.contact_email || '未登録'}`,
+          '',
+          `■ 日時: ${new Date().toLocaleString('ja-JP')}`,
+          '',
+          '---',
+          '建築ブースト 自動通知',
+        ].join('\n'),
+      });
+    } catch (e: any) {
+      console.error('Feedback notification email failed:', e?.message || e);
+    }
+    return id;
+  });
+  ipcMain.handle('feedback:updateStatus', (_e, id: number, status: string, reply?: string) => {
+    updateFeedbackStatus(id, status, reply);
+    return true;
+  });
+
+  // ── 受注/失注トラッキング ──
+  ipcMain.handle('outcomes:list', () => listEstimateOutcomes());
+  ipcMain.handle('outcomes:create', (_e, data: any) => {
+    const id = createEstimateOutcome(data);
+    logAudit('create', 'outcome', id, `${data.outcome}: ${data.feedback_notes || ''}`);
+    return id;
+  });
+  ipcMain.handle('outcomes:update', (_e, data: any) => {
+    updateEstimateOutcome(data);
+    logAudit('update', 'outcome', data.id, `${data.outcome}`);
+    return true;
+  });
+  ipcMain.handle('outcomes:delete', (_e, id: number) => {
+    deleteEstimateOutcome(id);
+    return true;
+  });
+  ipcMain.handle('outcomes:stats', () => getOutcomeStats());
+  ipcMain.handle('outcomes:similar', (_e, workType: string) => getSimilarEstimates(workType));
+
+  // ── 見積共有URL生成 ──
+  ipcMain.handle('estimates:shareUrl', (_e, logId: number) => {
+    const log = queryOne('SELECT el.*, c.title as construction_title FROM estimate_log el LEFT JOIN constructions c ON c.id = el.construction_id WHERE el.id = ?', [logId]);
+    if (!log) return null;
+    const os = require('os');
+    const nets = os.networkInterfaces();
+    let localIp = 'localhost';
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name]) {
+        if (net.family === 'IPv4' && !net.internal) { localIp = net.address; break; }
+      }
+    }
+    return {
+      url: `http://${localIp}:3456/share/estimate/${logId}`,
+      data: log,
+    };
+  });
 
 // ── 終了時にテナントデータを自動スナップショット ──
 function silentSnapshot() {
