@@ -222,4 +222,5 @@ contextBridge.exposeInMainWorld('api', {
   login: (username: string, password: string) => ipcRenderer.invoke('auth:login', username, password),
   logout: () => ipcRenderer.invoke('auth:logout'),
   getSession: () => ipcRenderer.invoke('auth:session'),
+  isOwnerPC: () => ipcRenderer.invoke('auth:isOwner'),
 });
