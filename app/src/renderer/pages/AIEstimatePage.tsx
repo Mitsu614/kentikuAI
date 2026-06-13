@@ -28,6 +28,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [chatLoading, setChatLoading] = useState(false);
   const [chatEstimate, setChatEstimate] = useState<any>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
 
   // DB からログ読み込み
@@ -255,7 +256,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           </button>
           <button
             className={`btn ${mode === 'chat' ? 'btn-primary' : 'btn-secondary'}`}
-            onClick={() => { setMode('chat'); if (chatMessages.length === 0) setChatMessages([{ role: 'assistant', content: 'こんにちは！建築見積のAIアシスタントです。\n\nどんな工事の見積もりをしたいですか？\n例：「キッチンリフォーム」「外壁塗装」「3階建てマンションの足場」\n\n写真があれば添付もできます。' }]); }}
+            onClick={() => { setMode('chat'); if (chatMessages.length === 0) setChatMessages([{ role: 'assistant', content: 'こんにちは！建築見積のAIアシスタントです。\n\nどんな工事の見積もりをしたいですか？\n例：「キッチンリフォーム」「外壁塗装」「3階建てマンションの足場」\n\n写真があれば添付もできます。' }]); setTimeout(() => chatInputRef.current?.focus(), 100); }}
             style={{ padding: '8px 20px', fontSize: 13 }}
           >
             💬 チャットで見積
@@ -397,6 +398,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
                 }
               }}
+              ref={chatInputRef}
               placeholder="工事の内容を入力... (Enter で送信、Shift+Enter で改行)"
               style={{ flex: 1, minHeight: 48, maxHeight: 120, padding: '12px 16px', border: '2px solid #e0e0e0', borderRadius: 24, fontSize: 16, resize: 'none', fontFamily: 'inherit', lineHeight: 1.5, outline: 'none', transition: 'border-color 0.2s' }}
               onFocus={e => e.target.style.borderColor = '#3a7bd5'}
@@ -817,6 +819,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 setChatEstimate(null);
                 setResult(null);
                 setMode('chat');
+                setTimeout(() => chatInputRef.current?.focus(), 100);
               }} style={{ height: 60, background: '#8e44ad', color: '#fff', border: 'none', borderRadius: 8, padding: '0 16px', cursor: 'pointer', fontSize: 13, fontWeight: 'bold' }}>
                 💬 チャットで相談
               </button>
