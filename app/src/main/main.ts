@@ -1697,7 +1697,7 @@ app.whenReady().then(async () => {
     // テナント作成（承認待ち状態）
     const tenantId = runSql(
       'INSERT INTO tenants (name, plan, plan_limit, contact_company, contact_email, contact_tel) VALUES (?, ?, ?, ?, ?, ?)',
-      [username, 'pending', 0, company, email || '', tel || '']
+      [username, 'pending', 50, company, email || '', tel || '']
     );
 
     // ユーザー作成
