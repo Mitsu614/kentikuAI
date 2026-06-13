@@ -434,7 +434,12 @@ async function checkForUpdates() {
 }
 
 app.whenReady().then(async () => {
-  // ── 改ざん検知（自動アップデート対応のため無効化）──
+  // ── 旧バージョンの.integrityファイルを自動削除 ──
+  try {
+    const integrityFile = path.join(app.getPath('userData'), '.integrity');
+    if (fs.existsSync(integrityFile)) fs.unlinkSync(integrityFile);
+  } catch (_) {}
+
   const isOwner = require('os').hostname() === 'DESKTOP-MRETEV6' && require('os').userInfo().username === 'mitsu';
 
   // ── 自動アップデートチェック ──
