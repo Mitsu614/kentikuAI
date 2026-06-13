@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>建築ブースト 導入・操作ガイド</title>
+<style>
+  @page { size: A4; margin: 15mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Yu Gothic', 'Meiryo', sans-serif; color: #1a1a1a; line-height: 1.8; background: #fff; max-width: 800px; margin: 0 auto; padding: 24px; font-size: 13px; }
+  @media print { body { padding: 0; } }
+
+  h1 { text-align: center; font-size: 24px; margin-bottom: 6px; letter-spacing: 4px; }
+  .subtitle { text-align: center; font-size: 13px; color: #666; margin-bottom: 30px; }
+  h2 { font-size: 16px; background: #2e4057; color: #fff; padding: 8px 14px; border-radius: 4px; margin: 28px 0 12px; }
+  h3 { font-size: 14px; color: #2e4057; margin: 18px 0 8px; border-left: 4px solid #2e4057; padding-left: 10px; }
+  p { margin: 6px 0; }
+  ul, ol { margin: 6px 0 6px 24px; }
+  li { margin: 4px 0; }
+
+  .step-box { background: #f8f9fa; border: 1px solid #ddd; border-radius: 8px; padding: 14px 18px; margin: 10px 0; }
+  .step-num { display: inline-block; background: #2e4057; color: #fff; width: 26px; height: 26px; border-radius: 50%; text-align: center; line-height: 26px; font-size: 13px; font-weight: bold; margin-right: 8px; }
+  .warn { background: #fff3cd; border: 1px solid #f0d060; border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 12px; }
+  .warn::before { content: '⚠ '; font-weight: bold; }
+  .tip { background: #e8f5e9; border: 1px solid #a5d6a7; border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 12px; }
+  .tip::before { content: '💡 '; }
+
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; }
+  th { background: #2e4057; color: #fff; padding: 8px 10px; text-align: left; }
+  td { padding: 7px 10px; border-bottom: 1px solid #eee; }
+  tr:nth-child(even) { background: #f9fafb; }
+
+  .page-break { page-break-before: always; }
+  .footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid #ccc; font-size: 10px; color: #999; text-align: center; }
+  code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>建築ブースト</h1>
+<p class="subtitle">導入・操作ガイド v4.0 ── AI見積・業務自動化システム</p>
+
+<!-- ===== 1. はじめに ===== -->
+<h2>1. はじめに</h2>
+<p>建築ブーストは、現場写真やコメントからAIが見積を自動作成し、物件登録・施工登録・材料明細・請求書下書きまでを一括で処理する建築業向けシステムです。使えば使うほどAIの見積精度が向上する学習機能を搭載しています。</p>
+
+<h3>全12画面</h3>
+<table>
+<tr><th>#</th><th>画面名</th><th>概要</th></tr>
+<tr><td>1</td><td>ダッシュボード</td><td>売上・粗利・未入金を一覧表示。支払期限アラート付き</td></tr>
+<tr><td>2</td><td>AI見積もり</td><td>写真・テキスト・チャット対話からAIが見積を自動生成。一括登録</td></tr>
+<tr><td>3</td><td>紙を電子化</td><td>紙の見積書・請求書をAI-OCRで読み取り、データ登録</td></tr>
+<tr><td>4</td><td>画像検索</td><td>施工事例の参考写真をアプリ内で検索</td></tr>
+<tr><td>5</td><td>物件管理</td><td>物件の登録・収支の自動集計</td></tr>
+<tr><td>6</td><td>材料マスタ</td><td>建築資材のカタログ管理。CSVインポート対応</td></tr>
+<tr><td>7</td><td>施工・見積</td><td>工事の材料明細・掛率・売価・粗利を管理</td></tr>
+<tr><td>8</td><td>請求書</td><td>請求書の管理・PDF出力。インボイス対応</td></tr>
+<tr><td>9</td><td>顧客管理</td><td>取引先の分析。リピーター率の自動算出</td></tr>
+<tr><td>10</td><td>カレンダー</td><td>施工予定・支払期限を月間カレンダーで表示</td></tr>
+<tr><td>11</td><td>利益レポート</td><td>月別・工事タイプ別の収益分析</td></tr>
+<tr><td>12</td><td>設定</td><td>会社情報・外部アクセス・データ管理・セキュリティ</td></tr>
+</table>
+
+<!-- ===== 2. インストール ===== -->
+<h2>2. インストール・起動方法</h2>
+
+<div class="step-box">
+<span class="step-num">1</span><strong>EXEファイルを受け取る</strong><br>
+「建築ブースト.exe」ファイルをデスクトップまたは任意のフォルダに保存してください。インストール作業は不要です。
+</div>
+
+<div class="step-box">
+<span class="step-num">2</span><strong>ダブルクリックで起動</strong><br>
+EXEファイルをダブルクリックするとアプリが起動します。初回起動時にWindowsの警告が出る場合は「詳細情報」→「実行」をクリックしてください。
+</div>
+
+<div class="step-box">
+<span class="step-num">3</span><strong>初期設定</strong><br>
+左メニューの「⚙ 設定」を開き、以下を入力してください：
+<ul>
+<li>会社名・住所・電話番号</li>
+<li>振込先情報（銀行名・支店名・口座番号・名義）</li>
+<li>インボイス番号（適格請求書発行事業者の場合）</li>
+<li>会社ロゴ・印影（任意）</li>
+</ul>
+</div>
+
+<div class="warn">APIキーは運営側で管理しています。設定画面のAPIキー欄は変更しないでください。</div>
+
+<!-- ===== 3. AI見積の使い方 ===== -->
+<h2>3. AI見積の使い方</h2>
+
+<h3>3.1 写真＋コメントで見積</h3>
+<div class="step-box">
+<span class="step-num">1</span>左メニューの「🤖 AI見積」を選択<br>
+<span class="step-num">2</span>「📷 画像を選択」で現場写真を選ぶ（間取り図・平面図・設計図・立面図もOK）<br>
+<span class="step-num">3</span>「場所」に現場住所を入力<br>
+<span class="step-num">4</span>「コメント」に工事内容を入力（例：「キッチン交換」「外壁塗装100m²」）<br>
+<span class="step-num">5</span>「AI見積もり実行」ボタンを押す（約20〜40秒で完了）
+</div>
+
+<h3>3.2 テキストのみで概算見積</h3>
+<p>写真がない場合でも、コメント欄にテキストを入力するだけで概算見積が可能です。電話ヒアリング中にその場で概算を出す使い方に最適です。</p>
+
+<h3>3.3 ビフォーアフター比較</h3>
+<p>「🔄 ビフォーアフター」タブに切り替えると、施工前・施工後の2枚の写真を比較して工事内容を自動判定し、見積を作成します。</p>
+
+<h3>3.4 チャットで見積（対話型）</h3>
+<p>「💬 チャットで見積」タブに切り替えると、AIと会話しながら見積を作成できます。</p>
+<ol>
+<li>工事内容を入力（例：「キッチンリフォーム」「3階建ての外壁塗装」）</li>
+<li>AIが規模・材料グレード・場所などを質問</li>
+<li>答えていくと、AIが見積結果を自動出力</li>
+<li>「見積詳細を見る」で通常の見積画面に連携</li>
+<li>「一括登録」で物件・施工・請求書・発注書を自動作成</li>
+</ol>
+<div class="tip">写真も添付できます（📷ボタン）。見積結果の画面から「💬 チャットで相談」ボタンで、見積内容を引き継いで追加相談も可能です。</div>
+<div class="tip">チャットで伝えた好み（例：「塗料はフッ素系」「足場は1,200円/m²」）は自動で学習され、次回以降の見積に反映されます。</div>
+
+<h3>3.5 見積結果の見方</h3>
+<table>
+<tr><th>項目</th><th>説明</th></tr>
+<tr><td>AI判定</td><td>工事種別・規模・信頼度・類似実績</td></tr>
+<tr><td>お見積金額</td><td>諸経費・粗利込みの売価（税抜）</td></tr>
+<tr><td>費用内訳</td><td>材料費・施工費・仮設工事費・現場管理費・福利厚生費</td></tr>
+<tr><td>粗利率ルール</td><td>原価に応じた自動適用（〜500万:30%、500〜1000万:25%、1000〜3000万:20%、3000万〜:15%）</td></tr>
+<tr><td>提案・注意点</td><td>AIが画像から判断した追加工事の提案</td></tr>
+</table>
+
+<h3>3.6 一括自動登録</h3>
+<p>見積完了と同時に、以下の4種類のデータが自動で作成・登録されます：</p>
+<ol>
+<li><strong>物件</strong> — 住所・写真・備考</li>
+<li><strong>施工</strong> — 工事名・材料費・人件費・掛率・売価</li>
+<li><strong>材料明細</strong> — AIが算出した全項目の材料名・数量・単価</li>
+<li><strong>請求書（下書き）</strong> — 税込金額・支払期限付き</li>
+</ol>
+<div class="tip">「✅ 自動登録完了!」バナーをクリックすると、登録された見積詳細に遷移します。</div>
+
+<h3>3.6 完成イメージ生成</h3>
+<p>見積結果の下にある「🎨 完成イメージを生成」ボタンを押すと、AIが施工完了後のイメージ画像を自動生成します。元の写真がある場合は、同じアングル・同じ部屋を維持したまま施工箇所だけが変更されます。</p>
+
+<h3>3.7 見積履歴</h3>
+<p>過去のAI見積は右サイドバーに自動保存されます。クリックすると当時の結果を再表示できます。</p>
+
+<!-- ===== 4. クレジット ===== -->
+<div class="page-break"></div>
+<h2>4. クレジット（クレジット）</h2>
+<p>AI機能の利用にはクレジットが必要です。残高はダッシュボードに表示されます。</p>
+
+<table>
+<tr><th>操作</th><th>消費数</th></tr>
+<tr><td>AI見積（写真/テキスト/ビフォーアフター）</td><td>1〜2単位</td></tr>
+<tr><td>チャット見積（1メッセージ）</td><td>1単位</td></tr>
+<tr><td>紙書類のOCR取込</td><td>1</td></tr>
+<tr><td>完成イメージ画像生成</td><td>3</td></tr>
+<tr><td>見積書・請求書PDF出力</td><td style="color:#27ae60;font-weight:bold">0（無料）</td></tr>
+<tr><td>物件・施工・材料の登録・編集</td><td style="color:#27ae60;font-weight:bold">0（無料）</td></tr>
+<tr><td>ダッシュボード・レポート・カレンダー</td><td style="color:#27ae60;font-weight:bold">0（無料）</td></tr>
+</table>
+
+<div class="warn">ストックが0になるとAI機能が停止します。PDF出力・データ編集など消費0の機能は引き続き使えます。追加クレジットが必要な場合はお問い合わせください。</div>
+
+<!-- ===== 5. OCR ===== -->
+<h2>5. 紙の見積書・請求書の取込（OCR）</h2>
+<div class="step-box">
+<span class="step-num">1</span>左メニュー「📸 紙を電子化」を開く<br>
+<span class="step-num">2</span>紙の書類をスマホ等で撮影し、画像を選択（複数枚まとめてOK）<br>
+<span class="step-num">3</span>「AIで読み取り」ボタンを押す<br>
+<span class="step-num">4</span>AIが自動で書類種別・宛先・金額・明細項目を読み取り<br>
+<span class="step-num">5</span>内容を確認・修正し「システムに取り込み」で一括登録
+</div>
+<div class="tip">手書きの見積書・請求書にも対応しています。</div>
+
+<!-- ===== 6. 画像検索 ===== -->
+<h2>6. 画像検索</h2>
+<p>左メニュー「🔍 画像検索」で、施工事例の参考写真をアプリ内で検索できます。</p>
+<ul>
+<li>キッチン・浴室・外壁など15種のクイックタグから素早く検索</li>
+<li>検索結果はアプリ内のwebviewで表示（ブラウザを開く必要なし）</li>
+<li>お客様への提案時に「こんなイメージです」と見せる使い方に最適</li>
+</ul>
+
+<!-- ===== 7. 物件・施工・請求書 ===== -->
+<h2>7. 物件・施工・請求書の管理</h2>
+
+<h3>7.1 物件管理</h3>
+<p>「🏠 物件管理」で物件の登録・編集・削除。物件ごとの施工件数・経費・売上・利益が自動集計されます。間取り図の画像登録にも対応。</p>
+
+<h3>7.2 施工・見積管理</h3>
+<p>「🔨 施工・見積」で工事ごとの材料明細を管理。材料マスタから選択 or 手入力で明細を追加。掛率を適用して売価・粗利率が自動計算されます。ステータス管理（見積中→受注済→施工中→完了→キャンセル）にも対応。</p>
+
+<h3>7.3 請求書</h3>
+<p>「📄 請求書」で請求書の発行・ステータス管理。ボタン一つで請求書PDF・見積書PDFを出力。会社ロゴ・印影・インボイス番号が自動挿入されます。</p>
+
+<!-- ===== 8. 顧客・カレンダー・レポート ===== -->
+<div class="page-break"></div>
+<h2>8. 顧客管理・カレンダー・利益レポート</h2>
+
+<h3>8.1 顧客管理</h3>
+<p>「👥 顧客管理」は請求書データから自動で顧客分析を生成します。個別に顧客を登録する必要はありません。</p>
+<ul>
+<li>顧客数・リピーター数・リピート率・累計取引額を自動集計</li>
+<li>取引2回以上の顧客は「リピーター」バッジが付く</li>
+<li>取引額順にソートされ、優良顧客がひと目でわかる</li>
+</ul>
+
+<h3>8.2 カレンダー</h3>
+<p>「📅 カレンダー」で施工予定日と支払期限を月間カレンダーに表示。</p>
+<ul>
+<li>青●=施工日、橙●=支払期限、赤●=期限超過、緑●=請求発行日</li>
+<li>月間の施工件数・売上・利益・未入金も集計表示</li>
+</ul>
+
+<h3>8.3 利益レポート</h3>
+<p>「📈 利益レポート」で月別の売上・材料費・人件費・粗利を時系列分析。</p>
+<ul>
+<li>直近12ヶ月の月別サマリーテーブル</li>
+<li>工事タイプ別の受注件数ランキング（トップ15）</li>
+<li>ステータス別件数（見積中/受注済/施工中/完了/キャンセル）</li>
+</ul>
+
+<!-- ===== 9. 材料マスタ ===== -->
+<h2>9. 材料マスタ</h2>
+<p>「🧱 材料マスタ」で建築資材のカタログを管理します。</p>
+<ul>
+<li>カテゴリ別に整理（木材/基礎/設備/屋根/外壁/内装/断熱/耐震 等）</li>
+<li>材料名・単位・単価・メモを登録</li>
+<li>CSVファイルからの一括インポートに対応</li>
+<li>施工の材料明細追加時にマスタから選択可能</li>
+</ul>
+
+<!-- ===== 10. PDF出力 ===== -->
+<h2>10. 見積書・請求書PDF出力</h2>
+<div class="step-box">
+<span class="step-num">1</span>左メニュー「📄 請求書」を開く<br>
+<span class="step-num">2</span>対象の請求書をクリックして詳細を開く<br>
+<span class="step-num">3</span>「📄 請求書PDF出力」または「📋 見積書PDF出力」ボタンをクリック<br>
+<span class="step-num">4</span>保存先を選んでPDFファイルが生成される
+</div>
+<p>PDFには以下が自動挿入されます：</p>
+<ul>
+<li>会社名・住所・電話番号</li>
+<li>会社ロゴ・印影画像</li>
+<li>適格請求書発行事業者登録番号（インボイス対応）</li>
+<li>振込先口座情報</li>
+<li>工事内容・場所情報（備考欄に自動転記）</li>
+</ul>
+<div class="tip">見積書PDFには「有効期限: 発行日より30日間」が自動記載されます。</div>
+
+<!-- ===== 11. スマホアクセス ===== -->
+<h2>11. スマートフォンからのアクセス</h2>
+
+<h3>11.1 同一ネットワーク内</h3>
+<p>アプリ起動後、同じWi-Fiに接続したスマホのブラウザからアクセスできます：</p>
+<div class="step-box" style="text-align:center;font-size:16px;">
+<code>http://[PCのIPアドレス]:3456</code>
+</div>
+
+<h3>11.2 外出先からのアクセス（トンネル機能）</h3>
+<div class="step-box">
+<span class="step-num">1</span>設定画面の「📱 外出先からアクセス」を開く<br>
+<span class="step-num">2</span>アクセスパスワードを設定<br>
+<span class="step-num">3</span>「開始」ボタンを押す → URLとQRコードが表示される<br>
+<span class="step-num">4</span>スマホでQRコードを読み取るか、URLを入力してアクセス
+</div>
+<div class="warn">トンネル機能を使うと外部からPCにアクセスできます。必ずパスワードを設定してください。</div>
+
+<!-- ===== 12. 学習ループ ===== -->
+<div class="page-break"></div>
+<h2>12. AI学習ループ（自動精度向上）</h2>
+<p>建築ブーストは、使えば使うほどAIの見積精度が自動的に向上する「学習ループ」を搭載しています。</p>
+
+<h3>仕組み</h3>
+<ol>
+<li>AI見積を実行 → 見積結果がデータベースに保存される</li>
+<li>利用者が材料・金額を修正 → 修正内容が自動的にフィードバックとして記録される</li>
+<li>次回のAI見積時 → 過去の修正傾向がAIに反映され、より正確な見積が出る</li>
+<li>全ユーザーの匿名統計が集約 → 新規ユーザーでも初日から精度の高い見積が可能</li>
+</ol>
+
+<div class="tip">材料の追加・削除・金額の変更をするだけで、自動的にAIが学習します。特別な操作は不要です。</div>
+
+<h3>匿名統計の収集について</h3>
+<p>アプリ起動時に、工事タイプ別の平均材料費・平均人件費・平均掛率などの統計値が匿名で中央サーバーに送信されます。企業名・顧客名・住所・個別金額等の個人情報は一切含まれません。詳しくは利用規約第8条をご確認ください。</p>
+
+<!-- ===== 13. 業種設定 ===== -->
+<h2>13. 業種設定（リース業・解体業などに対応）</h2>
+<p>建築ブーストは工務店・リフォーム会社だけでなく、<strong>仮設工事リース業</strong>をはじめとする様々な建設関連業種に対応しています。</p>
+
+<h3>13.1 業種の設定方法</h3>
+<div class="step-box">
+<span class="step-num">1</span>左メニュー「⚙ 設定」を開く<br>
+<span class="step-num">2</span>一番上の「🏗️ 業種設定」セクションで業種を選択<br>
+<span class="step-num">3</span>「保存」ボタンを押す
+</div>
+
+<h3>13.2 選択できる業種</h3>
+<table>
+<tr><th>業種</th><th>AI見積の最適化内容</th></tr>
+<tr><td><strong>総合建設業（工務店・リフォーム）</strong></td><td>標準モード。新築・リフォーム・修繕に対応</td></tr>
+<tr><td><strong>仮設工事リース業</strong></td><td>足場・養生・仮囲い・仮設建物・重機のリース費用を日額/月額で詳細算出</td></tr>
+<tr><td><strong>解体工事業</strong></td><td>解体坪単価・産廃処理費・仮設足場・重機回送費を重視</td></tr>
+<tr><td><strong>外構・エクステリア業</strong></td><td>駐車場・フェンス・門扉・ウッドデッキ・植栽等を重視</td></tr>
+<tr><td><strong>塗装工事業</strong></td><td>塗装面積・塗料グレード・足場費用を重視</td></tr>
+<tr><td><strong>設備工事業（水道・電気・空調）</strong></td><td>設備機器の型番・施工費・配管配線工事を重視</td></tr>
+</table>
+
+<h3>13.3 仮設工事リース業モードの詳細</h3>
+<p>「仮設工事リース業」を選択すると、AI見積が以下のリース項目を自動的に詳細算出します：</p>
+
+<table>
+<tr><th>カテゴリ</th><th>主な項目</th><th>算出方法</th></tr>
+<tr><td>足場リース</td><td>くさび式・枠組・単管足場、昇降階段</td><td>架面積(m²) × m²単価 + 月額レンタル料</td></tr>
+<tr><td>養生・安全設備</td><td>メッシュシート・防音シート・仮囲い・ガードフェンス</td><td>面積(m²)・延長(m) × 単価</td></tr>
+<tr><td>仮設建物</td><td>仮設トイレ・仮設事務所・休憩所・コンテナ倉庫</td><td>月額 × 工期月数 + 設置撤去費</td></tr>
+<tr><td>仮設設備</td><td>仮設電気（引込・キュービクル）・仮設水道</td><td>初期費用 + 月額使用料</td></tr>
+<tr><td>重機リース</td><td>バックホー・高所作業車・クレーン車・発電機</td><td>日額 × 使用日数</td></tr>
+<tr><td>運搬費</td><td>重機回送費・トラック運搬費</td><td>距離別単価（片道/往復）</td></tr>
+<tr><td>人工費</td><td>鳶工・ガードマン（有資格/無資格）</td><td>人数 × 日数 × 日額単価</td></tr>
+<tr><td>産廃処理</td><td>木くず・コンガラ・混合廃棄物・石膏ボード</td><td>m³数 × m³単価</td></tr>
+</table>
+
+<div class="tip">材料マスタにもリース業向けの品目（足場・養生・仮設リース・重機リース・運搬・産廃処理）が自動登録されています。施工明細の作成にそのまま使えます。</div>
+
+<div class="warn">業種設定を変更してもデータは消えません。AI見積の算出方法が最適化されるだけです。いつでも切り替え可能です。</div>
+
+<!-- ===== 14. 設定 ===== -->
+<h2>14. 設定画面の各項目</h2>
+<table>
+<tr><th>項目</th><th>内容</th></tr>
+<tr><td>業種設定</td><td>業種に応じたAI見積の最適化（リース業・解体業・塗装業等）</td></tr>
+<tr><td>会社情報</td><td>会社名・電話・住所・メール・振込先・インボイス番号・ロゴ・印影</td></tr>
+<tr><td>外出先からアクセス</td><td>トンネル機能の開始/停止・QRコード・パスワード設定</td></tr>
+<tr><td>データ共有設定</td><td>DBファイルの保存先変更（OneDrive/GoogleDrive/共有フォルダ対応）</td></tr>
+<tr><td>データエクスポート</td><td>施工・請求書・材料マスタのCSV出力、請求書PDFの一括出力</td></tr>
+<tr><td>ユーザー管理</td><td>ユーザーの追加/削除、管理者/一般の権限設定</td></tr>
+<tr><td>監査ログ</td><td>全操作の記録を閲覧（作成・更新・削除のログ）</td></tr>
+<tr><td>クレジット管理</td><td>現在のプラン・使用量・残クレジット数の確認</td></tr>
+</table>
+
+<!-- ===== 15. データ管理 ===== -->
+<h2>15. データ管理・バックアップ</h2>
+<ul>
+<li><strong>自動バックアップ</strong> — 起動時＋30分ごとに自動バックアップ（最大10世代保存）</li>
+<li><strong>CSVエクスポート</strong> — 施工データ・請求書データ・材料マスタをCSV出力可能</li>
+<li><strong>CSVインポート</strong> — 材料マスタはCSVファイルから一括インポート可能</li>
+<li><strong>DB共有</strong> — OneDrive/GoogleDrive/共有フォルダにDBを置いて複数PCで共有可能</li>
+</ul>
+
+<!-- ===== 16. セキュリティ ===== -->
+<h2>16. セキュリティ</h2>
+<ul>
+<li><strong>APIキー暗号化</strong> — AES-256-GCMで暗号化して保存</li>
+<li><strong>パスワードハッシュ</strong> — SHA-256でハッシュ化</li>
+<li><strong>監査ログ</strong> — 全操作を自動記録</li>
+<li><strong>マルチテナント</strong> — 複数企業のデータを完全分離管理</li>
+<li><strong>改ざん検知</strong> — アプリファイルの改ざんを自動検出・通知</li>
+</ul>
+
+<!-- ===== 17. トラブル ===== -->
+<h2>17. よくあるトラブルと対処法</h2>
+<table>
+<tr><th>症状</th><th>対処法</th></tr>
+<tr><td>「クレジットの上限に達しました」</td><td>月間クレジットが0です。翌月にリセットされます。追加クレジットはお問い合わせください</td></tr>
+<tr><td>AI見積が遅い（60秒以上）</td><td>画像サイズが大きい可能性あり。リサイズしてお試しください</td></tr>
+<tr><td>PDFの会社名が空白</td><td>設定画面で会社情報を入力してください</td></tr>
+<tr><td>スマホからアクセスできない</td><td>PCとスマホが同じWi-Fiに接続されているか確認</td></tr>
+<tr><td>Windows Defenderの警告</td><td>「詳細情報」→「実行」を選択（初回のみ）</td></tr>
+<tr><td>データが消えた</td><td>自動バックアップから復元可能。AppData/Roaming/kenchiku-boost/backups/ を確認</td></tr>
+<tr><td>見積金額がずれている</td><td>材料明細を修正すると学習ループで次回から改善されます</td></tr>
+</table>
+
+<!-- ===== 18. 問い合わせ ===== -->
+<h2>18. お問い合わせ</h2>
+<div class="step-box" style="text-align: center;">
+<p><strong>有限会社中野工務店</strong></p>
+<p>メール: mitsuakinakano0215@gmail.com</p>
+<p>電話: 080-6138-0698</p>
+</div>
+
+<div class="footer">
+建築ブースト v3.1 ／ 有限会社中野工務店 ／ 特許出願中<br>
+最終更新: 2026年6月10日
+</div>
+
+</body>
+</html>
