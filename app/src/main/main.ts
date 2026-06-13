@@ -632,7 +632,6 @@ app.whenReady().then(async () => {
   // 起動時に1回実行 + 5分ごとに定期チェック
   if (!isOwner) {
     await syncRemoteLicense(true);
-    setInterval(() => syncRemoteLicense(false), 5 * 60 * 1000);
 
     // ── アクティビティ送信（起動通知） ──
     try {
@@ -3000,6 +2999,7 @@ ${pages}</body></html>`;
   // ── 紙の見積書/請求書をAI-OCRで電子化 ──
   ipcMain.handle('ai:ocrInvoice', async (_e, imageBase64: string) => {
     // クレジットチェック（OCR = 1ストック）
+    await syncRemoteLicense(false);
     const ocrCreditResult = useCredits(1, 'OCR取込');
     if (!ocrCreditResult.success) {
       if (ocrCreditResult.limitReached) await sendLimitNotification('OCR取込');
@@ -3129,6 +3129,7 @@ ${pages}</body></html>`;
     const creditCost = (hasImageInput && hasCommentInput) ? 2 : 1;
     const opName = isBeforeAfter ? 'ビフォーアフター見積' : hasImageInput && hasCommentInput ? '写真+コメント見積' : hasImageInput ? 'AI見積' : 'テキスト見積';
     // クレジットチェック
+    await syncRemoteLicense(false);
     const creditResult = useCredits(creditCost, opName);
     if (!creditResult.success) {
       if (creditResult.limitReached) {
@@ -3492,6 +3493,7 @@ manDaysBreakdownの書き方例:
 
   // ── AIチャット見積（対話型）──
   ipcMain.handle('ai:chat', async (_e, data: { messages: any[], imageBase64?: string }) => {
+    await syncRemoteLicense(false);
     const creditResult = useCredits(1, 'チャット見積');
     if (!creditResult.success) {
       throw new Error('ERROR: 今月のクレジット上限に達しました。');
@@ -3618,6 +3620,7 @@ ${pastWork || 'まだ実績なし'}`;
   // ── AI画像生成（完成イメージ — 元画像ベース編集）──
   ipcMain.handle('ai:generateImage', async (_e, data: any) => {
     // クレジットチェック（画像生成 = 3ストック）
+    await syncRemoteLicense(false);
     const imgCreditResult = useCredits(3, '画像生成');
     if (!imgCreditResult.success) {
       if (imgCreditResult.limitReached) await sendLimitNotification('画像生成');
