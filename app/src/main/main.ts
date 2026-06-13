@@ -576,10 +576,9 @@ app.whenReady().then(async () => {
     if (isOwner) return;
     try {
       const https = require('https');
-      const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [getCurrentTenant()]);
+      const tenant = queryOne('SELECT name, contact_company, credits FROM tenants WHERE id = ?', [getCurrentTenant()]);
       const companyName = encodeURIComponent(tenant?.contact_company || tenant?.name || '');
-      const usage = getMonthlyUsage();
-      const body = JSON.stringify({ credits: usage.remaining, updated_at: new Date().toISOString() });
+      const body = JSON.stringify({ credits: tenant?.credits ?? 0, updated_at: new Date().toISOString() });
       await new Promise<void>((resolve) => {
         const req = https.request({
           hostname: 'slhgkedzlormaovwpadi.supabase.co',
@@ -627,7 +626,7 @@ app.whenReady().then(async () => {
             dialog.showErrorBox('ご利用停止', lic.blocked_message || 'ご利用期間が終了しました。ご契約については担当者にお問い合わせください。');
             app.quit();
           }
-          return;
+          throw new Error('ご利用が停止されています。管理者にお問い合わせください。');
         }
         // リモートのプラン・クレジットをローカルに同期
         const remotePlan = lic.plan || 'standard';

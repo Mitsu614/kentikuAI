@@ -81,12 +81,19 @@ export const CREDIT_COSTS: Record<string, number> = {
 // ── クレジット管理（月次プラン制） ──
 export function getMonthlyUsage(tenantId?: number): { used: number; limit: number; plan: string; remaining: number } {
   const tid = tenantId ?? currentTenantId;
-  const tenant = queryOne('SELECT plan, plan_limit FROM tenants WHERE id = ?', [tid]);
+  const tenant = queryOne('SELECT plan, plan_limit, credits FROM tenants WHERE id = ?', [tid]);
   const plan = tenant?.plan || 'standard';
   const planDef = PLANS[plan];
   const limit = tenant?.plan_limit || planDef?.monthlyLimit || 50;
 
-  // トライアルは全期間通算、有料プランは月次リセット
+  // creditsカラムが設定されている場合はそれを残量として使用（Supabase同期対応）
+  if (tenant?.credits !== undefined && tenant?.credits !== null && tenant.credits >= 0) {
+    const remaining = Math.max(0, tenant.credits);
+    const used = Math.max(0, limit - remaining);
+    return { used, limit, plan, remaining };
+  }
+
+  // フォールバック: 従来の月次計算
   let row;
   if (plan === 'trial') {
     row = queryOne(
@@ -122,6 +129,7 @@ export function useCredits(amount: number, operation: string, tenantId?: number)
     return { success: false, limitReached: true };
   }
   db.run('INSERT INTO credit_log (tenant_id, amount, operation) VALUES (?, ?, ?)', [tid, -amount, operation]);
+  db.run('UPDATE tenants SET credits = MAX(0, credits - ?) WHERE id = ?', [amount, tid]);
   saveToFile();
   return { success: true };
 }
