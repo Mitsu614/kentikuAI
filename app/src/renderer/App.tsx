@@ -53,7 +53,8 @@ export default function App() {
 
   const closeOnboarding = () => {
     setShowOnboarding(false);
-    localStorage.setItem('onboarding_done', 'true');
+    const key = sessionInfo?.username ? `onboarding_done_${sessionInfo.username}` : 'onboarding_done';
+    localStorage.setItem(key, 'true');
   };
 
   // 起動時: セッション確認 or 管理者なら自動ログイン
@@ -89,6 +90,12 @@ export default function App() {
         setLoggedIn(true);
         setCurrentTenant(res.tenantId);
         setTenantKey(k => k + 1);
+        // 初回ログイン時にオンボーディング表示
+        const onboardingKey = `onboarding_done_${res.username}`;
+        if (!localStorage.getItem(onboardingKey)) {
+          setShowOnboarding(true);
+          setOnboardingStep(0);
+        }
       } else {
         setLoginError(res.error || 'ログインに失敗しました');
       }
