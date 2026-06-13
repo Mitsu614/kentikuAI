@@ -315,10 +315,20 @@ function getImagesDir(dbFilePath: string) {
 
 // ── 自動アップデート（GitHub Releases ベース）──
 const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = require('../../package.json').version;
+const CURRENT_VERSION = '2.3.0';
 
 async function checkForUpdates() {
   try {
+    // 1日1回だけチェック
+    const lastCheckFile = path.join(app.getPath('userData'), '.last-update-check');
+    try {
+      if (fs.existsSync(lastCheckFile)) {
+        const lastCheck = fs.readFileSync(lastCheckFile, 'utf-8').trim();
+        const today = new Date().toISOString().split('T')[0];
+        if (lastCheck === today) return;
+      }
+    } catch (_) {}
+    try { fs.writeFileSync(lastCheckFile, new Date().toISOString().split('T')[0], 'utf-8'); } catch (_) {}
     const https = require('https');
     const data: string = await new Promise((resolve, reject) => {
       https.get(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
@@ -1634,6 +1644,10 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('auth:session', () => {
     return currentSession;
+  });
+
+  ipcMain.handle('auth:isOwner', () => {
+    return require('os').hostname() === 'DESKTOP-MRETEV6' && require('os').userInfo().username === 'mitsu';
   });
 
   // ── ユーザー管理 ──

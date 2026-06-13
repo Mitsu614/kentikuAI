@@ -57,7 +57,7 @@ export default function App() {
     localStorage.setItem(key, 'true');
   };
 
-  // 起動時: セッション確認 or 管理者なら自動ログイン
+  // 起動時: セッション確認（管理者PCのみ自動ログイン）
   useEffect(() => {
     (async () => {
       try {
@@ -66,15 +66,14 @@ export default function App() {
           setSessionInfo(session);
           setLoggedIn(true);
         } else {
-          // usersテーブルにユーザーがいなければ管理者として自動ログイン
+          // 管理者PCのみ自動ログイン（ユーザー未作成時）
           const users = await (window as any).api.listUsers?.();
-          if (!users || users.length === 0) {
-            setLoggedIn(true); // ユーザー未作成 = 管理者モード
+          const isOwnerPC = await (window as any).api.isOwnerPC?.();
+          if (isOwnerPC && (!users || users.length === 0)) {
+            setLoggedIn(true);
           }
         }
-      } catch (_) {
-        setLoggedIn(true); // API未対応なら素通り
-      }
+      } catch (_) {}
       setLoginLoading(false);
     })();
   }, []);
