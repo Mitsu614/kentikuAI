@@ -88,7 +88,8 @@ tr:hover td { background: #1e2d3d; }
 <script>
 // ── Config ──
 const SUPABASE_URL = 'https://slhgkedzlormaovwpadi.supabase.co';
-let SUPABASE_KEY = '';
+const SUPABASE_ANON_KEY = 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e';
+let SUPABASE_KEY = SUPABASE_ANON_KEY;
 let authenticated = false;
 
 // ── Supabase API ──
@@ -382,30 +383,30 @@ function renderLogin() {
 }
 
 async function tryLogin() {
-  const key = document.getElementById('login_key').value.trim();
-  if (!key) { document.getElementById('login_error').textContent = 'キーを入力してください'; return; }
-  SUPABASE_KEY = key;
+  const pw = document.getElementById('login_key').value.trim();
+  if (!pw) { document.getElementById('login_error').textContent = 'パスワードを入力してください'; return; }
+  if (pw !== 'REMOVED') {
+    document.getElementById('login_error').textContent = 'パスワードが違います';
+    return;
+  }
+  SUPABASE_KEY = SUPABASE_ANON_KEY;
   try {
     const test = await fetch(`${SUPABASE_URL}/rest/v1/remote_licenses?select=id&limit=1`, {
-      headers: { 'apikey': key, 'Authorization': `Bearer ${key}` }
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
     });
     if (test.ok) {
       authenticated = true;
-      sessionStorage.setItem('sb_key', key);
+      sessionStorage.setItem('sb_auth', 'true');
       await loadData();
     } else {
-      const errText = await test.text();
-      document.getElementById('login_error').textContent = '認証失敗 (' + test.status + '): ' + errText.substring(0, 100);
+      document.getElementById('login_error').textContent = 'Supabase接続エラー';
     }
   } catch (e) {
     document.getElementById('login_error').textContent = '接続エラー: ' + e.message;
   }
 }
 
-// 管理者パスワードで簡易ログイン（キー入力が必要）
 async function quickLogin() {
-  const pw = document.getElementById('login_key').value.trim();
-  if (!pw) { alert('APIキーを入力してください'); return; }
   tryLogin();
 }
 
@@ -414,7 +415,8 @@ function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt
 // ── Init ──
 window.onload = function() {
   const saved = sessionStorage.getItem('sb_key');
-  if (saved) { SUPABASE_KEY = saved; authenticated = true; loadData(); }
+  const saved = sessionStorage.getItem('sb_auth');
+  if (saved) { SUPABASE_KEY = SUPABASE_ANON_KEY; authenticated = true; loadData(); }
   else render();
 };
 
