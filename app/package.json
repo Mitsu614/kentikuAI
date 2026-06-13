@@ -58,6 +58,8 @@
       "oneClick": true,
       "perMachine": false,
       "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
       "artifactName": "kenchiku-boost-v${version}-setup.exe",
       "shortcutName": "建築ブースト"
     }
