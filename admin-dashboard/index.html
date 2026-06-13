@@ -168,13 +168,13 @@ async function addLicense(data) {
 }
 
 async function updateLicense(id, data) {
-  await sbPatch('remote_licenses', `?id=eq.${id}`, {
-    company_name: data.company_name, plan: data.plan,
-    max_credits: parseInt(data.max_credits), blocked_message: data.blocked_message,
-    updated_at: new Date().toISOString()
-  });
-  modal = null;
-  await loadData();
+  const body = { updated_at: new Date().toISOString() };
+  if (data.company_name) body.company_name = data.company_name;
+  if (data.plan) body.plan = data.plan;
+  if (data.max_credits && !isNaN(parseInt(data.max_credits))) body.max_credits = parseInt(data.max_credits);
+  if (data.blocked_message !== undefined) body.blocked_message = data.blocked_message;
+  const result = await sbPatch('remote_licenses', `?id=eq.${id}`, body);
+  if (result !== null) { modal = null; await loadData(); }
 }
 
 async function deleteLicense(id, name) {
@@ -355,7 +355,7 @@ function renderModal() {
           <label>会社名</label>
           <input id="m_ename" value="${esc(d.company_name)}">
           <label>プラン</label>
-          <select id="m_eplan"><option value="trial" ${d.plan==='trial'?'selected':''}>trial</option><option value="standard" ${d.plan==='standard'?'selected':''}>standard</option><option value="premium" ${d.plan==='premium'?'selected':''}>premium</option></select>
+          <select id="m_eplan"><option value="trial" ${d.plan==='trial'?'selected':''}>trial</option><option value="standard" ${d.plan==='standard'?'selected':''}>standard</option><option value="pro" ${d.plan==='pro'?'selected':''}>pro</option><option value="enterprise" ${d.plan==='enterprise'?'selected':''}>enterprise</option><option value="pending" ${d.plan==='pending'?'selected':''}>pending</option></select>
           <label>最大クレジット</label>
           <input id="m_emax" type="number" value="${d.max_credits}">
           <label>停止時メッセージ</label>
