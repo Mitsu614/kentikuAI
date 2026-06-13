@@ -140,9 +140,21 @@ async function login(){
   });
 
   // ── バージョンAPI（自動アップデート検知用）──
-  const APP_VERSION = Date.now().toString(); // ビルド時のタイムスタンプ = バージョン
+  const APP_VERSION = Date.now().toString();
   app.get('/api/version', (_req: any, res: any) => {
     res.json({ version: APP_VERSION });
+  });
+
+  // admin-dashboard配信（localhostのみ）
+  app.get('/admin', (req: any, res: any) => {
+    const ip = req.ip || req.connection?.remoteAddress || '';
+    if (ip !== '127.0.0.1' && ip !== '::1' && ip !== '::ffff:127.0.0.1') return res.status(403).send('Forbidden');
+    const adminPath = path.join(__dirname, '..', 'admin-dashboard', 'index.html');
+    if (fs.existsSync(adminPath)) return res.sendFile(adminPath);
+    // 開発時のパス
+    const devPath = path.resolve(__dirname, '..', '..', 'admin-dashboard', 'index.html');
+    if (fs.existsSync(devPath)) return res.sendFile(devPath);
+    res.status(404).send('admin-dashboard not found');
   });
 
   // Service Worker はキャッシュ禁止で配信

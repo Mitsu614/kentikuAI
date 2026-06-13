@@ -41,14 +41,25 @@
     "files": [
       "dist/**/*",
       "node_modules/**/*",
-      "!node_modules/.cache/**/*"
+      "!node_modules/.cache/**/*",
+      "!src/**/*",
+      "!*.ts",
+      "!*.tsx",
+      "!webpack.config.js",
+      "!tsconfig.json",
+      "!seed-*.js",
+      "!launch.vbs",
+      "!package-lock.json"
     ],
     "win": {
-      "target": "portable",
-      "icon": null
+      "target": "nsis"
     },
-    "portable": {
-      "artifactName": "建築ブースト.exe"
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "artifactName": "kenchiku-boost-v${version}-setup.exe",
+      "shortcutName": "建築ブースト"
     }
   },
   "devDependencies": {

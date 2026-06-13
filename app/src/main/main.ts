@@ -593,25 +593,30 @@ app.whenReady().then(async () => {
   }
 
   // ── リモートライセンスチェック（関数化して定期実行） ──
+  async function fetchLicenseByName(searchName: string): Promise<any[]> {
+    const https = require('https');
+    return new Promise((resolve) => {
+      const req = https.get(
+        `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${encodeURIComponent(searchName)}&select=id,active,credits,blocked_message,plan,max_credits`,
+        { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 8000 },
+        (res: any) => { let body = ''; res.on('data', (c: string) => body += c); res.on('end', () => { try { resolve(JSON.parse(body)); } catch (_) { resolve([]); } }); }
+      );
+      req.on('error', () => resolve([]));
+      req.on('timeout', () => { req.destroy(); resolve([]); });
+    });
+  }
+
   async function syncRemoteLicense(isStartup = false) {
     if (isOwner) return;
     try {
       const https = require('https');
       const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [getCurrentTenant()]);
-      const tenantName = encodeURIComponent(tenant?.contact_company || tenant?.name || '');
-      const licenseCheck: any = await new Promise((resolve) => {
-        const req = https.get(
-          `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${tenantName}&select=id,active,credits,blocked_message,plan,max_credits`,
-          { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 8000 },
-          (res: any) => {
-            let body = '';
-            res.on('data', (c: string) => body += c);
-            res.on('end', () => { try { resolve(JSON.parse(body)); } catch (_) { resolve(null); } });
-          }
-        );
-        req.on('error', () => resolve(null));
-        req.on('timeout', () => { req.destroy(); resolve(null); });
-      });
+
+      // contact_companyで検索、なければnameで検索
+      let licenseCheck = await fetchLicenseByName(tenant?.contact_company || tenant?.name || '');
+      if (licenseCheck.length === 0 && tenant?.name && tenant.name !== (tenant.contact_company || '')) {
+        licenseCheck = await fetchLicenseByName(tenant.name);
+      }
       if (Array.isArray(licenseCheck) && licenseCheck.length > 0) {
         const lic = licenseCheck[0];
         if (!lic.active) {
