@@ -62,7 +62,7 @@ export function runSql(sql: string, params?: any[]): number {
 export const PLANS: Record<string, { name: string; monthlyLimit: number; price: number; description: string }> = {
   standard:   { name: 'スタンダード',   monthlyLimit: 50,   price: 1200000,  description: '個人〜15名規模の工務店（年間契約）' },
   pro:        { name: 'プロ',           monthlyLimit: 200,  price: 3000000,  description: '複数担当者・多案件（年間契約）' },
-  enterprise: { name: '法人カスタム',   monthlyLimit: 9999, price: 0,        description: '多店舗・複数会社（個別見積）' },
+  enterprise: { name: '法人カスタム',   monthlyLimit: 9999, price: 5000000,   description: '多店舗・複数会社（年間契約）' },
 };
 
 // AI操作ごとのストック消費量
