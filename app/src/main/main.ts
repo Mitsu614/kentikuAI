@@ -349,7 +349,7 @@ function getImagesDir(dbFilePath: string) {
 
 // ── 自動アップデート（GitHub Releases ベース）──
 const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = '2.6.1';
+const CURRENT_VERSION = '2.6.2';
 APP_VERSION = CURRENT_VERSION;
 
 async function checkForUpdates() {
@@ -384,8 +384,12 @@ async function checkForUpdates() {
     const skipFile = path.join(app.getPath('userData'), '.update-skipped');
     try { if (fs.existsSync(skipFile) && fs.readFileSync(skipFile, 'utf-8').trim() === latestVersion) return; } catch (_) {}
 
+    // インストーラー(.exe)を優先、なければZIP
+    const setupAsset = release.assets?.find((a: any) => a.name.endsWith('-setup.exe') || a.name.endsWith('.exe'));
     const zipAsset = release.assets?.find((a: any) => a.name.endsWith('.zip'));
-    if (!zipAsset) return;
+    const downloadAsset = setupAsset || zipAsset;
+    if (!downloadAsset) return;
+    const isInstaller = !!setupAsset;
 
     // 2. アプリ内オーバーレイで通知+確認+ダウンロードを一体化
     if (!mainWindow) return;
@@ -417,7 +421,7 @@ async function checkForUpdates() {
 
     // 3. プログレス表示に切替
     const updateDir = path.join(app.getPath('userData'), 'update');
-    const zipPath = path.join(updateDir, 'update.zip');
+    const downloadPath = path.join(updateDir, isInstaller ? 'setup.exe' : 'update.zip');
     if (!fs.existsSync(updateDir)) fs.mkdirSync(updateDir, { recursive: true });
 
     mainWindow.webContents.executeJavaScript(`
@@ -431,7 +435,7 @@ async function checkForUpdates() {
 
     // ダウンロード
     await new Promise<void>((resolve, reject) => {
-      const file = fs.createWriteStream(zipPath);
+      const file = fs.createWriteStream(downloadPath);
       const follow = (url: string) => {
         https.get(url, { headers: { 'User-Agent': 'kenchiku-boost' } }, (res: any) => {
           if (res.statusCode === 302 || res.statusCode === 301) return follow(res.headers.location);
@@ -452,7 +456,7 @@ async function checkForUpdates() {
           res.on('error', reject);
         }).on('error', reject);
       };
-      follow(zipAsset.browser_download_url);
+      follow(downloadAsset.browser_download_url);
     });
 
     // 4. 展開中表示
@@ -463,34 +467,33 @@ async function checkForUpdates() {
       `).catch(() => {});
     }
 
-    // 5. バッチで上書き＆再起動（Windowsではexe実行中に上書きできないため）
-    const appDir = path.dirname(app.getPath('exe'));
-    const extractDir = path.join(updateDir, 'extracted');
-    const batPath = path.join(updateDir, 'update.bat');
-    const batContent = [
-      '@echo off',
-      'title 建築ブースト アップデート',
-      'echo.',
-      'echo   建築ブースト アップデートを適用中...',
-      'echo   このウィンドウは自動で閉じます。',
-      'echo.',
-      'timeout /t 3 /nobreak > nul',
-      `powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('${zipPath.replace(/\//g, '\\\\')}', '${extractDir.replace(/\//g, '\\\\')}', $true)"`,
-      `for /d %%d in ("${extractDir.replace(/\//g, '\\\\')}\\*") do xcopy /E /Y /Q "%%d\\*" "${appDir.replace(/\//g, '\\\\')}\\"`,
-      `rmdir /S /Q "${extractDir.replace(/\//g, '\\\\')}"`,
-      `del "${zipPath.replace(/\//g, '\\\\')}"`,
-      `del "${skipFile.replace(/\//g, '\\\\')}" 2>nul`,
-      `start "" "${app.getPath('exe')}"`,
-      `del "%~f0"`,
-    ].join('\r\n');
-    fs.writeFileSync(batPath, batContent, 'utf-8');
-
-    // スキップ記録（万が一再起動で失敗しても再通知しない）
+    // スキップ記録
     try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (_) {}
 
-    // バッチ実行＆アプリ終了
-    require('child_process').spawn('cmd.exe', ['/c', batPath], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-    app.quit();
+    if (isInstaller) {
+      // 5a. インストーラーを実行（サイレントインストール）
+      require('child_process').spawn(downloadPath, ['/S'], { detached: true, stdio: 'ignore' }).unref();
+      app.quit();
+    } else {
+      // 5b. ZIP展開方式（フォールバック）
+      const appDir = path.dirname(app.getPath('exe'));
+      const extractDir = path.join(updateDir, 'extracted');
+      const batPath = path.join(updateDir, 'update.bat');
+      const batContent = [
+        '@echo off',
+        'title 建築ブースト アップデート',
+        'timeout /t 3 /nobreak > nul',
+        `powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('${downloadPath.replace(/\//g, '\\\\')}', '${extractDir.replace(/\//g, '\\\\')}', $true)"`,
+        `for /d %%d in ("${extractDir.replace(/\//g, '\\\\')}\\*") do xcopy /E /Y /Q "%%d\\*" "${appDir.replace(/\//g, '\\\\')}\\"`,
+        `rmdir /S /Q "${extractDir.replace(/\//g, '\\\\')}"`,
+        `del "${downloadPath.replace(/\//g, '\\\\')}"`,
+        `start "" "${app.getPath('exe')}"`,
+        `del "%~f0"`,
+      ].join('\r\n');
+      fs.writeFileSync(batPath, batContent, 'utf-8');
+      require('child_process').spawn('cmd.exe', ['/c', batPath], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      app.quit();
+    }
 
   } catch (e: any) {
     console.log('Auto-update check failed:', e?.message || e);
