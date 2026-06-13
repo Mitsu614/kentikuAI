@@ -217,4 +217,9 @@ contextBridge.exposeInMainWorld('api', {
 
   // 見積共有
   getShareUrl: (logId: number) => ipcRenderer.invoke('estimates:shareUrl', logId),
+
+  // ログイン認証
+  login: (username: string, password: string) => ipcRenderer.invoke('auth:login', username, password),
+  logout: () => ipcRenderer.invoke('auth:logout'),
+  getSession: () => ipcRenderer.invoke('auth:session'),
 });
