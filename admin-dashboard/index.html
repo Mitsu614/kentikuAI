@@ -402,16 +402,10 @@ async function tryLogin() {
   }
 }
 
-// 管理者パスワードで簡易ログイン（キー入力不要）
+// 管理者パスワードで簡易ログイン（キー入力が必要）
 async function quickLogin() {
   const pw = document.getElementById('login_key').value.trim();
-  if (pw === 'REMOVED') {
-    SUPABASE_KEY = 'REMOVED';
-    authenticated = true;
-    sessionStorage.setItem('sb_key', SUPABASE_KEY);
-    await loadData();
-    return;
-  }
+  if (!pw) { alert('APIキーを入力してください'); return; }
   tryLogin();
 }
 
