@@ -414,7 +414,6 @@ function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt
 
 // ── Init ──
 window.onload = function() {
-  const saved = sessionStorage.getItem('sb_key');
   const saved = sessionStorage.getItem('sb_auth');
   if (saved) { SUPABASE_KEY = SUPABASE_ANON_KEY; authenticated = true; loadData(); }
   else render();
