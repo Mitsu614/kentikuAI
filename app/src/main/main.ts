@@ -334,6 +334,12 @@ async function checkForUpdates() {
 
     if (!latestVersion || latestVersion === CURRENT_VERSION) return;
 
+    // 既にこのバージョンの通知を表示済みならスキップ
+    const skipFile = path.join(app.getPath('userData'), '.update-skipped');
+    try {
+      if (fs.existsSync(skipFile) && fs.readFileSync(skipFile, 'utf-8').trim() === latestVersion) return;
+    } catch (_) {}
+
     // バージョン比較（新しいバージョンがある場合のみ）
     const current = CURRENT_VERSION.split('.').map(Number);
     const latest = latestVersion.split('.').map(Number);
@@ -356,7 +362,11 @@ async function checkForUpdates() {
       buttons: ['今すぐ更新', '後で'],
       defaultId: 0,
     });
-    if (response !== 0) return;
+    if (response !== 0) {
+      // 「後で」を選んだらこのバージョンはスキップ
+      try { fs.writeFileSync(path.join(app.getPath('userData'), '.update-skipped'), latestVersion, 'utf-8'); } catch (_) {}
+      return;
+    }
 
     // ダウンロード
     const downloadUrl = zipAsset.browser_download_url;
@@ -407,9 +417,10 @@ async function checkForUpdates() {
     const batContent = [
       '@echo off',
       'echo アップデートを適用しています...',
-      'timeout /t 2 /nobreak > nul',
+      'timeout /t 3 /nobreak > nul',
       `powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('${zipPath.replace(/\//g, '\\\\')}', '${extractDir.replace(/\//g, '\\\\')}', $true)"`,
-      `xcopy /E /Y /Q "${extractDir.replace(/\//g, '\\\\')}\\*" "${appDir.replace(/\//g, '\\\\')}\\"`,
+      // ZIPの中にフォルダが1つだけある場合、そのフォルダの中身をコピー
+      `for /d %%d in ("${extractDir.replace(/\//g, '\\\\')}\\*") do xcopy /E /Y /Q "%%d\\*" "${appDir.replace(/\//g, '\\\\')}\\"`,
       `rmdir /S /Q "${extractDir.replace(/\//g, '\\\\')}"`,
       `del "${zipPath.replace(/\//g, '\\\\')}"`,
       `start "" "${app.getPath('exe')}"`,
@@ -442,7 +453,7 @@ app.whenReady().then(async () => {
 
   const isOwner = require('os').hostname() === 'DESKTOP-MRETEV6' && require('os').userInfo().username === 'mitsu';
 
-  // ── 自動アップデートチェック ──
+  // ── アップデートチェック ──
   checkForUpdates();
 
   // ── CSP: API通信先を隠蔽（connect-srcからドメイン名を削除）──
