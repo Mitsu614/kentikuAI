@@ -573,7 +573,7 @@ app.whenReady().then(async () => {
 
   // ── クレジット残量をSupabaseに同期 ──
   async function syncCreditsToRemote() {
-    if (isOwner) return;
+    if (getCurrentTenant() === 1) return;
     try {
       const https = require('https');
       const tenant = queryOne('SELECT name, contact_company, credits FROM tenants WHERE id = ?', [getCurrentTenant()]);
@@ -609,7 +609,7 @@ app.whenReady().then(async () => {
   }
 
   async function syncRemoteLicense(isStartup = false) {
-    if (isOwner) return;
+    if (getCurrentTenant() === 1) return;
     try {
       const https = require('https');
       const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [getCurrentTenant()]);
