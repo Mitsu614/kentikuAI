@@ -1665,15 +1665,39 @@ app.whenReady().then(async () => {
   // ── ログイン認証 ──
   let currentSession: { username: string; tenantId: number; role: string } | null = null;
 
-  ipcMain.handle('auth:login', (_e, username: string, password: string) => {
+  ipcMain.handle('auth:login', async (_e, username: string, password: string) => {
     const user = queryOne('SELECT id, username, role, tenant_id, password_hash FROM users WHERE username = ?', [username]);
     if (!user) return { ok: false, error: 'ユーザー名またはパスワードが違います' };
     const [salt, hash] = (user.password_hash || '').split(':');
     const inputHash = crypto.createHash('sha256').update(salt + password).digest('hex');
     if (hash !== inputHash) return { ok: false, error: 'ユーザー名またはパスワードが違います' };
-    // 承認待ちチェック
-    const tenant = queryOne('SELECT plan FROM tenants WHERE id = ?', [user.tenant_id]);
-    if (tenant?.plan === 'pending') return { ok: false, error: '管理者の承認待ちです。しばらくお待ちください。' };
+    // 承認待ちチェック（Supabaseで承認状態を確認）
+    const tenant = queryOne('SELECT plan, contact_company FROM tenants WHERE id = ?', [user.tenant_id]);
+    if (tenant?.plan === 'pending') {
+      // Supabaseで承認済みか確認
+      try {
+        const https = require('https');
+        const companyName = encodeURIComponent(tenant.contact_company || user.username);
+        const licCheck: any = await new Promise((resolve) => {
+          const req = https.get(
+            `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${companyName}&select=plan,active,max_credits`,
+            { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 5000 },
+            (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve(null); } }); }
+          );
+          req.on('error', () => resolve(null));
+          req.on('timeout', () => { req.destroy(); resolve(null); });
+        });
+        if (Array.isArray(licCheck) && licCheck.length > 0 && licCheck[0].active && licCheck[0].plan !== 'pending') {
+          // Supabaseで承認済み → ローカルDBも更新
+          const lic = licCheck[0];
+          runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', [lic.plan, lic.max_credits || 50, user.tenant_id]);
+        } else {
+          return { ok: false, error: '管理者の承認待ちです。しばらくお待ちください。' };
+        }
+      } catch (_) {
+        return { ok: false, error: '管理者の承認待ちです。しばらくお待ちください。' };
+      }
+    }
     // テナント切替
     setCurrentTenant(user.tenant_id);
     currentSession = { username: user.username, tenantId: user.tenant_id, role: user.role };
@@ -1716,6 +1740,30 @@ app.whenReady().then(async () => {
 
     logAudit('register', 'user', tenantId, `${company} (${username}) — 承認待ち`);
 
+    // Supabaseに登録（remote_licenses にpending状態で追加）
+    try {
+      const https = require('https');
+      const regBody = JSON.stringify({
+        id: `reg_${Date.now().toString(36)}`,
+        company_name: company,
+        plan: 'pending',
+        credits: 0,
+        max_credits: 50,
+        active: false,
+        blocked_message: `承認待ち — ユーザー: ${username}, メール: ${email || ''}, 電話: ${tel || ''}`,
+      });
+      await new Promise<void>((resolve) => {
+        const postReq = https.request({
+          hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/remote_licenses', method: 'POST',
+          headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          timeout: 5000,
+        }, () => resolve());
+        postReq.on('error', () => resolve());
+        postReq.write(regBody);
+        postReq.end();
+      });
+    } catch (_) {}
+
     // メール通知
     try {
       const nodemailer = require('nodemailer');
@@ -1735,11 +1783,11 @@ app.whenReady().then(async () => {
           `■ ユーザー名: ${username}`,
           `■ メール: ${email || '未入力'}`,
           `■ 電話: ${tel || '未入力'}`,
-          `■ テナントID: ${tenantId}`,
           `■ 日時: ${new Date().toLocaleString('ja-JP')}`,
           `■ PC: ${require('os').hostname()}`,
           '',
-          '承認するには管理画面でプランを "standard" に変更してください。',
+          '承認方法: admin-dashboardでプランを standard に変更し、active を有効にしてください。',
+          'URL: admin-dashboard/index.html',
           '',
           '---',
           '建築ブースト 自動通知',
