@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>建築ブースト 料金プラン</title>
+<style>
+  @page { size: A4 portrait; margin: 15mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Yu Gothic', 'Meiryo', 'Hiragino Sans', sans-serif; color: #1a1a1a; line-height: 1.7; background: #fff; max-width: 210mm; margin: 0 auto; padding: 20px 28px; }
+  @media print { body { padding: 0; } }
+
+  /* ヘッダー */
+  .header { text-align: center; margin-bottom: 28px; }
+  .header h1 { font-size: 28px; letter-spacing: 6px; margin-bottom: 6px; }
+  .header .sub { font-size: 13px; color: #555; margin-bottom: 14px; }
+  .badge-row { display: flex; justify-content: center; gap: 0; margin-bottom: 20px; }
+  .badge { display: inline-block; padding: 7px 18px; font-size: 12px; font-weight: bold; }
+  .badge.patent { background: #2e4057; color: #fff; border-radius: 4px 0 0 4px; }
+  .badge.desc { background: #e8ecf0; color: #2e4057; border-radius: 0 4px 4px 0; font-weight: normal; }
+
+  /* セクション */
+  h2 { font-size: 17px; color: #2e4057; margin: 24px 0 10px; padding-bottom: 4px; border-bottom: 2px solid #2e4057; }
+  h3 { font-size: 14px; color: #2e4057; margin: 18px 0 8px; }
+
+  .intro { font-size: 12px; margin-bottom: 16px; }
+  .intro strong { font-size: 14px; }
+
+  /* 4つの特徴ボックス */
+  .features { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin: 16px 0; }
+  .feat { text-align: center; padding: 10px 6px; }
+  .feat .feat-title { background: #2e4057; color: #fff; padding: 6px 4px; font-size: 12px; font-weight: bold; }
+  .feat .feat-desc { background: #f5f7fa; padding: 6px 4px; font-size: 10px; color: #555; border: 1px solid #ddd; border-top: none; }
+
+  /* テーブル共通 */
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 11.5px; }
+  th { background: #2e4057; color: #fff; padding: 8px 10px; text-align: left; font-size: 11px; }
+  td { padding: 7px 10px; border-bottom: 1px solid #e0e0e0; }
+  tr:nth-child(even) { background: #f9fafb; }
+  tr.recommend { background: #fff8e1; }
+  tr.recommend td { font-weight: bold; }
+
+  /* プラン表 */
+  .plan-table td:nth-child(2),
+  .plan-table td:nth-child(3) { text-align: center; }
+  .plan-label { display: inline-block; font-size: 9px; background: #e74c3c; color: #fff; padding: 1px 6px; border-radius: 3px; margin-left: 4px; vertical-align: middle; }
+
+  .note { font-size: 10px; color: #777; margin: 4px 0 16px; line-height: 1.6; }
+
+  /* ストック表 */
+  .stock-table td:nth-child(2) { text-align: center; font-weight: bold; }
+
+  /* 追加ストック */
+  .addon-table { width: 60%; }
+  .addon-table td { text-align: center; }
+
+  /* 導入フロー */
+  .flow { display: flex; gap: 0; margin: 12px 0 16px; align-items: stretch; }
+  .flow-item { flex: 1; text-align: center; position: relative; }
+  .flow-num { background: #2e4057; color: #fff; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: bold; margin-bottom: 4px; }
+  .flow-label { font-size: 11px; font-weight: bold; color: #2e4057; }
+  .flow-desc { font-size: 9.5px; color: #666; }
+  .flow-arrow { display: flex; align-items: center; font-size: 18px; color: #aaa; padding: 0 2px; }
+
+  /* FAQ */
+  .faq-item { margin-bottom: 10px; }
+  .faq-q { font-size: 12px; font-weight: bold; color: #2e4057; }
+  .faq-a { font-size: 11px; color: #444; padding-left: 1em; }
+
+  /* フッター */
+  .footer { margin-top: 24px; padding-top: 12px; border-top: 1px solid #ccc; font-size: 9px; color: #999; text-align: center; }
+
+  .page-break { page-break-before: always; }
+
+  .highlight-box { background: #f0f4ff; border: 1px solid #b0c4de; border-radius: 6px; padding: 12px 16px; margin: 12px 0; font-size: 11.5px; }
+</style>
+</head>
+<body>
+
+<!-- ===== ページ1 ===== -->
+<div class="header">
+  <h1>建築ブースト</h1>
+  <div class="sub">特許出願中 建築業向けAI見積・業務自動化システム</div>
+  <div class="badge-row">
+    <span class="badge patent">特許出願中</span>
+    <span class="badge desc">AI見積から施工・材料明細・請求書作成までを一括自動化</span>
+  </div>
+</div>
+
+<p class="intro">
+  <strong>独自技術で、見積作業から事務処理までをまとめて短縮</strong><br>
+  建築ブーストは、現場写真やコメントからAIが概算見積を作成し、物件登録、施工登録、材料明細、請求書下書き、粗利管理までを一括で処理する建築業向けシステムです。単なる見積ソフトではなく、見積後の事務作業までまとめて自動化する点が特徴です。
+</p>
+
+<div class="features">
+  <div class="feat"><div class="feat-title">AI見積</div><div class="feat-desc">写真・テキストから概算</div></div>
+  <div class="feat"><div class="feat-title">一括登録</div><div class="feat-desc">物件・施工・材料明細</div></div>
+  <div class="feat"><div class="feat-title">請求書下書き</div><div class="feat-desc">見積結果から自動生成</div></div>
+  <div class="feat"><div class="feat-title">粗利管理</div><div class="feat-desc">利益率を見える化</div></div>
+</div>
+
+<h2>料金プラン（年間契約）</h2>
+
+<table class="plan-table">
+<thead>
+<tr><th>プラン</th><th>年額料金（税抜）</th><th>月あたり</th><th>クレジット</th><th>想定利用者</th><th>主な用途</th></tr>
+</thead>
+<tbody>
+<tr class="recommend">
+  <td>スタンダード <span class="plan-label">おすすめ</span></td><td>1,200,000円</td><td>100,000円</td><td>月50単位</td>
+  <td>個人〜15名規模の工務店</td><td>AI見積＋帳票一括自動化</td>
+</tr>
+<tr>
+  <td>プロ</td><td>3,000,000円</td><td>250,000円</td><td>月200単位</td>
+  <td>複数担当者・多案件</td><td>複数人で日常運用</td>
+</tr>
+<tr>
+  <td>法人カスタム</td><td>個別見積</td><td>—</td><td>個別設定</td>
+  <td>多店舗・複数会社</td><td>独自改修・連携対応</td>
+</tr>
+</tbody>
+</table>
+
+<p class="note">※ 全プラン年間契約。全プラン共通: マルチテナント対応、スマホアクセス、PDF出力、CSVエクスポート、自動バックアップ、監査ログ、保守サポート込み</p>
+
+<h2>初期費用</h2>
+
+<table>
+<thead>
+<tr><th>内容</th><th>料金（税抜）</th><th>含まれるもの</th></tr>
+</thead>
+<tbody>
+<tr><td>基本導入</td><td>198,000円</td><td>会社情報登録、初期設定、操作説明（オンライン2時間）</td></tr>
+<tr><td>帳票・材料マスタ設定</td><td>個別見積</td><td>材料単価取込、見積書・請求書の雛形調整</td></tr>
+<tr><td>独自カスタマイズ</td><td>個別見積</td><td>他システム連携、追加機能、複数拠点対応</td></tr>
+</tbody>
+</table>
+
+<!-- ===== ページ2 ===== -->
+<div class="page-break"></div>
+
+<h2>クレジット制</h2>
+
+<p class="intro">基本料金にAI利用回数を含め、追加利用分だけストックを購入する方式です。PDF出力や一括登録は追加消費なしとし、使いやすさを優先します。</p>
+
+<table class="stock-table">
+<thead>
+<tr><th>操作</th><th>消費ストック</th></tr>
+</thead>
+<tbody>
+<tr><td>写真のみからAI見積作成</td><td>1</td></tr>
+<tr><td>写真＋コメントからAI見積作成</td><td>2</td></tr>
+<tr><td>テキストのみの概算見積</td><td>1</td></tr>
+<tr><td>紙の見積書・請求書のOCR取込</td><td>1</td></tr>
+<tr><td>ビフォーアフター比較見積</td><td>2</td></tr>
+<tr><td>完成予想画像の生成</td><td>3</td></tr>
+<tr><td>見積書・請求書PDF出力</td><td style="color:#27ae60">0（無料）</td></tr>
+<tr><td>物件・施工・材料明細・請求書の一括登録</td><td style="color:#27ae60">0（無料）</td></tr>
+<tr><td>ダッシュボード・レポート閲覧</td><td style="color:#27ae60">0（無料）</td></tr>
+</tbody>
+</table>
+
+<h3>追加ストック</h3>
+
+<table class="addon-table">
+<thead>
+<tr><th>追加ストック</th><th>料金（税抜）</th><th>1回あたり単価</th></tr>
+</thead>
+<tbody>
+<tr><td>50単位</td><td>5,500円</td><td>110円</td></tr>
+<tr><td>100単位</td><td>9,900円</td><td>99円</td></tr>
+<tr><td>300単位</td><td>24,800円</td><td>約83円</td></tr>
+<tr><td>500単位</td><td>36,800円</td><td>約74円</td></tr>
+</tbody>
+</table>
+
+<p class="note">※ 未使用ストックは翌月に繰り越し可能（最大3ヶ月）<br>
+※ 追加ストックは随時購入可能</p>
+
+<h2>ご導入の流れ</h2>
+
+<div class="flow">
+  <div class="flow-item"><div class="flow-num">1</div><br><span class="flow-label">お問い合わせ</span><br><span class="flow-desc">デモ・ヒアリング</span></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-item"><div class="flow-num">2</div><br><span class="flow-label">プラン選定</span><br><span class="flow-desc">業務規模に応じて</span></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-item"><div class="flow-num">3</div><br><span class="flow-label">初期設定</span><br><span class="flow-desc">会社情報・材料登録</span></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-item"><div class="flow-num">4</div><br><span class="flow-label">操作説明</span><br><span class="flow-desc">オンライン2時間</span></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-item"><div class="flow-num">5</div><br><span class="flow-label">運用開始</span><br><span class="flow-desc">サポート付き</span></div>
+</div>
+
+<h2>よくあるご質問</h2>
+
+<div class="faq-item">
+  <div class="faq-q">Q. 契約期間の縛りはありますか？</div>
+  <div class="faq-a">A. 最低利用期間は1ヶ月です。いつでも解約・プラン変更が可能です。</div>
+</div>
+<div class="faq-item">
+  <div class="faq-q">Q. クレジットが足りなくなったらどうなりますか？</div>
+  <div class="faq-a">A. 追加ストックを随時購入できます。PDF出力や一括登録は消費0なので、見積作成以外の機能は制限なく使えます。</div>
+</div>
+<div class="faq-item">
+  <div class="faq-q">Q. スマホからも使えますか？</div>
+  <div class="faq-a">A. はい。同一ネットワーク内のスマホ・タブレットからブラウザでアクセスできます。現場からの写真送信・閲覧に便利です。</div>
+</div>
+<div class="faq-item">
+  <div class="faq-q">Q. データのセキュリティは？</div>
+  <div class="faq-a">A. APIキーはAES-256-GCMで暗号化保存。操作ログの監査記録、マルチテナントによるデータ分離、認証付きリモートアクセスに対応しています。</div>
+</div>
+<div class="faq-item">
+  <div class="faq-q">Q. 既存の見積書データは取り込めますか？</div>
+  <div class="faq-a">A. 紙の見積書・請求書をAI-OCRで読み取り、データベースに一括登録できます。材料マスタはCSVインポートにも対応しています。</div>
+</div>
+
+<div class="highlight-box">
+  <strong>無料デモのご案内</strong><br>
+  実際の現場写真を使ったAI見積デモを無料で実施しています。お気軽にお問い合わせください。<br>
+  お問い合わせ: mitsuakinakano0215@gmail.com ／ 080-6138-0698
+</div>
+
+<div class="footer">
+  建築ブースト v2.0 ／ 有限会社中野工務店 ／ 特許出願中（出願番号取得次第記載）<br>
+  本資料の内容は予告なく変更される場合があります。価格は全て税抜表示です。
+</div>
+
+</body>
+</html>
