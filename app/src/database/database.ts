@@ -60,11 +60,9 @@ export function runSql(sql: string, params?: any[]): number {
 
 // ── プラン定義 ──
 export const PLANS: Record<string, { name: string; monthlyLimit: number; price: number; description: string }> = {
-  trial:    { name: '無料トライアル', monthlyLimit: 50,   price: 0,      description: '初回限定・50回まで無料' },
-  light:    { name: 'ライト',       monthlyLimit: 50,   price: 29800,  description: '個人事業主・小規模工務店' },
-  standard: { name: 'スタンダード', monthlyLimit: 200,  price: 59800,  description: '3〜15名程度の工務店' },
-  pro:      { name: 'プロ',         monthlyLimit: 600,  price: 119800, description: 'リフォーム会社・複数担当者' },
-  enterprise: { name: '法人カスタム', monthlyLimit: 9999, price: 198000, description: '多店舗・複数会社' },
+  standard:   { name: 'スタンダード',   monthlyLimit: 50,   price: 1200000,  description: '個人〜15名規模の工務店（年間契約）' },
+  pro:        { name: 'プロ',           monthlyLimit: 200,  price: 3000000,  description: '複数担当者・多案件（年間契約）' },
+  enterprise: { name: '法人カスタム',   monthlyLimit: 9999, price: 0,        description: '多店舗・複数会社（個別見積）' },
 };
 
 // AI操作ごとのストック消費量
@@ -74,6 +72,8 @@ export const CREDIT_COSTS: Record<string, number> = {
   '写真のみ見積':      1,
   'OCR取込':          1,
   '画像生成':          3,
+  'チャット見積':      1,
+  'ビフォーアフター見積': 2,
   'PDF出力':          0,
   '一括登録':          0,
 };
