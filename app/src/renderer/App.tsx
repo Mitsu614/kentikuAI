@@ -30,6 +30,14 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(true);
   const [sessionInfo, setSessionInfo] = useState<any>(null);
+  const [showRegister, setShowRegister] = useState(false);
+  const [regUser, setRegUser] = useState('');
+  const [regPass, setRegPass] = useState('');
+  const [regCompany, setRegCompany] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regTel, setRegTel] = useState('');
+  const [regMessage, setRegMessage] = useState('');
+  const [regError, setRegError] = useState('');
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
   const [highlightConstructionId, setHighlightConstructionId] = useState<number | null>(null);
   const [tenants, setTenants] = useState<any[]>([]);
@@ -111,6 +119,28 @@ export default function App() {
     setLoginUser('');
     setLoginPass('');
     setCurrentPage('dashboard');
+  };
+
+  const handleRegister = async () => {
+    if (!regUser.trim() || !regPass || !regCompany.trim()) {
+      setRegError('ユーザー名・パスワード・会社名は必須です');
+      return;
+    }
+    setRegError('');
+    try {
+      const res = await (window as any).api.register({
+        username: regUser.trim(), password: regPass,
+        company: regCompany.trim(), email: regEmail.trim(), tel: regTel.trim(),
+      });
+      if (res.ok) {
+        setRegMessage('登録申請を送信しました。管理者の承認をお待ちください。');
+        setRegUser(''); setRegPass(''); setRegCompany(''); setRegEmail(''); setRegTel('');
+      } else {
+        setRegError(res.error || '登録に失敗しました');
+      }
+    } catch (e: any) {
+      setRegError('エラー: ' + e.message);
+    }
   };
 
   useEffect(() => { if (loggedIn) loadTenants(); }, [loggedIn]);
@@ -276,6 +306,41 @@ export default function App() {
               cursor: 'pointer', minHeight: 52,
             }}
           >ログイン</button>
+          <div style={{ marginTop: 16 }}>
+            <span onClick={() => { setShowRegister(!showRegister); setRegMessage(''); setRegError(''); }}
+              style={{ fontSize: 14, color: '#3a7bd5', cursor: 'pointer' }}>
+              {showRegister ? '← ログインに戻る' : '新規登録はこちら'}
+            </span>
+          </div>
+          {showRegister && (
+            <div style={{ marginTop: 16, textAlign: 'left', borderTop: '1px solid #eee', paddingTop: 16 }}>
+              <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 12, textAlign: 'center', color: '#1a2332' }}>新規登録（承認制）</div>
+              {regMessage && <div style={{ color: '#27ae60', fontSize: 14, marginBottom: 12, textAlign: 'center' }}>{regMessage}</div>}
+              {regError && <div style={{ color: '#e74c3c', fontSize: 14, marginBottom: 12, textAlign: 'center' }}>{regError}</div>}
+              <input value={regCompany} onChange={e => setRegCompany(e.target.value)} placeholder="会社名（必須）"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <input value={regUser} onChange={e => setRegUser(e.target.value)} placeholder="ユーザー名（必須）"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <input type="password" value={regPass} onChange={e => setRegPass(e.target.value)} placeholder="パスワード（必須）"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <input value={regEmail} onChange={e => setRegEmail(e.target.value)} placeholder="メールアドレス"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <input value={regTel} onChange={e => setRegTel(e.target.value)} placeholder="電話番号"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <button onClick={handleRegister}
+                style={{ width: '100%', padding: '14px', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 10, fontSize: 16, fontWeight: 'bold', cursor: 'pointer', minHeight: 52 }}>
+                登録申請する
+              </button>
+              <div style={{ fontSize: 12, color: '#888', marginTop: 8, textAlign: 'center' }}>
+                ※ 管理者の承認後にログインできるようになります
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
