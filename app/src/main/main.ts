@@ -387,28 +387,39 @@ async function checkForUpdates() {
     const zipAsset = release.assets?.find((a: any) => a.name.endsWith('.zip'));
     if (!zipAsset) return;
 
-    // 2. アプリ内でアップデート通知（メインウィンドウ内に表示）
+    // 2. アプリ内オーバーレイで通知+確認+ダウンロードを一体化
     if (!mainWindow) return;
-    const choice = await dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      title: 'アップデート',
-      message: `v${latestVersion} が利用可能です`,
-      detail: `現在: v${CURRENT_VERSION}\n\n${release.body || ''}`,
-      buttons: ['更新する', '後で'],
-      defaultId: 0,
-      cancelId: 1,
-    });
-    if (choice.response !== 0) {
+
+    // 確認オーバーレイ表示 → ユーザーの応答を待つ
+    const userChoice: string = await mainWindow.webContents.executeJavaScript(`
+      new Promise((resolve) => {
+        let d=document.getElementById('update-overlay');
+        if(d)d.remove();
+        d=document.createElement('div');d.id='update-overlay';document.body.appendChild(d);
+        d.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:99999';
+        d.innerHTML='<div style="background:#fff;border-radius:16px;padding:36px;width:420px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3)">'
+          +'<h2 style="margin-bottom:12px;color:#1a2332">アップデートがあります</h2>'
+          +'<p style="color:#555;font-size:15px;margin-bottom:8px">v${CURRENT_VERSION} → <strong style="color:#27ae60">v${latestVersion}</strong></p>'
+          +'<p style="color:#888;font-size:13px;margin-bottom:24px;white-space:pre-wrap">${(release.body || '').replace(/'/g, "\\'").replace(/\n/g, '\\n')}</p>'
+          +'<button id="update-yes" style="width:100%;padding:14px;background:#3a7bd5;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;min-height:48px;margin-bottom:10px">更新する</button>'
+          +'<button id="update-no" style="width:100%;padding:12px;background:none;border:2px solid #ddd;border-radius:10px;font-size:14px;cursor:pointer;color:#888">後で</button>'
+          +'</div>';
+        document.getElementById('update-yes').onclick=()=>resolve('yes');
+        document.getElementById('update-no').onclick=()=>resolve('no');
+      })
+    `);
+
+    if (userChoice !== 'yes') {
+      mainWindow.webContents.executeJavaScript(`document.getElementById('update-overlay')?.remove()`).catch(() => {});
       try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (_) {}
       return;
     }
 
-    // 3. アプリ内でダウンロード（プログレスバー付き）
+    // 3. プログレス表示に切替
     const updateDir = path.join(app.getPath('userData'), 'update');
     const zipPath = path.join(updateDir, 'update.zip');
     if (!fs.existsSync(updateDir)) fs.mkdirSync(updateDir, { recursive: true });
 
-    // メインウィンドウにプログレス表示
     mainWindow.webContents.executeJavaScript(`
       (function(){
         let d=document.getElementById('update-overlay');
