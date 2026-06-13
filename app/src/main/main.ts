@@ -349,7 +349,7 @@ function getImagesDir(dbFilePath: string) {
 
 // ── 自動アップデート（GitHub Releases ベース）──
 const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = '2.4.0';
+const CURRENT_VERSION = '2.4.1';
 
 async function checkForUpdates() {
   try {
