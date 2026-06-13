@@ -351,22 +351,29 @@ function PlanManagement() {
     setShowLog(true);
   };
 
+  const STRIPE_LINKS: Record<string, string> = {
+    standard: 'https://buy.stripe.com/dRmaEYadJ3h95rP9MO24003',
+    pro: 'https://buy.stripe.com/bJe7sMfy36tl7zX0ce24005',
+  };
+
   const requestPlan = async (planKey: string) => {
-    const planDef = plans[planKey];
-    if (!planDef) return;
-    alert(`プラン変更をご希望の場合は、下記までお電話ください。\n\n📞 080-6138-0698\n\n担当者がプラン変更のご案内をいたします。`);
-    return;
-    setRequesting(true);
-    try {
-      const req = await (window as any).api.requestPlan(planKey);
-      alert(`プラン変更を申請しました。\n\n請求番号: ${req.invoice_number}\n\n請求書PDFをダウンロードして、記載の振込先にお振込みください。`);
-      // 請求書PDF生成
-      await (window as any).api.generatePlanInvoice(req.id);
-      await load();
-    } catch (e: any) {
-      alert('エラー: ' + (e.message || e));
+    const link = STRIPE_LINKS[planKey];
+    if (link) {
+      window.open(link, '_blank');
+    } else {
+      // 法人カスタム等: メール通知を送信
+      try {
+        await (window as any).api.createFeedback({
+          category: '料金・プラン',
+          title: `${plans[planKey]?.name || planKey}プランへの変更希望`,
+          description: `現在のプラン: ${planInfo?.planName || '不明'}\n希望プラン: ${plans[planKey]?.name || planKey}`,
+          priority: '高',
+        });
+        alert('お問い合わせを送信しました。担当者からご連絡いたします。');
+      } catch (_) {
+        window.open('mailto:mitsuakinakano0215@gmail.com?subject=建築ブースト 法人カスタムプラン問い合わせ');
+      }
     }
-    setRequesting(false);
   };
 
   if (!planInfo) return null;
@@ -495,7 +502,7 @@ function PlanManagement() {
                     disabled={requesting}
                     style={{ width: '100%' }}
                   >
-                    {requesting ? '処理中...' : 'プラン変更のお問い合わせ'}
+                    {isUpgrade ? '申し込む' : 'プラン変更'}
                   </button>
                 )}
                 {key === 'enterprise' && !isCurrent && (
