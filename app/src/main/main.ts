@@ -457,6 +457,7 @@ async function checkForUpdates() {
       `for /d %%d in ("${extractDir.replace(/\//g, '\\\\')}\\*") do xcopy /E /Y /Q "%%d\\*" "${appDir.replace(/\//g, '\\\\')}\\"`,
       `rmdir /S /Q "${extractDir.replace(/\//g, '\\\\')}"`,
       `del "${zipPath.replace(/\//g, '\\\\')}"`,
+      `del "${path.join(app.getPath('userData'), '.update-skipped').replace(/\//g, '\\\\')}"`,
       `start "" "${app.getPath('exe')}"`,
       `del "%~f0"`,
     ].join('\r\n');
@@ -468,6 +469,9 @@ async function checkForUpdates() {
       message: 'アプリを再起動してアップデートを適用します。',
       buttons: ['OK'],
     });
+
+    // アップデート済みバージョンを記録（再通知防止）
+    try { fs.writeFileSync(path.join(app.getPath('userData'), '.update-skipped'), latestVersion, 'utf-8'); } catch (_) {}
 
     // バッチ実行＆アプリ終了
     require('child_process').spawn('cmd.exe', ['/c', batPath], { detached: true, stdio: 'ignore' }).unref();
