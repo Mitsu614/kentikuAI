@@ -1,6 +1,6 @@
 {
   "name": "kenchiku-boost",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "建築ブースト — AI建築見積・請求書管理デスクトップアプリ",
   "main": "dist/main.js",
   "scripts": {
@@ -20,6 +20,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.101.0",
     "cors": "^2.8.6",
+    "electron-updater": "^6.8.9",
     "express": "^5.2.1",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",

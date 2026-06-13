@@ -313,6 +313,126 @@ function getImagesDir(dbFilePath: string) {
   return dir;
 }
 
+// ── 自動アップデート（GitHub Releases ベース）──
+const GITHUB_REPO = 'Mitsu614/kentikuAI';
+const CURRENT_VERSION = require('../package.json').version;
+
+async function checkForUpdates() {
+  try {
+    const https = require('https');
+    const data: string = await new Promise((resolve, reject) => {
+      https.get(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+        headers: { 'User-Agent': 'kenchiku-boost', 'Accept': 'application/vnd.github.v3+json' },
+      }, (res: any) => {
+        let body = '';
+        res.on('data', (d: string) => body += d);
+        res.on('end', () => resolve(body));
+      }).on('error', reject);
+    });
+    const release = JSON.parse(data);
+    const latestVersion = (release.tag_name || '').replace(/^v/, '');
+
+    if (!latestVersion || latestVersion === CURRENT_VERSION) return;
+
+    // バージョン比較（新しいバージョンがある場合のみ）
+    const current = CURRENT_VERSION.split('.').map(Number);
+    const latest = latestVersion.split('.').map(Number);
+    let isNewer = false;
+    for (let i = 0; i < 3; i++) {
+      if ((latest[i] || 0) > (current[i] || 0)) { isNewer = true; break; }
+      if ((latest[i] || 0) < (current[i] || 0)) break;
+    }
+    if (!isNewer) return;
+
+    // ZIPアセットを探す
+    const zipAsset = release.assets?.find((a: any) => a.name.endsWith('.zip'));
+    if (!zipAsset) return;
+
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      title: 'アップデートがあります',
+      message: `新しいバージョン v${latestVersion} が利用可能です（現在 v${CURRENT_VERSION}）`,
+      detail: release.body || '',
+      buttons: ['今すぐ更新', '後で'],
+      defaultId: 0,
+    });
+    if (response !== 0) return;
+
+    // ダウンロード
+    const downloadUrl = zipAsset.browser_download_url;
+    const updateDir = path.join(app.getPath('userData'), 'update');
+    const zipPath = path.join(updateDir, 'update.zip');
+    if (!fs.existsSync(updateDir)) fs.mkdirSync(updateDir, { recursive: true });
+
+    // プログレスウィンドウ
+    const progressWin = new BrowserWindow({ width: 400, height: 150, resizable: false, title: 'アップデート中...', webPreferences: { contextIsolation: false } });
+    progressWin.setMenuBarVisibility(false);
+    progressWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
+      '<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif;padding:30px;text-align:center;background:#f5f5f5}h3{margin-bottom:16px;color:#333}.bar{width:100%;height:20px;background:#e0e0e0;border-radius:10px;overflow:hidden}.fill{height:100%;background:#3a7bd5;transition:width 0.3s;width:0%}</style></head><body><h3>アップデートをダウンロード中...</h3><div class="bar"><div class="fill" id="p"></div></div><p id="t" style="margin-top:8px;color:#888;font-size:13px">0%</p></body></html>'
+    ));
+
+    // ダウンロード実行
+    await new Promise<void>((resolve, reject) => {
+      const file = fs.createWriteStream(zipPath);
+      const follow = (url: string) => {
+        https.get(url, { headers: { 'User-Agent': 'kenchiku-boost' } }, (res: any) => {
+          if (res.statusCode === 302 || res.statusCode === 301) {
+            return follow(res.headers.location);
+          }
+          const total = parseInt(res.headers['content-length'] || '0');
+          let downloaded = 0;
+          res.on('data', (chunk: Buffer) => {
+            downloaded += chunk.length;
+            file.write(chunk);
+            if (total > 0) {
+              const pct = Math.round((downloaded / total) * 100);
+              try { progressWin.webContents.executeJavaScript(`document.getElementById('p').style.width='${pct}%';document.getElementById('t').textContent='${pct}%'`); } catch (_) {}
+            }
+          });
+          res.on('end', () => { file.end(); resolve(); });
+          res.on('error', reject);
+        }).on('error', reject);
+      };
+      follow(downloadUrl);
+    });
+
+    try { progressWin.close(); } catch (_) {}
+
+    // 展開先: アプリの実行パスの親ディレクトリ
+    const appDir = path.dirname(app.getPath('exe'));
+    const extractDir = path.join(updateDir, 'extracted');
+
+    // バッチファイルで更新（アプリ終了後に上書きコピー＆再起動）
+    const batPath = path.join(updateDir, 'update.bat');
+    const batContent = [
+      '@echo off',
+      'echo アップデートを適用しています...',
+      'timeout /t 2 /nobreak > nul',
+      `powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('${zipPath.replace(/\//g, '\\\\')}', '${extractDir.replace(/\//g, '\\\\')}', $true)"`,
+      `xcopy /E /Y /Q "${extractDir.replace(/\//g, '\\\\')}\\*" "${appDir.replace(/\//g, '\\\\')}\\"`,
+      `rmdir /S /Q "${extractDir.replace(/\//g, '\\\\')}"`,
+      `del "${zipPath.replace(/\//g, '\\\\')}"`,
+      `start "" "${app.getPath('exe')}"`,
+      `del "%~f0"`,
+    ].join('\r\n');
+    fs.writeFileSync(batPath, batContent, 'utf-8');
+
+    await dialog.showMessageBox({
+      type: 'info',
+      title: 'アップデート準備完了',
+      message: 'アプリを再起動してアップデートを適用します。',
+      buttons: ['OK'],
+    });
+
+    // バッチ実行＆アプリ終了
+    require('child_process').spawn('cmd.exe', ['/c', batPath], { detached: true, stdio: 'ignore' }).unref();
+    app.quit();
+
+  } catch (e: any) {
+    console.log('Auto-update check failed:', e?.message || e);
+  }
+}
+
 app.whenReady().then(async () => {
   // ── 改ざん検知（dist/main.js のハッシュチェック）──
   const isOwner = require('os').hostname() === 'DESKTOP-MRETEV6' && require('os').userInfo().username === 'mitsu';
@@ -346,6 +466,9 @@ app.whenReady().then(async () => {
       fs.writeFileSync(hashFile, mainJsHash, 'utf-8');
     } catch (_) {}
   }
+
+  // ── 自動アップデートチェック ──
+  checkForUpdates();
 
   // ── CSP: API通信先を隠蔽（connect-srcからドメイン名を削除）──
   // → session.defaultSession で動的にヘッダーを設定
@@ -1511,6 +1634,32 @@ app.whenReady().then(async () => {
 
   // ── 監査ログ ──
   ipcMain.handle('audit:list', () => queryAll('SELECT * FROM audit_log ORDER BY id DESC LIMIT 100'));
+
+  // ── ログイン認証 ──
+  let currentSession: { username: string; tenantId: number; role: string } | null = null;
+
+  ipcMain.handle('auth:login', (_e, username: string, password: string) => {
+    const user = queryOne('SELECT id, username, role, tenant_id, password_hash FROM users WHERE username = ?', [username]);
+    if (!user) return { ok: false, error: 'ユーザー名またはパスワードが違います' };
+    const [salt, hash] = (user.password_hash || '').split(':');
+    const inputHash = crypto.createHash('sha256').update(salt + password).digest('hex');
+    if (hash !== inputHash) return { ok: false, error: 'ユーザー名またはパスワードが違います' };
+    // テナント切替
+    setCurrentTenant(user.tenant_id);
+    currentSession = { username: user.username, tenantId: user.tenant_id, role: user.role };
+    logAudit('login', 'user', user.id, username);
+    return { ok: true, username: user.username, tenantId: user.tenant_id, role: user.role };
+  });
+
+  ipcMain.handle('auth:logout', () => {
+    currentSession = null;
+    setCurrentTenant(1);
+    return { ok: true };
+  });
+
+  ipcMain.handle('auth:session', () => {
+    return currentSession;
+  });
 
   // ── ユーザー管理 ──
   ipcMain.handle('users:list', () => queryAll('SELECT id, username, role, created_at FROM users ORDER BY id'));

@@ -24,6 +24,12 @@ import FeedbackPage from './pages/FeedbackPage';
 type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'daily-report' | 'gantt' | 'safety-docs' | 'quote-comparison' | 'photo-ledger' | 'feedback' | 'settings';
 
 export default function App() {
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPass, setLoginPass] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(true);
+  const [sessionInfo, setSessionInfo] = useState<any>(null);
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
   const [highlightConstructionId, setHighlightConstructionId] = useState<number | null>(null);
   const [tenants, setTenants] = useState<any[]>([]);
@@ -50,7 +56,58 @@ export default function App() {
     localStorage.setItem('onboarding_done', 'true');
   };
 
-  useEffect(() => { loadTenants(); }, []);
+  // 起動時: セッション確認 or 管理者なら自動ログイン
+  useEffect(() => {
+    (async () => {
+      try {
+        const session = await (window as any).api.getSession?.();
+        if (session) {
+          setSessionInfo(session);
+          setLoggedIn(true);
+        } else {
+          // usersテーブルにユーザーがいなければ管理者として自動ログイン
+          const users = await (window as any).api.listUsers?.();
+          if (!users || users.length === 0) {
+            setLoggedIn(true); // ユーザー未作成 = 管理者モード
+          }
+        }
+      } catch (_) {
+        setLoggedIn(true); // API未対応なら素通り
+      }
+      setLoginLoading(false);
+    })();
+  }, []);
+
+  const handleLogin = async () => {
+    if (!loginUser.trim() || !loginPass) { setLoginError('ユーザー名とパスワードを入力してください'); return; }
+    setLoginError('');
+    setLoginLoading(true);
+    try {
+      const res = await (window as any).api.login(loginUser.trim(), loginPass);
+      if (res.ok) {
+        setSessionInfo(res);
+        setLoggedIn(true);
+        setCurrentTenant(res.tenantId);
+        setTenantKey(k => k + 1);
+      } else {
+        setLoginError(res.error || 'ログインに失敗しました');
+      }
+    } catch (e: any) {
+      setLoginError('エラー: ' + e.message);
+    }
+    setLoginLoading(false);
+  };
+
+  const handleLogout = async () => {
+    await (window as any).api.logout?.();
+    setLoggedIn(false);
+    setSessionInfo(null);
+    setLoginUser('');
+    setLoginPass('');
+    setCurrentPage('dashboard');
+  };
+
+  useEffect(() => { if (loggedIn) loadTenants(); }, [loggedIn]);
   useEffect(() => {
     document.body.classList.toggle('dark-mode', darkMode);
     localStorage.setItem('darkMode', String(darkMode));
@@ -155,13 +212,84 @@ export default function App() {
     }
   };
 
+  // ログイン画面
+  if (loginLoading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#f5f5f5' }}>
+        <div style={{ textAlign: 'center', color: '#888' }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>建築ブースト</div>
+          <div>読み込み中...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!loggedIn) {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        height: '100vh', background: 'linear-gradient(135deg, #1a2332, #2c3e50)',
+      }}>
+        <div style={{
+          background: '#fff', padding: '40px 36px', borderRadius: 20,
+          boxShadow: '0 20px 60px rgba(0,0,0,0.3)', width: 380, textAlign: 'center',
+        }}>
+          <div style={{ fontSize: 28, fontWeight: 'bold', color: '#1a2332', marginBottom: 8 }}>建築ブースト</div>
+          <div style={{ color: '#888', fontSize: 14, marginBottom: 24 }}>AI建築見積管理システム</div>
+          {loginError && <div style={{ color: '#e74c3c', fontSize: 14, marginBottom: 12 }}>{loginError}</div>}
+          <input
+            value={loginUser}
+            onChange={e => setLoginUser(e.target.value)}
+            placeholder="ユーザー名"
+            autoFocus
+            style={{
+              width: '100%', padding: '14px 16px', border: '2px solid #e0e0e0', borderRadius: 10,
+              fontSize: 16, marginBottom: 10, boxSizing: 'border-box', outline: 'none', minHeight: 48,
+            }}
+            onFocus={e => e.target.style.borderColor = '#3a7bd5'}
+            onBlur={e => e.target.style.borderColor = '#e0e0e0'}
+          />
+          <input
+            type="password"
+            value={loginPass}
+            onChange={e => setLoginPass(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleLogin()}
+            placeholder="パスワード"
+            style={{
+              width: '100%', padding: '14px 16px', border: '2px solid #e0e0e0', borderRadius: 10,
+              fontSize: 16, marginBottom: 16, boxSizing: 'border-box', outline: 'none', minHeight: 48,
+            }}
+            onFocus={e => e.target.style.borderColor = '#3a7bd5'}
+            onBlur={e => e.target.style.borderColor = '#e0e0e0'}
+          />
+          <button
+            onClick={handleLogin}
+            style={{
+              width: '100%', padding: '14px', background: '#3a7bd5', color: '#fff',
+              border: 'none', borderRadius: 10, fontSize: 16, fontWeight: 'bold',
+              cursor: 'pointer', minHeight: 52,
+            }}
+          >ログイン</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="sidebar-header">建築ブースト</div>
 
-        {/* テナント切替（複数企業がある場合のみ表示） */}
-        {tenants.filter(t => t.id > 1).length > 1 && (
+        {/* ログインユーザー表示 */}
+        {sessionInfo && (
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid #2a3a4a', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#aaa' }}>{sessionInfo.username}</span>
+            <span onClick={handleLogout} style={{ fontSize: 11, color: '#e74c3c', cursor: 'pointer' }}>ログアウト</span>
+          </div>
+        )}
+
+        {/* テナント切替（管理者のみ表示） */}
+        {!sessionInfo && tenants.filter(t => t.id > 1).length > 1 && (
           <div style={{ padding: '8px 12px', borderBottom: '1px solid #2a3a4a' }}>
             <select
               value={currentTenant}

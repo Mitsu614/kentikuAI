@@ -78,16 +78,6 @@ export function startServer(distPath: string) {
       }
     }
 
-    // 従来のパスワード認証（後方互換）
-    const cfg = getConfigFn?.() || {};
-    if (!cfg.serverPassword) return res.json({ ok: true, token: 'none' });
-    if (req.body?.password === cfg.serverPassword) {
-      authAttempts.delete(clientIp);
-      const token = crypto.randomBytes(32).toString('hex');
-      sessions.set(token, { expiry: Date.now() + SESSION_TTL, tenantId: getCurrentTenant(), username: 'admin' });
-      return res.json({ ok: true, token });
-    }
-
     // ログイン失敗 → 試行回数カウント
     const current = authAttempts.get(clientIp) || { count: 0, lastAttempt: 0 };
     authAttempts.set(clientIp, { count: current.count + 1, lastAttempt: Date.now() });
@@ -98,9 +88,6 @@ export function startServer(distPath: string) {
     // localhost はスキップ
     const ip = req.ip || req.connection?.remoteAddress || '';
     if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return next();
-    // パスワード未設定ならスキップ
-    const cfg = getConfigFn?.() || {};
-    if (!cfg.serverPassword) return next();
     // 認証チェック（有効期限も確認）
     const token = req.headers['x-auth-token'] || req.query?.token;
     if (token && sessions.has(token)) {
@@ -114,8 +101,8 @@ export function startServer(distPath: string) {
       req.tenantId = session.tenantId;
       return next();
     }
-    // ログインページ
-    if (req.path === '/api/auth') return next();
+    // 認証不要のパス
+    if (req.path === '/api/auth' || req.path === '/api/version') return next();
     if (req.path === '/login') {
       res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>ログイン - 建築ブースト</title>
 <style>body{font-family:'Segoe UI','Yu Gothic UI','Meiryo',sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;margin:0}
@@ -150,6 +137,12 @@ async function login(){
       return;
     }
     res.redirect('/login');
+  });
+
+  // ── バージョンAPI（自動アップデート検知用）──
+  const APP_VERSION = Date.now().toString(); // ビルド時のタイムスタンプ = バージョン
+  app.get('/api/version', (_req: any, res: any) => {
+    res.json({ version: APP_VERSION });
   });
 
   // Service Worker はキャッシュ禁止で配信
