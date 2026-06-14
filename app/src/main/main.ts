@@ -655,8 +655,10 @@ app.whenReady().then(async () => {
           postReq.end();
         });
       }
-    } catch (_) {
-      // ネットワークエラー時はローカルのクレジットで続行
+    } catch (e: any) {
+      // 利用停止エラーは上に伝播させる
+      if (e?.message?.includes('停止')) throw e;
+      // その他のネットワークエラー時はローカルのクレジットで続行
     }
   }
 
@@ -1707,6 +1709,95 @@ app.whenReady().then(async () => {
     runSql('DELETE FROM audit_log WHERE tenant_id=?', [id]);
     runSql('DELETE FROM tenants WHERE id=?', [id]);
     logAudit('delete', 'tenant', id, '');
+  });
+
+  // クレジット変更（ローカル + Supabase同期）
+  ipcMain.handle('tenants:setCredits', async (_e, tenantId: number, credits: number) => {
+    runSql('UPDATE tenants SET credits = ?, plan_limit = ? WHERE id = ?', [credits, credits, tenantId]);
+    // Supabase同期
+    try {
+      const https = require('https');
+      const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [tenantId]);
+      const name = tenant?.contact_company || tenant?.name || '';
+      const body = JSON.stringify({ credits, max_credits: credits, updated_at: new Date().toISOString() });
+      // contact_companyで検索
+      let found = await fetchLicenseByName(name);
+      if (found.length === 0 && tenant?.name !== name) found = await fetchLicenseByName(tenant.name);
+      if (found.length > 0) {
+        await new Promise<void>((resolve) => {
+          const req = https.request({
+            hostname: 'slhgkedzlormaovwpadi.supabase.co',
+            path: `/rest/v1/remote_licenses?id=eq.${found[0].id}`,
+            method: 'PATCH',
+            headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
+            timeout: 5000,
+          }, () => resolve());
+          req.on('error', () => resolve());
+          req.write(body);
+          req.end();
+        });
+      }
+    } catch (_) {}
+    logAudit('update', 'tenant', tenantId, `クレジット: ${credits}`);
+    return true;
+  });
+
+  // 利用停止/有効化（ローカル + Supabase同期）
+  ipcMain.handle('tenants:setActive', async (_e, tenantId: number, active: boolean) => {
+    runSql('UPDATE tenants SET plan = ? WHERE id = ?', [active ? 'standard' : 'suspended', tenantId]);
+    // Supabase同期
+    try {
+      const https = require('https');
+      const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [tenantId]);
+      const name = tenant?.contact_company || tenant?.name || '';
+      const body = JSON.stringify({ active, updated_at: new Date().toISOString() });
+      let found = await fetchLicenseByName(name);
+      if (found.length === 0 && tenant?.name !== name) found = await fetchLicenseByName(tenant.name);
+      if (found.length > 0) {
+        await new Promise<void>((resolve) => {
+          const req = https.request({
+            hostname: 'slhgkedzlormaovwpadi.supabase.co',
+            path: `/rest/v1/remote_licenses?id=eq.${found[0].id}`,
+            method: 'PATCH',
+            headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
+            timeout: 5000,
+          }, () => resolve());
+          req.on('error', () => resolve());
+          req.write(body);
+          req.end();
+        });
+      }
+    } catch (_) {}
+    logAudit('update', 'tenant', tenantId, active ? '有効化' : '利用停止');
+    return true;
+  });
+
+  // クレジット使用履歴リセット
+  ipcMain.handle('tenants:resetCreditLog', (_e, tenantId: number) => {
+    runSql('DELETE FROM credit_log WHERE tenant_id = ? AND amount < 0', [tenantId]);
+    logAudit('reset', 'credit_log', tenantId, 'クレジット使用履歴リセット');
+    return true;
+  });
+
+  // 使用量を直接設定（credit_logをリセットして指定量分のログを入れる）
+  ipcMain.handle('tenants:setUsage', (_e, tenantId: number, used: number) => {
+    // 既存の消費ログを削除
+    runSql('DELETE FROM credit_log WHERE tenant_id = ? AND amount < 0', [tenantId]);
+    // 指定した使用量分のログを1件挿入
+    if (used > 0) {
+      runSql('INSERT INTO credit_log (tenant_id, amount, operation) VALUES (?, ?, ?)', [tenantId, -used, '管理者による使用量調整']);
+    }
+    // creditsカラムも更新（plan_limit - used）
+    const tenant = queryOne('SELECT plan_limit FROM tenants WHERE id = ?', [tenantId]);
+    const limit = tenant?.plan_limit || 50;
+    runSql('UPDATE tenants SET credits = ? WHERE id = ?', [Math.max(0, limit - used), tenantId]);
+    logAudit('update', 'credit_log', tenantId, `使用量を${used}に設定`);
+    return true;
+  });
+
+  // テナント別使用状況取得
+  ipcMain.handle('tenants:getUsage', (_e, tenantId: number) => {
+    return getMonthlyUsage(tenantId);
   });
 
   // ── 監査ログ ──

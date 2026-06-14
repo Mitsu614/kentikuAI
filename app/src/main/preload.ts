@@ -223,5 +223,10 @@ contextBridge.exposeInMainWorld('api', {
   logout: () => ipcRenderer.invoke('auth:logout'),
   getSession: () => ipcRenderer.invoke('auth:session'),
   isOwnerPC: () => ipcRenderer.invoke('auth:isOwner'),
+  setTenantCredits: (tenantId: number, credits: number) => ipcRenderer.invoke('tenants:setCredits', tenantId, credits),
+  resetCreditLog: (tenantId: number) => ipcRenderer.invoke('tenants:resetCreditLog', tenantId),
+  setTenantUsage: (tenantId: number, used: number) => ipcRenderer.invoke('tenants:setUsage', tenantId, used),
+  getTenantUsage: (tenantId: number) => ipcRenderer.invoke('tenants:getUsage', tenantId),
+  setTenantActive: (tenantId: number, active: boolean) => ipcRenderer.invoke('tenants:setActive', tenantId, active),
   register: (data: any) => ipcRenderer.invoke('auth:register', data),
 });

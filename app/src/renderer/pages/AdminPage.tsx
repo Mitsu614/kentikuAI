@@ -245,6 +245,11 @@ export default function AdminPage() {
   /* --- 監査ログ --- */
   const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
 
+  /* --- クレジット操作 --- */
+  const [creditEdits, setCreditEdits] = useState<Record<number, string>>({});
+  const [usageEdits, setUsageEdits] = useState<Record<number, string>>({});
+  const [tenantUsages, setTenantUsages] = useState<Record<number, { used: number; limit: number; remaining: number }>>({});
+
   /* --- 共通 --- */
   const [loading, setLoading] = useState(false);
 
@@ -264,6 +269,14 @@ export default function AdminPage() {
       ]);
       setTenants(list || []);
       setUsers(userList || []);
+      // 各テナントの使用状況を取得
+      const usages: Record<number, any> = {};
+      for (const t of (list || [])) {
+        try {
+          usages[t.id] = await (window as any).api.getTenantUsage(t.id);
+        } catch (_) {}
+      }
+      setTenantUsages(usages);
     } catch (e) { console.error('loadTenants error:', e); }
   };
 
@@ -306,6 +319,52 @@ export default function AdminPage() {
       showToast(`プランを${PLAN_LABEL[plan] || plan}に変更しました`);
       await loadTenants();
     } catch (e) { console.error(e); showToast('プラン変更に失敗しました'); }
+  };
+
+  const handleResetUsage = async (tenantId: number) => {
+    if (!window.confirm('このテナントのクレジット使用履歴をリセットしますか？')) return;
+    try {
+      await (window as any).api.resetCreditLog(tenantId);
+      showToast('使用履歴をリセットしました');
+      await loadTenants();
+    } catch (e) { console.error(e); showToast('リセットに失敗しました'); }
+  };
+
+  const handleSetUsage = async (tenantId: number) => {
+    const val = usageEdits[tenantId];
+    if (val === undefined || val === '') return;
+    const used = parseInt(val);
+    if (isNaN(used) || used < 0) { showToast('正しい数値を入力してください'); return; }
+    try {
+      await (window as any).api.setTenantUsage(tenantId, used);
+      showToast(`使用量を${used}に変更しました`);
+      setUsageEdits(prev => ({ ...prev, [tenantId]: '' }));
+      await loadTenants();
+    } catch (e) { console.error(e); showToast('変更に失敗しました'); }
+  };
+
+  const handleSetCredits = async (tenantId: number) => {
+    const val = creditEdits[tenantId];
+    if (val === undefined || val === '') return;
+    const credits = parseInt(val);
+    if (isNaN(credits) || credits < 0) { showToast('正しい数値を入力してください'); return; }
+    try {
+      await (window as any).api.setTenantCredits(tenantId, credits);
+      showToast(`クレジットを${credits}に変更しました`);
+      setCreditEdits(prev => ({ ...prev, [tenantId]: '' }));
+      await loadTenants();
+    } catch (e) { console.error(e); showToast('変更に失敗しました'); }
+  };
+
+  const handleToggleActive = async (tenant: Tenant) => {
+    const isSuspended = tenant.plan === 'suspended';
+    const action = isSuspended ? '有効化' : '利用停止';
+    if (!window.confirm(`「${getUserForTenant(tenant.id)?.username || tenant.name}」を${action}しますか？`)) return;
+    try {
+      await (window as any).api.setTenantActive(tenant.id, isSuspended);
+      showToast(`${action}しました`);
+      await loadTenants();
+    } catch (e) { console.error(e); showToast(`${action}に失敗しました`); }
   };
 
   const handleDeleteTenant = async (tenant: Tenant) => {
@@ -406,7 +465,21 @@ export default function AdminPage() {
                       </td>
                       <td style={styles.td}>{t.contact_company || '-'}</td>
                       <td style={styles.td}>{PLAN_LABEL[t.plan] || t.plan}</td>
-                      <td style={styles.td}>{t.plan_limit != null ? t.plan_limit.toLocaleString() : '-'}</td>
+                      <td style={styles.td}>
+                        <div>残: <strong style={{ color: (tenantUsages[t.id]?.remaining || 0) <= 5 ? '#e74c3c' : '#27ae60' }}>{tenantUsages[t.id]?.remaining ?? '-'}</strong> / {t.plan_limit ?? '-'}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#888' }}>
+                          使用:
+                          <input
+                            type="number" placeholder={String(tenantUsages[t.id]?.used ?? 0)}
+                            value={usageEdits[t.id] || ''}
+                            onChange={e => setUsageEdits(prev => ({ ...prev, [t.id]: e.target.value }))}
+                            style={{ width: 50, padding: '2px 4px', border: '1px solid #ddd', borderRadius: 4, fontSize: 12 }}
+                          />
+                          <button style={{ ...styles.btnSm('#f39c12'), fontSize: 10, padding: '2px 6px' }} onClick={() => handleSetUsage(t.id)}>
+                            設定
+                          </button>
+                        </div>
+                      </td>
                       <td style={styles.td}>
                         <div style={{ fontSize: 13 }}>{t.contact_company || '-'}</div>
                         <div style={{ fontSize: 12, color: '#888' }}>{t.contact_email}</div>
@@ -435,8 +508,29 @@ export default function AdminPage() {
                               適用
                             </button>
                           )}
+                          {t.plan !== 'suspended' && t.plan !== 'pending' && t.id > 1 && (
+                            <button style={styles.btnSm('#e74c3c')} onClick={() => handleToggleActive(t)}>
+                              停止
+                            </button>
+                          )}
+                          {t.plan === 'suspended' && (
+                            <button style={styles.btnSm(COLOR.success)} onClick={() => handleToggleActive(t)}>
+                              有効化
+                            </button>
+                          )}
                           <button style={styles.btnSm(COLOR.danger)} onClick={() => handleDeleteTenant(t)}>
                             削除
+                          </button>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 4 }}>
+                          <input
+                            type="number" placeholder="クレジット"
+                            value={creditEdits[t.id] || ''}
+                            onChange={e => setCreditEdits(prev => ({ ...prev, [t.id]: e.target.value }))}
+                            style={{ width: 80, padding: '4px 8px', border: '1px solid #ddd', borderRadius: 4, fontSize: 13 }}
+                          />
+                          <button style={styles.btnSm(COLOR.primary)} onClick={() => handleSetCredits(t.id)}>
+                            変更
                           </button>
                         </div>
                       </td>

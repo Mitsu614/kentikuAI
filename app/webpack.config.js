@@ -77,6 +77,7 @@ module.exports = [
         patterns: [
           { from: './src/renderer/manifest.json', to: 'manifest.json' },
           { from: './src/renderer/sw.js', to: 'sw.js' },
+          { from: '../admin-dashboard/index.html', to: 'admin.html' },
         ],
       }),
     ],

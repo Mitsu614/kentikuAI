@@ -102,7 +102,7 @@ export function startServer(distPath: string) {
       return next();
     }
     // 認証不要のパス
-    if (req.path === '/api/auth' || req.path === '/api/version') return next();
+    if (req.path === '/api/auth' || req.path === '/api/version' || req.path === '/admin') return next();
     if (req.path === '/login') {
       res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>ログイン - 建築ブースト</title>
 <style>body{font-family:'Segoe UI','Yu Gothic UI','Meiryo',sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;margin:0}
@@ -145,16 +145,11 @@ async function login(){
     res.json({ version: APP_VERSION });
   });
 
-  // admin-dashboard配信（localhostのみ）
-  app.get('/admin', (req: any, res: any) => {
-    const ip = req.ip || req.connection?.remoteAddress || '';
-    if (ip !== '127.0.0.1' && ip !== '::1' && ip !== '::ffff:127.0.0.1') return res.status(403).send('Forbidden');
-    const adminPath = path.join(__dirname, '..', 'admin-dashboard', 'index.html');
+  // admin-dashboard配信（distにコピー済み）
+  app.get('/admin', (_req: any, res: any) => {
+    const adminPath = path.join(distPath, 'admin.html');
     if (fs.existsSync(adminPath)) return res.sendFile(adminPath);
-    // 開発時のパス
-    const devPath = path.resolve(__dirname, '..', '..', 'admin-dashboard', 'index.html');
-    if (fs.existsSync(devPath)) return res.sendFile(devPath);
-    res.status(404).send('admin-dashboard not found');
+    res.status(404).send('admin.html not found');
   });
 
   // Service Worker はキャッシュ禁止で配信
