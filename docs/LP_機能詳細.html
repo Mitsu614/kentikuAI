@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>建築ブースト — 機能詳細</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--navy:#0b1929;--navy2:#132d4a;--green:#22c55e;--green2:#16a34a;--blue:#3b82f6;--purple:#8b5cf6;--orange:#f59e0b;--red:#ef4444;--gray50:#f8fafc;--gray100:#f1f5f9;--gray200:#e2e8f0;--gray400:#94a3b8;--gray600:#475569;--gray900:#0f172a;--radius:16px}
+html{scroll-behavior:smooth}
+body{font-family:'Noto Sans JP',system-ui,sans-serif;color:var(--gray900);line-height:1.8;background:#fff;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.w{max-width:1080px;margin:0 auto;padding:0 28px}
+
+/* ナビ */
+.nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(11,25,41,0.92);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.06)}
+.nav .w{display:flex;justify-content:space-between;align-items:center;height:60px}
+.nav-logo{font-size:17px;font-weight:900;color:#fff;letter-spacing:0.5px}
+.nav-logo span{color:var(--green)}
+.nav-back{color:rgba(255,255,255,0.6);font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);transition:all 0.2s}
+.nav-back:hover{color:#fff;background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.25)}
+
+/* ===== 機能ヒーロー ===== */
+.feat-hero{padding:120px 0 80px;text-align:center;position:relative;overflow:hidden}
+.feat-hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 80% 60% at 50% 40%,var(--glow,rgba(59,130,246,0.08)),transparent 60%)}
+.feat-hero-grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.03) 1px,transparent 1px);background-size:48px 48px}
+.feat-hero .w{position:relative;z-index:1}
+.feat-hero-icon{font-size:80px;margin-bottom:20px;filter:drop-shadow(0 4px 12px rgba(0,0,0,0.2))}
+.feat-hero h1{font-size:42px;font-weight:900;margin-bottom:14px;letter-spacing:-0.5px}
+.feat-hero p{font-size:18px;max-width:640px;margin:0 auto;line-height:1.9}
+.feat-hero-badge{display:inline-block;font-size:12px;font-weight:700;padding:6px 16px;border-radius:50px;margin-bottom:20px;letter-spacing:1px}
+
+/* 各ヒーローの色 */
+.hero-blue{background:linear-gradient(180deg,var(--navy) 0%,#1a2d4a 100%);color:#fff;--glow:rgba(59,130,246,0.1)}
+.hero-blue .feat-hero-badge{background:rgba(59,130,246,0.15);color:var(--blue);border:1px solid rgba(59,130,246,0.25)}
+.hero-green{background:linear-gradient(180deg,#052e16 0%,#14532d 100%);color:#fff;--glow:rgba(34,197,94,0.1)}
+.hero-green .feat-hero-badge{background:rgba(34,197,94,0.15);color:var(--green);border:1px solid rgba(34,197,94,0.25)}
+.hero-purple{background:linear-gradient(180deg,#1e1040 0%,#2e1065 100%);color:#fff;--glow:rgba(139,92,246,0.1)}
+.hero-purple .feat-hero-badge{background:rgba(139,92,246,0.15);color:var(--purple);border:1px solid rgba(139,92,246,0.25)}
+.hero-orange{background:linear-gradient(180deg,#431407 0%,#7c2d12 100%);color:#fff;--glow:rgba(245,158,11,0.1)}
+.hero-orange .feat-hero-badge{background:rgba(245,158,11,0.15);color:var(--orange);border:1px solid rgba(245,158,11,0.25)}
+
+/* ===== セクション ===== */
+.sec{padding:80px 0}
+.sec-alt{background:var(--gray50)}
+.sec-dark{background:var(--navy);color:#fff}
+.sec-header{margin-bottom:40px}
+.sec-header h2{font-size:28px;font-weight:900;line-height:1.4}
+.sec-header p{font-size:15px;color:var(--gray400);margin-top:8px}
+
+/* ===== ステップ ===== */
+.steps{display:flex;flex-direction:column;gap:0;position:relative;padding-left:28px}
+.steps::before{content:'';position:absolute;left:19px;top:20px;bottom:20px;width:2px;background:linear-gradient(180deg,var(--blue),var(--green))}
+.step{display:flex;gap:20px;align-items:flex-start;position:relative;padding:16px 0}
+.step-num{width:40px;height:40px;min-width:40px;background:var(--blue);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:900;position:relative;z-index:1;box-shadow:0 2px 8px rgba(59,130,246,0.3)}
+.step-body{background:#fff;border-radius:var(--radius);padding:20px 24px;border:1px solid var(--gray200);flex:1;transition:all 0.2s}
+.step-body:hover{box-shadow:0 4px 16px rgba(0,0,0,0.06);transform:translateX(4px)}
+.step-body h3{font-size:16px;font-weight:700;margin-bottom:4px}
+.step-body p{font-size:14px;color:var(--gray600);margin:0}
+
+/* ===== ビフォーアフター ===== */
+.ba{display:grid;grid-template-columns:1fr 60px 1fr;gap:0;align-items:stretch;margin:32px 0}
+.ba-card{border-radius:var(--radius);padding:32px 24px;text-align:center;position:relative;overflow:hidden}
+.ba-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px}
+.ba-card.before{background:#fef2f2;border:1px solid #fecaca}
+.ba-card.before::before{background:linear-gradient(90deg,var(--red),#f97316)}
+.ba-card.after{background:#f0fdf4;border:1px solid #bbf7d0}
+.ba-card.after::before{background:linear-gradient(90deg,var(--green),#34d399)}
+.ba-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:12px}
+.ba-card.before .ba-label{color:var(--red)}
+.ba-card.after .ba-label{color:var(--green)}
+.ba-val{font-size:36px;font-weight:900;letter-spacing:-1px}
+.ba-card.before .ba-val{color:var(--gray900)}
+.ba-card.after .ba-val{color:var(--green2)}
+.ba-desc{font-size:13px;color:var(--gray400);margin-top:8px;line-height:1.6}
+.ba-arrow{display:flex;align-items:center;justify-content:center;font-size:36px;color:var(--green);font-weight:900}
+
+/* ===== 具体例カード ===== */
+.example{background:#fff;border-radius:var(--radius);padding:28px;border:1px solid var(--gray200);margin:24px 0;box-shadow:0 2px 8px rgba(0,0,0,0.03)}
+.example-header{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.example-tag{font-size:11px;font-weight:700;padding:4px 12px;border-radius:20px;letter-spacing:0.5px}
+.tag-blue{background:rgba(59,130,246,0.08);color:var(--blue)}
+.tag-green{background:rgba(34,197,94,0.08);color:var(--green2)}
+.tag-purple{background:rgba(139,92,246,0.08);color:var(--purple)}
+.tag-orange{background:rgba(245,158,11,0.08);color:var(--orange)}
+.example-title{font-size:17px;font-weight:700}
+.example p{font-size:14px;color:var(--gray600);margin-bottom:8px}
+
+/* テーブル */
+.example table{width:100%;border-collapse:separate;border-spacing:0;margin-top:16px;border-radius:12px;overflow:hidden;border:1px solid var(--gray200)}
+.example th{background:var(--gray50);padding:10px 16px;text-align:left;font-size:12px;font-weight:600;color:var(--gray400);text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid var(--gray200)}
+.example td{padding:10px 16px;font-size:14px;border-bottom:1px solid var(--gray100)}
+.example tr:last-child td{border-bottom:none}
+.example td:last-child{text-align:right;font-weight:600}
+.example tr:hover{background:rgba(59,130,246,0.03)}
+.total-row{background:#f0fdf4!important}
+.total-row td{font-weight:900!important;font-size:15px!important;color:var(--green2)}
+
+/* ===== 特徴グリッド ===== */
+.feature-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:24px 0}
+.feature-item{background:#fff;border-radius:12px;padding:20px;border:1px solid var(--gray200);text-align:center;transition:all 0.2s}
+.feature-item:hover{box-shadow:0 4px 16px rgba(0,0,0,0.06);transform:translateY(-2px)}
+.feature-item .fi-icon{font-size:28px;margin-bottom:8px}
+.feature-item h4{font-size:14px;font-weight:700;margin-bottom:4px}
+.feature-item p{font-size:12px;color:var(--gray400)}
+
+/* ===== 区切り線 ===== */
+.divider{height:1px;background:linear-gradient(90deg,transparent,var(--gray200),transparent);margin:0}
+
+/* ===== 機能ナビ ===== */
+.feat-nav-sec{padding:60px 0}
+.feat-nav-sec h2{text-align:center;font-size:24px;font-weight:900;margin-bottom:32px}
+.feat-nav{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+.feat-nav a{background:#fff;border-radius:12px;padding:20px 12px;text-align:center;border:1px solid var(--gray200);transition:all 0.25s;cursor:pointer}
+.feat-nav a:hover{border-color:var(--blue);box-shadow:0 8px 24px rgba(0,0,0,0.06);transform:translateY(-3px)}
+.feat-nav .fn-icon{font-size:32px;margin-bottom:8px}
+.feat-nav .fn-name{font-size:11px;font-weight:700;color:var(--gray900)}
+
+/* CTA */
+.mini-cta{background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);padding:80px 28px;text-align:center;position:relative;overflow:hidden}
+.mini-cta::before{content:'';position:absolute;inset:0;background:radial-gradient(circle at 50% 100%,rgba(34,197,94,0.08),transparent 60%)}
+.mini-cta>*{position:relative}
+.mini-cta h2{font-size:28px;font-weight:900;color:#fff;margin-bottom:8px}
+.mini-cta p{font-size:15px;color:rgba(255,255,255,0.6);margin-bottom:28px}
+.btn-cta{display:inline-flex;align-items:center;gap:8px;background:var(--green);color:#fff;font-size:17px;font-weight:700;padding:18px 40px;border-radius:12px;border:none;cursor:pointer;transition:all 0.25s;box-shadow:0 4px 20px rgba(34,197,94,0.25)}
+.btn-cta:hover{background:var(--green2);transform:translateY(-2px);box-shadow:0 8px 28px rgba(34,197,94,0.35)}
+
+/* フッター */
+.ft{background:#060d16;color:rgba(255,255,255,0.35);padding:28px;text-align:center;font-size:11px}
+.ft a{color:rgba(255,255,255,0.45);margin:0 14px;transition:color 0.2s}
+.ft a:hover{color:#fff}
+
+/* レスポンシブ */
+@media(max-width:768px){
+  .feat-hero{padding:100px 0 60px}
+  .feat-hero h1{font-size:28px}
+  .feat-hero p{font-size:15px}
+  .ba{grid-template-columns:1fr;gap:0}
+  .ba-arrow{transform:rotate(90deg);padding:8px 0}
+  .ba-val{font-size:28px}
+  .feature-grid{grid-template-columns:1fr}
+  .feat-nav{grid-template-columns:repeat(3,1fr)}
+  .steps{padding-left:20px}
+  .sec{padding:48px 0}
+}
+</style>
+</head>
+<body>
+
+<nav class="nav"><div class="w">
+  <a href="LP_建築ブースト.html" class="nav-logo">建築<span>ブースト</span></a>
+  <a href="LP_建築ブースト.html" class="nav-back">&#x2190; トップに戻る</a>
+</div></nav>
+
+<!-- ========== AI見積 ========== -->
+<section class="feat-hero hero-blue" id="ai-estimate">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">CORE FEATURE</div>
+    <div class="feat-hero-icon">&#x1F4F7;</div>
+    <h1>AI見積</h1>
+    <p>現場写真を1枚撮るだけ。AIが工事内容を自動判定し、材料費・人件費・諸経費まで30秒で見積完了。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="sec-header"><h2>使い方</h2></div>
+    <div class="steps">
+      <div class="step"><div class="step-num">1</div><div class="step-body"><h3>写真を撮る・選ぶ</h3><p>現場の写真をスマホで撮影、またはPCから画像を選択。図面でもOK。</p></div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-body"><h3>AIが自動解析</h3><p>工事種別を判定し、相場DB・過去実績を参照して材料費・人件費・諸経費を算出。</p></div></div>
+      <div class="step"><div class="step-num" style="background:var(--green)">3</div><div class="step-body"><h3>見積完了 → 帳票一括作成</h3><p>「自動作成」ボタンで物件・施工・材料明細・請求書が一括で登録されます。</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="sec sec-alt">
+  <div class="w">
+    <div class="ba">
+      <div class="ba-card before"><div class="ba-label">Before</div><div class="ba-val">3時間</div><div class="ba-desc">手作業で材料を拾い、単価を調べ、<br>Excelに入力</div></div>
+      <div class="ba-arrow">&#x2192;</div>
+      <div class="ba-card after"><div class="ba-label">After</div><div class="ba-val">30秒</div><div class="ba-desc">写真1枚 → AI解析 →<br>内訳付き見積完成</div></div>
+    </div>
+
+    <div class="example">
+      <div class="example-header"><span class="example-tag tag-blue">実例</span><span class="example-title">キッチン・浴室リフォーム</span></div>
+      <p>築25年の木造住宅。キッチンと浴室のリフォームを写真+コメントで見積。</p>
+      <table>
+        <thead><tr><th>項目</th><th>数量</th><th>金額</th></tr></thead>
+        <tbody>
+          <tr><td>システムキッチン本体</td><td>1式</td><td>¥850,000</td></tr>
+          <tr><td>ユニットバス本体</td><td>1式</td><td>¥650,000</td></tr>
+          <tr><td>給排水工事</td><td>1式</td><td>¥380,000</td></tr>
+          <tr><td>電気工事</td><td>1式</td><td>¥120,000</td></tr>
+          <tr><td>解体・撤去</td><td>1式</td><td>¥250,000</td></tr>
+          <tr><td>人件費（大工・設備工）</td><td>延べ15人工</td><td>¥450,000</td></tr>
+          <tr class="total-row"><td>売価（粗利25%込）</td><td></td><td>¥3,375,000</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== ビフォーアフター ========== -->
+<section class="feat-hero hero-green" id="beforeafter">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">AI ANALYSIS</div>
+    <div class="feat-hero-icon">&#x1F504;</div>
+    <h1>ビフォーアフター解析</h1>
+    <p>施工前と施工後の2枚の写真をAIに読ませるだけで、何の工事をしたかを自動判定し、見積を作成。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="sec-header"><h2>使い方</h2></div>
+    <div class="steps">
+      <div class="step"><div class="step-num">1</div><div class="step-body"><h3>施工前の写真を選択</h3><p>工事前の現場写真を選びます。</p></div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-body"><h3>施工後の写真を選択</h3><p>完成後の写真を選びます。</p></div></div>
+      <div class="step"><div class="step-num" style="background:var(--green)">3</div><div class="step-body"><h3>AIが差分を自動解析</h3><p>2枚の差分から工事内容・材料・工数を推定。次の提案見積にそのまま使えます。</p></div></div>
+    </div>
+    <div class="example">
+      <div class="example-header"><span class="example-tag tag-green">活用シーン</span><span class="example-title">完了報告 → 次回提案</span></div>
+      <p>完了した外壁塗装工事の写真を使って「同じ規模の塗装工事はこれくらいです」と次の顧客に提案。過去実績ベースの精度の高い見積が作れます。</p>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== 請求書・発注書 ========== -->
+<section class="feat-hero hero-purple" id="invoice">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">AUTOMATION</div>
+    <div class="feat-hero-icon">&#x1F4C4;</div>
+    <h1>請求書・発注書</h1>
+    <p>AI見積の結果からワンクリックで請求書・発注書PDFを出力。手入力ゼロ。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="ba">
+      <div class="ba-card before"><div class="ba-label">Before</div><div class="ba-val">30分</div><div class="ba-desc">Excelで見積から転記して請求書作成</div></div>
+      <div class="ba-arrow">&#x2192;</div>
+      <div class="ba-card after"><div class="ba-label">After</div><div class="ba-val">1クリック</div><div class="ba-desc">見積データから自動生成 → PDF出力</div></div>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-item"><div class="fi-icon">&#x1F3E2;</div><h4>会社情報</h4><p>社名・ロゴ・印影を自動挿入</p></div>
+      <div class="feature-item"><div class="fi-icon">&#x1F4CB;</div><h4>明細自動転記</h4><p>見積の全項目を自動で転記</p></div>
+      <div class="feature-item"><div class="fi-icon">&#x1F4B0;</div><h4>インボイス対応</h4><p>適格請求書番号を自動挿入</p></div>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== 予実管理 ========== -->
+<section class="feat-hero hero-orange" id="budget">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">MANAGEMENT</div>
+    <div class="feat-hero-icon">&#x1F4CA;</div>
+    <h1>予実管理</h1>
+    <p>AI見積と実際の支出をリアルタイム比較。粗利の「見える化」で赤字工事を防止。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="example">
+      <div class="example-header"><span class="example-tag tag-orange">実例</span><span class="example-title">外壁塗装工事の予実比較</span></div>
+      <table>
+        <thead><tr><th>項目</th><th>AI見積</th><th>実績</th><th>差額</th></tr></thead>
+        <tbody>
+          <tr><td>材料費</td><td>¥2,000,000</td><td>¥1,850,000</td><td style="color:var(--green)">+¥150,000</td></tr>
+          <tr><td>人件費</td><td>¥1,500,000</td><td>¥1,620,000</td><td style="color:var(--red)">-¥120,000</td></tr>
+          <tr><td>諸経費</td><td>¥400,000</td><td>¥380,000</td><td style="color:var(--green)">+¥20,000</td></tr>
+          <tr class="total-row"><td>粗利</td><td>¥1,100,000</td><td>¥1,150,000</td><td>+¥50,000</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== 作業日報 ========== -->
+<section class="feat-hero hero-blue" id="daily-report">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">DAILY OPS</div>
+    <div class="feat-hero-icon">&#x1F4D3;</div>
+    <h1>作業日報</h1>
+    <p>日付・現場・作業内容・人員を入力するだけ。施工履歴と自動紐付け。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="ba">
+      <div class="ba-card before"><div class="ba-label">Before</div><div class="ba-val">手書き</div><div class="ba-desc">紙の日報 → 事務所でExcel転記</div></div>
+      <div class="ba-arrow">&#x2192;</div>
+      <div class="ba-card after"><div class="ba-label">After</div><div class="ba-val">スマホ</div><div class="ba-desc">現場からスマホで入力 → 自動集計</div></div>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== 工程表 ========== -->
+<section class="feat-hero hero-green" id="gantt">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">SCHEDULE</div>
+    <div class="feat-hero-icon">&#x1F4C5;</div>
+    <h1>工程表</h1>
+    <p>ガントチャートで全現場のスケジュールを一覧管理。遅延を即座に把握。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="example">
+      <div class="example-header"><span class="example-tag tag-green">活用シーン</span><span class="example-title">複数現場の同時管理</span></div>
+      <p>3現場を同時に進行中の場合、各現場の工程を1画面で確認。遅れている工程が赤く表示されるので、即座に対応できます。</p>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== 安全書類 ========== -->
+<section class="feat-hero hero-purple" id="safety">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">SAFETY</div>
+    <div class="feat-hero-icon">&#x26D1;</div>
+    <h1>安全書類</h1>
+    <p>作業員名簿・KY・新規入場者教育記録を一元管理。元請提出もスムーズ。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="feature-grid">
+      <div class="feature-item"><div class="fi-icon">&#x1F4DD;</div><h4>作業員名簿</h4><p>氏名・資格・血液型・緊急連絡先</p></div>
+      <div class="feature-item"><div class="fi-icon">&#x26A0;</div><h4>KY活動記録</h4><p>危険予知・対策・実施確認</p></div>
+      <div class="feature-item"><div class="fi-icon">&#x1F393;</div><h4>新規入場者教育</h4><p>現場ルール・安全事項の記録</p></div>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== 写真台帳 ========== -->
+<section class="feat-hero hero-orange" id="photo">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">DOCUMENTATION</div>
+    <div class="feat-hero-icon">&#x1F4F8;</div>
+    <h1>写真台帳</h1>
+    <p>施工写真を現場ごとに整理し、台帳PDFをワンクリックで出力。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="ba">
+      <div class="ba-card before"><div class="ba-label">Before</div><div class="ba-val">2時間</div><div class="ba-desc">写真をExcelに貼り付け → 印刷</div></div>
+      <div class="ba-arrow">&#x2192;</div>
+      <div class="ba-card after"><div class="ba-label">After</div><div class="ba-val">1クリック</div><div class="ba-desc">写真選択 → 台帳PDF自動生成</div></div>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== 出面管理 ========== -->
+<section class="feat-hero hero-blue" id="attendance">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">LABOR</div>
+    <div class="feat-hero-icon">&#x1F465;</div>
+    <h1>出面管理</h1>
+    <p>作業員ごとの出勤日数・日当を施工別に集計。月末の給与計算がラクに。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="example">
+      <div class="example-header"><span class="example-tag tag-blue">実例</span><span class="example-title">月次集計</span></div>
+      <table>
+        <thead><tr><th>作業員</th><th>出勤日数</th><th>日当</th><th>合計</th></tr></thead>
+        <tbody>
+          <tr><td>田中</td><td>22日</td><td>¥25,000</td><td>¥550,000</td></tr>
+          <tr><td>佐藤</td><td>18日</td><td>¥28,000</td><td>¥504,000</td></tr>
+          <tr><td>鈴木</td><td>20日</td><td>¥23,000</td><td>¥460,000</td></tr>
+          <tr class="total-row"><td>合計</td><td>60日</td><td></td><td>¥1,514,000</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== 見積比較 ========== -->
+<section class="feat-hero hero-green" id="quote-compare">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">COMPARISON</div>
+    <div class="feat-hero-icon">&#x1F4DD;</div>
+    <h1>見積比較</h1>
+    <p>複数の業者から届いた見積を並列で比較。最適な発注先が一目でわかる。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="example">
+      <div class="example-header"><span class="example-tag tag-green">活用シーン</span><span class="example-title">外注先3社の比較</span></div>
+      <p>A社・B社・C社の見積を並べて、材料費・人件費・合計を比較。最安値の項目が緑色でハイライトされるので、部分発注の判断もスムーズに行えます。</p>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== AI学習 ========== -->
+<section class="feat-hero hero-purple" id="ai-learning">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">MACHINE LEARNING</div>
+    <div class="feat-hero-icon">&#x1F9E0;</div>
+    <h1>AI学習ループ</h1>
+    <p>使えば使うほど、御社の相場に合った見積が出るようになります。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="steps">
+      <div class="step"><div class="step-num">1</div><div class="step-body"><h3>AI見積を作成</h3><p>写真やテキストからAIが見積を生成。</p></div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-body"><h3>実際の請求書PDFを取り込み</h3><p>工事完了後、実際の請求書をPDFで取り込み。</p></div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-body"><h3>AI見積と実績を紐づけ</h3><p>AI見積の金額と実際の金額の差分を学習データとして蓄積。</p></div></div>
+      <div class="step"><div class="step-num" style="background:var(--green)">4</div><div class="step-body"><h3>次回の見積精度が向上</h3><p>蓄積データが全ユーザーの見積に反映。10件で御社専用の相場に。</p></div></div>
+    </div>
+  </div>
+</section>
+<div class="divider"></div>
+
+<!-- ========== PDF取込 ========== -->
+<section class="feat-hero hero-orange" id="pdf-import">
+  <div class="feat-hero-grid"></div>
+  <div class="w">
+    <div class="feat-hero-badge">OCR / AI</div>
+    <div class="feat-hero-icon">&#x1F4C2;</div>
+    <h1>PDF請求書取込</h1>
+    <p>メールで届いたPDF請求書をAIが自動で読み取り、システムに一括登録。</p>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="ba">
+      <div class="ba-card before"><div class="ba-label">Before</div><div class="ba-val">手入力</div><div class="ba-desc">PDF見ながら項目を1つずつ入力</div></div>
+      <div class="ba-arrow">&#x2192;</div>
+      <div class="ba-card after"><div class="ba-label">After</div><div class="ba-val">自動</div><div class="ba-desc">PDFを選択 → AI解析 → 一括登録</div></div>
+    </div>
+    <div class="example">
+      <div class="example-header"><span class="example-tag tag-orange">自動認識項目</span><span class="example-title">PDF請求書から読み取れる情報</span></div>
+      <table>
+        <tbody>
+          <tr><td>宛先・発行元</td><td>会社名・住所を自動抽出</td></tr>
+          <tr><td>金額</td><td>小計・消費税・合計（税込→税抜自動変換）</td></tr>
+          <tr><td>明細</td><td>項目名・数量・単位・単価・金額</td></tr>
+          <tr><td>カテゴリ</td><td>木材/外壁/電気/水道など22分類を自動推定</td></tr>
+          <tr><td>日付</td><td>発行日・支払期限を自動認識</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 他の機能ナビ ===== -->
+<section class="feat-nav-sec sec-alt">
+  <div class="w">
+    <h2>他の機能も見る</h2>
+    <div class="feat-nav">
+      <a href="#ai-estimate"><div class="fn-icon">&#x1F4F7;</div><div class="fn-name">AI見積</div></a>
+      <a href="#beforeafter"><div class="fn-icon">&#x1F504;</div><div class="fn-name">ビフォーアフター</div></a>
+      <a href="#invoice"><div class="fn-icon">&#x1F4C4;</div><div class="fn-name">請求書</div></a>
+      <a href="#budget"><div class="fn-icon">&#x1F4CA;</div><div class="fn-name">予実管理</div></a>
+      <a href="#daily-report"><div class="fn-icon">&#x1F4D3;</div><div class="fn-name">日報</div></a>
+      <a href="#gantt"><div class="fn-icon">&#x1F4C5;</div><div class="fn-name">工程表</div></a>
+      <a href="#safety"><div class="fn-icon">&#x26D1;</div><div class="fn-name">安全書類</div></a>
+      <a href="#photo"><div class="fn-icon">&#x1F4F8;</div><div class="fn-name">写真台帳</div></a>
+      <a href="#attendance"><div class="fn-icon">&#x1F465;</div><div class="fn-name">出面管理</div></a>
+      <a href="#quote-compare"><div class="fn-icon">&#x1F4DD;</div><div class="fn-name">見積比較</div></a>
+      <a href="#ai-learning"><div class="fn-icon">&#x1F9E0;</div><div class="fn-name">AI学習</div></a>
+      <a href="#pdf-import"><div class="fn-icon">&#x1F4C2;</div><div class="fn-name">PDF取込</div></a>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="mini-cta">
+  <h2>まずはデモで体験してください</h2>
+  <p>御社の現場写真を使って、実際にAI見積をお見せします。</p>
+  <a href="mailto:mitsuakinakano0215@gmail.com?subject=建築ブースト 導入相談・デモ希望&body=会社名:%0D%0Aお名前:%0D%0Aご連絡先電話番号:%0D%0A%0D%0Aご希望の日時:%0D%0A" class="btn-cta">無料デモを申し込む</a>
+</section>
+
+<footer class="ft">
+  <p style="margin-bottom:8px">
+    <a href="LP_建築ブースト.html">トップページ</a>
+    <a href="プライバシーポリシー_建築ブースト.html">プライバシーポリシー</a>
+    <a href="特定商取引法に基づく表記.html">特定商取引法</a>
+  </p>
+  <p>&copy; 2026 有限会社中野工務店 ｜ 建築ブースト 特許出願中</p>
+</footer>
+
+</body>
+</html>
