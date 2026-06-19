@@ -96,7 +96,7 @@ function escapeHtml(str: string | null | undefined): string {
 }
 
 let mainWindow: BrowserWindow | null = null;
-let APP_VERSION = '2.9.1'; // CURRENT_VERSIONで上書きされる
+let APP_VERSION = '2.9.2'; // CURRENT_VERSIONで上書きされる
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
@@ -349,7 +349,7 @@ function getImagesDir(dbFilePath: string) {
 
 // ── 自動アップデート（GitHub Releases ベース）──
 const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = '2.9.1';
+const CURRENT_VERSION = '2.9.2';
 APP_VERSION = CURRENT_VERSION;
 
 async function checkForUpdates() {
