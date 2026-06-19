@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const api = (window as any).api;
 
@@ -83,7 +84,14 @@ export default function GanttPage() {
 
   return (
     <div>
-      <div className="page-header"><h1>📊 工程表</h1></div>
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>📊 工程表</h1>
+        <PageGuide pageKey="gantt" steps={[
+          { icon: '📅', title: 'STEP 1：タスクを登録', desc: '「+ タスク追加」から工程名・担当者・開始日・終了日を入力します。', sub: '施工案件に紐づけて管理できます' },
+          { icon: '📊', title: 'STEP 2：ガントチャートで確認', desc: '全工程をガントチャートで視覚的に確認。進捗率もバーで表示されます。' },
+          { icon: '✏️', title: 'STEP 3：進捗を更新', desc: 'タスクをクリックして進捗率を更新し、工程の遅れを早期に把握できます。' },
+        ]} />
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
         <select value={filterCid || ''} onChange={e => setFilterCid(e.target.value ? Number(e.target.value) : null)} style={{ padding: '6px 10px', borderRadius: 6 }}>
           <option value="">全案件</option>

@@ -3,248 +3,508 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>建築ブースト — 見積30秒、残業ゼロへ。AI建築見積・業務自動化</title>
+<title>建築ブースト — 写真1枚で見積完了。AI建築見積・業務自動化</title>
 <meta name="description" content="現場写真1枚で見積完了。請求書・発注書も自動作成。建築業の業務過多を解消するAI見積システム。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Yu Gothic', 'Meiryo', 'Hiragino Sans', sans-serif; color: #1a1a1a; line-height: 1.7; background: #fff; }
-a { color: #3a7bd5; text-decoration: none; }
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--navy:#0b1929;--navy2:#132d4a;--green:#22c55e;--green2:#16a34a;--blue:#3b82f6;--gray50:#f9fafb;--gray100:#f3f4f6;--gray400:#9ca3af;--gray600:#4b5563;--gray900:#111827;--radius:16px;}
+html{scroll-behavior:smooth}
+body{font-family:'Noto Sans JP',system-ui,sans-serif;color:var(--gray900);line-height:1.8;background:#fff;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+img{max-width:100%;display:block}
+.w{max-width:1120px;margin:0 auto;padding:0 28px}
+
+/* ===== ナビ ===== */
+.nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(11,25,41,0.92);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.06)}
+.nav .w{display:flex;justify-content:space-between;align-items:center;height:64px}
+.nav-logo{font-size:18px;font-weight:900;color:#fff;letter-spacing:1px}
+.nav-logo span{color:var(--green)}
+.nav-links{display:flex;gap:28px;align-items:center}
+.nav-links a{color:rgba(255,255,255,0.7);font-size:13px;font-weight:500;transition:color 0.2s}
+.nav-links a:hover{color:#fff}
+.nav-cta{background:var(--green);color:#fff!important;padding:8px 20px;border-radius:8px;font-weight:700;font-size:13px;transition:all 0.2s}
+.nav-cta:hover{background:var(--green2);transform:translateY(-1px)}
 
 /* ===== ヒーロー ===== */
-.hero { background: linear-gradient(135deg, #0f1923 0%, #1a2d42 40%, #2c4a6b 100%); color: #fff; padding: 80px 20px 60px; text-align: center; position: relative; overflow: hidden; }
-.hero::after { content: ''; position: absolute; bottom: -2px; left: 0; right: 0; height: 60px; background: linear-gradient(to bottom right, transparent 49.5%, #fff 50%); }
-.hero .catch { font-size: 42px; font-weight: 900; letter-spacing: 2px; margin-bottom: 12px; line-height: 1.3; }
-.hero .catch span { color: #5cb85c; }
-.hero .sub { font-size: 18px; opacity: 0.9; margin-bottom: 8px; }
-.hero .sub2 { font-size: 14px; opacity: 0.7; margin-bottom: 32px; }
-.hero .cta-btn { display: inline-block; background: #5cb85c; color: #fff; font-size: 18px; font-weight: bold; padding: 16px 48px; border-radius: 50px; transition: all 0.2s; box-shadow: 0 4px 20px rgba(92,184,92,0.4); }
-.hero .cta-btn:hover { background: #4cae4c; transform: translateY(-2px); box-shadow: 0 6px 28px rgba(92,184,92,0.5); }
-.hero .cta-note { font-size: 12px; opacity: 0.6; margin-top: 12px; }
+.hero{min-height:100vh;display:flex;align-items:center;background:var(--navy);color:#fff;position:relative;overflow:hidden;padding-top:64px}
+.hero-bg{position:absolute;inset:0;background:
+  radial-gradient(ellipse 80% 60% at 70% 40%, rgba(34,197,94,0.07) 0%, transparent 60%),
+  radial-gradient(ellipse 60% 50% at 20% 70%, rgba(59,130,246,0.05) 0%, transparent 50%),
+  linear-gradient(180deg, var(--navy) 0%, var(--navy2) 100%)}
+.hero-grid{position:absolute;inset:0;background-image:
+  linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+  linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size:60px 60px}
+.hero .w{position:relative;z-index:1;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center;padding-top:40px;padding-bottom:40px}
+.hero-text{}
+.hero-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);color:var(--green);font-size:12px;font-weight:700;padding:6px 16px;border-radius:50px;margin-bottom:24px}
+.hero-badge::before{content:'';width:6px;height:6px;background:var(--green);border-radius:50%;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.hero h1{font-size:46px;font-weight:900;line-height:1.3;margin-bottom:20px;letter-spacing:-0.5px}
+.hero h1 em{font-style:normal;background:linear-gradient(135deg,var(--green),#86efac);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero-desc{font-size:17px;color:rgba(255,255,255,0.65);margin-bottom:36px;line-height:1.9}
+.hero-btns{display:flex;gap:12px;margin-bottom:40px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:700;border-radius:10px;transition:all 0.25s;cursor:pointer;border:none;font-family:inherit}
+.btn-lg{font-size:16px;padding:16px 36px}
+.btn-green{background:var(--green);color:#fff;box-shadow:0 4px 20px rgba(34,197,94,0.25)}
+.btn-green:hover{background:var(--green2);transform:translateY(-2px);box-shadow:0 8px 28px rgba(34,197,94,0.35)}
+.btn-outline{background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.2)}
+.btn-outline:hover{background:rgba(255,255,255,0.08);border-color:rgba(255,255,255,0.35)}
+.hero-trust{display:flex;gap:32px;font-size:12px;color:rgba(255,255,255,0.4)}
+.hero-trust strong{color:rgba(255,255,255,0.8);font-size:13px}
 
-/* ===== 共通 ===== */
-.container { max-width: 1000px; margin: 0 auto; padding: 0 20px; }
-.section { padding: 60px 0; }
-.section-dark { background: #f5f7fa; }
-.section-title { text-align: center; font-size: 28px; font-weight: 900; margin-bottom: 8px; color: #1a2d42; }
-.section-sub { text-align: center; font-size: 14px; color: #888; margin-bottom: 40px; }
+/* ヒーロー右 : ダッシュボードモック */
+.hero-visual{position:relative}
+.mock-window{background:var(--navy2);border-radius:12px;border:1px solid rgba(255,255,255,0.08);overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,0.4)}
+.mock-bar{height:32px;background:rgba(0,0,0,0.3);display:flex;align-items:center;gap:6px;padding:0 12px}
+.mock-dot{width:8px;height:8px;border-radius:50%}
+.mock-body{padding:20px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.mock-card{background:rgba(255,255,255,0.04);border-radius:8px;padding:16px;border:1px solid rgba(255,255,255,0.06)}
+.mock-card .mc-label{font-size:10px;color:rgba(255,255,255,0.35);margin-bottom:4px}
+.mock-card .mc-val{font-size:22px;font-weight:900;color:#fff}
+.mock-card .mc-val.green{color:var(--green)}
+.mock-card .mc-val.blue{color:var(--blue)}
+.mock-chart{grid-column:1/-1;background:rgba(255,255,255,0.04);border-radius:8px;padding:16px;border:1px solid rgba(255,255,255,0.06);height:120px;position:relative;overflow:hidden}
+.mock-chart-bars{display:flex;align-items:flex-end;gap:6px;height:80px;margin-top:8px}
+.mock-chart-bar{flex:1;border-radius:4px 4px 0 0;animation:barGrow 1.5s ease-out forwards}
+@keyframes barGrow{from{height:0}to{height:var(--h)}}
 
-/* ===== 3つの課題 ===== */
-.problems { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-.problem { text-align: center; padding: 28px 20px; background: #fff; border-radius: 12px; border: 1px solid #e0e0e0; }
-.problem .icon { font-size: 48px; margin-bottom: 12px; }
-.problem h3 { font-size: 16px; color: #e74c3c; margin-bottom: 8px; }
-.problem p { font-size: 13px; color: #666; }
+/* ===== セクション共通 ===== */
+.sec{padding:100px 0}
+.sec-alt{background:var(--gray50)}
+.sec-dark{background:var(--navy);color:#fff}
+.sec-header{text-align:center;margin-bottom:56px}
+.sec-tag{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:var(--blue);background:rgba(59,130,246,0.08);padding:6px 16px;border-radius:50px;margin-bottom:16px}
+.sec-dark .sec-tag{color:var(--green);background:rgba(34,197,94,0.1)}
+.sec-header h2{font-size:34px;font-weight:900;line-height:1.4}
+.sec-header p{font-size:15px;color:var(--gray400);margin-top:8px}
+.sec-dark .sec-header p{color:rgba(255,255,255,0.5)}
+
+/* ===== 課題 ===== */
+.pain-row{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.pain{background:#fff;border-radius:var(--radius);padding:32px 24px;border:1px solid #eee;position:relative;overflow:hidden;transition:all 0.3s}
+.pain:hover{box-shadow:0 8px 24px rgba(0,0,0,0.06);transform:translateY(-3px)}
+.pain::after{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#ef4444,#f97316)}
+.pain-icon{font-size:36px;margin-bottom:14px}
+.pain h3{font-size:17px;font-weight:900;color:#ef4444;margin-bottom:8px}
+.pain p{font-size:14px;color:var(--gray600);line-height:1.8}
 
 /* ===== 解決 ===== */
-.solution-arrow { text-align: center; font-size: 40px; color: #5cb85c; padding: 20px 0; }
-.solutions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
-.solution { text-align: center; padding: 28px 20px; background: #fff; border-radius: 12px; border: 2px solid #5cb85c; }
-.solution .icon { font-size: 48px; margin-bottom: 12px; }
-.solution h3 { font-size: 16px; color: #1a2d42; margin-bottom: 8px; }
-.solution .num { font-size: 32px; font-weight: 900; color: #5cb85c; }
-.solution p { font-size: 13px; color: #666; margin-top: 4px; }
+.solve-row{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.solve{background:#fff;border-radius:var(--radius);padding:36px 24px;border:1px solid #dcfce7;text-align:center;transition:all 0.3s}
+.solve:hover{box-shadow:0 8px 24px rgba(34,197,94,0.1);transform:translateY(-3px)}
+.solve-num{font-size:44px;font-weight:900;color:var(--green);line-height:1.1}
+.solve h3{font-size:15px;font-weight:700;color:var(--gray900);margin:8px 0 6px}
+.solve p{font-size:13px;color:var(--gray400)}
 
-/* ===== 機能一覧 ===== */
-.features { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-.feat { background: #fff; border-radius: 10px; padding: 20px 16px; text-align: center; border: 1px solid #e8e8e8; transition: all 0.2s; }
-.feat:hover { border-color: #3a7bd5; transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
-.feat .feat-icon { font-size: 36px; margin-bottom: 8px; }
-.feat h4 { font-size: 13px; color: #1a2d42; margin-bottom: 4px; }
-.feat p { font-size: 11px; color: #888; }
+/* ===== 機能 ===== */
+.feat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.feat{display:block;background:#fff;border-radius:12px;padding:24px 16px;text-align:center;border:1px solid #f0f0f0;transition:all 0.3s;cursor:pointer}
+.feat:hover{border-color:var(--blue);box-shadow:0 8px 24px rgba(59,130,246,0.08);transform:translateY(-3px)}
+.feat-ic{font-size:32px;margin-bottom:10px}
+.feat h4{font-size:13px;font-weight:700;margin-bottom:4px}
+.feat p{font-size:11px;color:var(--gray400)}
+
+/* ===== 導入効果 ===== */
+.impact-row{display:grid;grid-template-columns:repeat(3,1fr);gap:28px}
+.impact{text-align:center;padding:40px 20px;background:rgba(255,255,255,0.04);border-radius:var(--radius);border:1px solid rgba(255,255,255,0.08)}
+.impact-num{font-size:60px;font-weight:900;background:linear-gradient(135deg,var(--green),#86efac);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1}
+.impact-unit{font-size:22px}
+.impact p{font-size:14px;color:rgba(255,255,255,0.5);margin-top:8px}
+
+/* ===== 比較 ===== */
+.cmp{border-radius:var(--radius);overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.05)}
+.cmp table{width:100%;border-collapse:collapse}
+.cmp th{padding:14px 20px;font-size:13px;font-weight:700;text-align:center}
+.cmp thead th{background:var(--navy);color:#fff}
+.cmp thead th:last-child{background:var(--green2)}
+.cmp td{padding:14px 20px;font-size:14px;border-bottom:1px solid #f3f4f6;text-align:center}
+.cmp td:first-child{text-align:left;font-weight:600}
+.cmp td:last-child{color:var(--green2);font-weight:700}
+.cmp tbody tr:hover{background:var(--gray50)}
 
 /* ===== 料金 ===== */
-.plans { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
-.plan { background: #fff; border-radius: 12px; padding: 24px 16px; text-align: center; border: 1px solid #e0e0e0; position: relative; }
-.plan.recommend { border: 3px solid #3a7bd5; }
-.plan.recommend::before { content: 'おすすめ'; position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: #3a7bd5; color: #fff; font-size: 11px; font-weight: bold; padding: 3px 16px; border-radius: 12px; }
-.plan h3 { font-size: 16px; color: #1a2d42; margin-bottom: 4px; }
-.plan .price { font-size: 28px; font-weight: 900; color: #3a7bd5; margin: 8px 0; }
-.plan .price span { font-size: 13px; font-weight: normal; color: #888; }
-.plan .stock { font-size: 13px; color: #5cb85c; font-weight: bold; margin-bottom: 12px; }
-.plan ul { list-style: none; text-align: left; font-size: 12px; }
-.plan ul li { padding: 3px 0; border-bottom: 1px solid #f0f0f0; }
-.plan ul li::before { content: '✓ '; color: #5cb85c; font-weight: bold; }
+.price-row{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;align-items:start}
+.price{background:#fff;border-radius:20px;padding:36px 28px;border:1px solid #e5e7eb;text-align:center;transition:all 0.3s}
+.price.pop{border:2px solid var(--blue);box-shadow:0 12px 40px rgba(59,130,246,0.12);transform:scale(1.03)}
+.price-badge{display:inline-block;background:var(--blue);color:#fff;font-size:11px;font-weight:700;padding:4px 14px;border-radius:50px;margin-bottom:10px}
+.price h3{font-size:18px;font-weight:900;margin-bottom:4px}
+.price .amt{font-size:34px;font-weight:900;color:var(--blue);margin:12px 0 2px}
+.price .amt span{font-size:13px;font-weight:400;color:var(--gray400)}
+.price .monthly{font-size:13px;color:var(--gray400);margin-bottom:6px}
+.price .credit{font-size:13px;color:var(--green);font-weight:700;margin-bottom:20px}
+.price ul{list-style:none;text-align:left;margin-bottom:24px}
+.price ul li{padding:7px 0;font-size:13px;color:var(--gray600);border-bottom:1px solid var(--gray100)}
+.price ul li::before{content:'✓';color:var(--green);font-weight:700;margin-right:8px}
+.price-btn{display:block;width:100%;padding:14px;border-radius:10px;font-size:15px;font-weight:700;border:none;cursor:pointer;transition:all 0.25s;font-family:inherit}
+.price-btn:hover{transform:translateY(-2px)}
+.pb-green{background:var(--green);color:#fff;box-shadow:0 4px 16px rgba(34,197,94,0.2)}
+.pb-green:hover{background:var(--green2)}
+.pb-blue{background:var(--blue);color:#fff!important;box-shadow:0 4px 16px rgba(59,130,246,0.2);text-align:center}
+.pb-blue:hover{background:#2563eb}
+.pb-outline{background:var(--gray900);color:#fff!important;border:1px solid var(--gray900);text-align:center}
+.pb-outline:hover{background:var(--gray600)}
+.price-note{text-align:center;font-size:12px;color:var(--gray400);margin-top:20px}
 
-/* ===== 導入フロー ===== */
-.flow { display: flex; align-items: center; justify-content: center; gap: 0; flex-wrap: wrap; }
-.flow-step { text-align: center; padding: 16px 20px; }
-.flow-num { background: #1a2d42; color: #fff; width: 40px; height: 40px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 18px; font-weight: bold; margin-bottom: 8px; }
-.flow-label { font-size: 14px; font-weight: bold; color: #1a2d42; display: block; }
-.flow-desc { font-size: 11px; color: #888; }
-.flow-arrow { font-size: 24px; color: #ccc; padding: 0 8px; }
-
-/* ===== 比較表 ===== */
-.compare-table { width: 100%; border-collapse: collapse; margin: 0 auto; }
-.compare-table th { background: #1a2d42; color: #fff; padding: 10px 14px; font-size: 13px; }
-.compare-table td { padding: 10px 14px; border-bottom: 1px solid #e0e0e0; font-size: 13px; text-align: center; }
-.compare-table td:first-child { text-align: left; font-weight: bold; }
-.compare-table tr:nth-child(even) { background: #f9fafb; }
-.compare-table .yes { color: #5cb85c; font-weight: bold; }
-.compare-table .no { color: #ccc; }
+/* ===== フロー ===== */
+.flow-row{display:flex;align-items:flex-start;justify-content:center}
+.flow-step{text-align:center;flex:1;max-width:160px}
+.flow-n{width:44px;height:44px;background:var(--blue);color:#fff;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:18px;font-weight:900;margin-bottom:10px}
+.flow-step h4{font-size:14px;font-weight:700;margin-bottom:2px}
+.flow-step p{font-size:11px;color:var(--gray400)}
+.flow-arr{display:flex;align-items:center;color:#d1d5db;font-size:20px;padding:0 4px;margin-top:10px}
 
 /* ===== FAQ ===== */
-.faq-item { background: #fff; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px; border: 1px solid #e8e8e8; }
-.faq-q { font-size: 14px; font-weight: bold; color: #1a2d42; margin-bottom: 6px; }
-.faq-q::before { content: 'Q. '; color: #3a7bd5; }
-.faq-a { font-size: 13px; color: #555; padding-left: 1.5em; }
-.faq-a::before { content: 'A. '; color: #5cb85c; font-weight: bold; }
+.faq-list{max-width:720px;margin:0 auto}
+.faq-i{border-bottom:1px solid #e5e7eb}
+.faq-q{padding:20px 0;font-size:15px;font-weight:700;cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:color 0.2s}
+.faq-q:hover{color:var(--blue)}
+.faq-q::after{content:'+';font-size:22px;color:#d1d5db;transition:all 0.3s}
+.faq-q.on::after{transform:rotate(45deg);color:var(--blue)}
+.faq-a{font-size:14px;color:var(--gray600);padding:0 0 20px;display:none;line-height:1.9}
+.faq-a.on{display:block}
 
 /* ===== CTA ===== */
-.cta-section { background: linear-gradient(135deg, #1a2d42, #2c4a6b); color: #fff; padding: 60px 20px; text-align: center; }
-.cta-section h2 { font-size: 28px; margin-bottom: 12px; }
-.cta-section p { font-size: 14px; opacity: 0.85; margin-bottom: 24px; }
-.cta-section .cta-btn { display: inline-block; background: #5cb85c; color: #fff; font-size: 18px; font-weight: bold; padding: 16px 48px; border-radius: 50px; transition: all 0.2s; }
-.cta-section .cta-btn:hover { background: #4cae4c; }
-.cta-contact { margin-top: 20px; font-size: 13px; opacity: 0.7; }
+.cta{background:var(--navy);color:#fff;padding:80px 28px;text-align:center;position:relative;overflow:hidden}
+.cta::before{content:'';position:absolute;inset:0;background:radial-gradient(circle at 50% 100%,rgba(34,197,94,0.08),transparent 60%)}
+.cta>*{position:relative}
+.cta h2{font-size:30px;font-weight:900;margin-bottom:10px}
+.cta>p{font-size:15px;color:rgba(255,255,255,0.6);margin-bottom:28px}
+.cta-info{margin-top:28px;font-size:13px;color:rgba(255,255,255,0.4)}
 
 /* ===== フッター ===== */
-.footer { background: #0f1923; color: #888; padding: 30px 20px; text-align: center; font-size: 11px; }
-.footer a { color: #aaa; margin: 0 12px; }
+.ft{background:#060d16;color:rgba(255,255,255,0.35);padding:28px;text-align:center;font-size:11px}
+.ft a{color:rgba(255,255,255,0.45);margin:0 14px;transition:color 0.2s}
+.ft a:hover{color:#fff}
 
 /* ===== レスポンシブ ===== */
-@media (max-width: 768px) {
-  .hero .catch { font-size: 26px; }
-  .problems, .solutions, .features, .plans { grid-template-columns: 1fr; }
-  .flow { flex-direction: column; }
-  .flow-arrow { transform: rotate(90deg); }
+@media(max-width:900px){
+  .hero .w{grid-template-columns:1fr;text-align:center}
+  .hero-visual{display:none}
+  .hero h1{font-size:30px}
+  .hero-btns{justify-content:center}
+  .hero-trust{justify-content:center}
+  .nav-links a:not(.nav-cta){display:none}
+}
+/* ===== デモ予約フォーム ===== */
+.demo-form{max-width:680px;margin:0 auto;background:#fff;border-radius:20px;padding:44px 36px;box-shadow:0 8px 40px rgba(0,0,0,0.12);border:1px solid rgba(255,255,255,0.1)}
+.demo-form .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.demo-form .form-full{grid-column:1/-1}
+.demo-form label{display:block;font-size:13px;font-weight:700;color:rgba(255,255,255,0.85);margin-bottom:6px}
+.demo-form label .req{color:#ef4444;margin-left:2px}
+.demo-form input,.demo-form select,.demo-form textarea{width:100%;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#fff;font-size:14px;font-family:inherit;transition:border-color 0.2s}
+.demo-form input::placeholder,.demo-form textarea::placeholder{color:rgba(255,255,255,0.3)}
+.demo-form input:focus,.demo-form select:focus,.demo-form textarea:focus{outline:none;border-color:var(--green);background:rgba(255,255,255,0.1)}
+.demo-form select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239ca3af' stroke-width='2' fill='none'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:36px}
+.demo-form select option{background:var(--navy);color:#fff}
+.demo-form textarea{resize:vertical;min-height:100px}
+.demo-form .form-submit{grid-column:1/-1;text-align:center;margin-top:8px}
+.demo-form .form-submit .btn{width:100%;max-width:360px;font-size:17px;padding:18px 36px}
+
+@media(max-width:768px){
+  .pain-row,.solve-row,.feat-row,.price-row,.impact-row{grid-template-columns:1fr}
+  .price.pop{transform:none}
+  .flow-row{flex-direction:column;align-items:center}
+  .flow-arr{transform:rotate(90deg)}
+  .sec{padding:64px 0}
+  .sec-header h2{font-size:24px}
+  .demo-form .form-grid{grid-template-columns:1fr}
+  .demo-form{padding:28px 20px}
 }
 </style>
 </head>
 <body>
 
-<!-- ===== ヒーロー ===== -->
+<!-- ナビ -->
+<nav class="nav"><div class="w">
+  <div class="nav-logo">建築<span>ブースト</span></div>
+  <div class="nav-links">
+    <a href="#features">機能</a>
+    <a href="#pricing">料金</a>
+    <a href="#faq">FAQ</a>
+    <a href="#demo-booking" class="nav-cta">デモ予約</a>
+  </div>
+</div></nav>
+
+<!-- ヒーロー -->
 <section class="hero">
-  <div class="container">
-    <div class="catch">見積<span>30秒</span>、残業<span>ゼロ</span>へ。</div>
-    <div class="sub">現場写真1枚で、見積から請求書まで全部終わる。</div>
-    <div class="sub2">建築業の業務過多を解消するAI見積・業務自動化システム</div>
-    <a href="mailto:mitsuakinakano0215@gmail.com?subject=建築ブースト 導入相談" class="cta-btn">導入相談・デモを申し込む</a>
-    <div class="cta-note">特許出願中 ｜ 年間契約プラン</div>
-  </div>
-</section>
-
-<!-- ===== 3つの課題 ===== -->
-<section class="section">
-  <div class="container">
-    <div class="section-title">こんな悩み、ありませんか？</div>
-    <div class="section-sub">建築業の経営者が毎日感じている3つの問題</div>
-    <div class="problems">
-      <div class="problem">
-        <div class="icon">&#x23F0;</div>
-        <h3>見積に半日かかる</h3>
-        <p>1件の見積に数時間。月10件で5日分の時間が見積だけで消える。社長の時間が一番高いのに。</p>
+  <div class="hero-bg"></div>
+  <div class="hero-grid"></div>
+  <div class="w">
+    <div class="hero-text">
+      <div class="hero-badge">特許出願中 ｜ AI建築見積</div>
+      <h1>写真1枚で<br><em>見積完了</em>。</h1>
+      <p class="hero-desc">現場写真を撮るだけで、AIが見積・請求書・発注書まで自動作成。<br>建築業の事務作業を10分の1に。</p>
+      <div class="hero-btns">
+        <a href="#demo-booking" class="btn btn-lg btn-green">無料デモを申し込む</a>
+        <a href="#pricing" class="btn btn-lg btn-outline">料金を見る</a>
       </div>
-      <div class="problem">
-        <div class="icon">&#x1F4CB;</div>
-        <h3>事務作業が多すぎる</h3>
-        <p>見積→請求書→発注書→材料明細…全部別々に手入力。同じ数字を何回も打ち直す。</p>
-      </div>
-      <div class="problem">
-        <div class="icon">&#x1F634;</div>
-        <h3>社長しかできない</h3>
-        <p>見積は経験がないと出せない。社長が倒れたら会社が止まる。若手に引き継げない。</p>
+      <div class="hero-trust">
+        <div><strong>特許出願中</strong></div>
+        <div><strong>補助金対応</strong></div>
+        <div><strong>即日導入可</strong></div>
       </div>
     </div>
-
-    <div class="solution-arrow">&#x25BC;</div>
-
-    <div class="section-title">建築ブーストなら、全部解決します</div>
-    <div class="section-sub">写真を入れるだけ。あとはAIが全部やります。</div>
-    <div class="solutions">
-      <div class="solution">
-        <div class="icon">&#x26A1;</div>
-        <h3>見積作成</h3>
-        <div class="num">30秒</div>
-        <p>半日 → 30秒に短縮<br>写真1枚で内訳付き見積完成</p>
-      </div>
-      <div class="solution">
-        <div class="icon">&#x1F4E6;</div>
-        <h3>帳票一括自動生成</h3>
-        <div class="num">5種類</div>
-        <p>物件・施工・材料・請求書・発注書<br>ボタン1つで全部作成</p>
-      </div>
-      <div class="solution">
-        <div class="icon">&#x1F464;</div>
-        <h3>誰でも見積できる</h3>
-        <div class="num">属人化解消</div>
-        <p>社長のノウハウをAIが学習<br>事務員でも同品質の見積が出せる</p>
+    <div class="hero-visual">
+      <div class="mock-window">
+        <div class="mock-bar">
+          <div class="mock-dot" style="background:#ff5f57"></div>
+          <div class="mock-dot" style="background:#febc2e"></div>
+          <div class="mock-dot" style="background:#28c840"></div>
+        </div>
+        <div class="mock-body">
+          <div class="mock-card"><div class="mc-label">今月の売上</div><div class="mc-val">¥12,840,000</div></div>
+          <div class="mock-card"><div class="mc-label">粗利率</div><div class="mc-val green">32.5%</div></div>
+          <div class="mock-card"><div class="mc-label">見積件数</div><div class="mc-val blue">47件</div></div>
+          <div class="mock-card"><div class="mc-label">AI精度</div><div class="mc-val green">94.2%</div></div>
+          <div class="mock-chart">
+            <div class="mc-label">月別売上推移</div>
+            <div class="mock-chart-bars">
+              <div class="mock-chart-bar" style="background:rgba(59,130,246,0.3);--h:30px"></div>
+              <div class="mock-chart-bar" style="background:rgba(59,130,246,0.3);--h:45px"></div>
+              <div class="mock-chart-bar" style="background:rgba(59,130,246,0.4);--h:38px"></div>
+              <div class="mock-chart-bar" style="background:rgba(59,130,246,0.4);--h:52px"></div>
+              <div class="mock-chart-bar" style="background:rgba(59,130,246,0.5);--h:48px"></div>
+              <div class="mock-chart-bar" style="background:rgba(59,130,246,0.5);--h:60px"></div>
+              <div class="mock-chart-bar" style="background:rgba(34,197,94,0.5);--h:55px"></div>
+              <div class="mock-chart-bar" style="background:rgba(34,197,94,0.6);--h:68px"></div>
+              <div class="mock-chart-bar" style="background:rgba(34,197,94,0.6);--h:62px"></div>
+              <div class="mock-chart-bar" style="background:rgba(34,197,94,0.7);--h:75px"></div>
+              <div class="mock-chart-bar" style="background:rgba(34,197,94,0.8);--h:72px"></div>
+              <div class="mock-chart-bar" style="background:var(--green);--h:80px"></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ===== 機能一覧 ===== -->
-<section class="section section-dark">
-  <div class="container">
-    <div class="section-title">搭載機能</div>
-    <div class="section-sub">見積だけじゃない。現場業務をまるごとカバー。</div>
-    <div class="features">
-      <div class="feat"><div class="feat-icon">&#x1F4F7;</div><h4>AI見積</h4><p>写真・図面・テキストからAIが自動見積</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F504;</div><h4>ビフォーアフター</h4><p>施工前後の写真から工事内容を自動判定</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F4C4;</div><h4>請求書・発注書</h4><p>PDF出力ワンクリック。内訳から個別発注書も</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F4CA;</div><h4>予実管理</h4><p>見積vs実績の粗利を見える化</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F4D3;</div><h4>作業日報</h4><p>日報の作成・管理</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F4C5;</div><h4>工程表</h4><p>ガントチャートでスケジュール管理</p></div>
-      <div class="feat"><div class="feat-icon">&#x26D1;</div><h4>安全書類</h4><p>作業員名簿・KY・新規入場者教育</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F4F8;</div><h4>写真台帳</h4><p>施工写真を一覧管理・台帳PDF出力</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F465;</div><h4>出面管理</h4><p>作業員の出勤・日当を施工別に集計</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F4DD;</div><h4>見積比較</h4><p>複数社の見積を並列比較</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F9E0;</div><h4>AI学習</h4><p>使うほど御社の相場に合ってくる</p></div>
-      <div class="feat"><div class="feat-icon">&#x1F3A8;</div><h4>完成イメージ</h4><p>AIが施工後の完成予想画像を生成</p></div>
+<!-- 課題 -->
+<section class="sec">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">Problem</div>
+      <h2>こんな悩み、ありませんか？</h2>
+    </div>
+    <div class="pain-row">
+      <div class="pain"><div class="pain-icon">&#x23F0;</div><h3>見積に半日かかる</h3><p>1件の見積に数時間。月10件で5日分の時間が見積だけで消える。社長の時間が一番高いのに。</p></div>
+      <div class="pain"><div class="pain-icon">&#x1F4CB;</div><h3>事務作業が多すぎる</h3><p>見積 → 請求書 → 発注書 → 材料明細…全部別々に手入力。同じ数字を何回も打ち直す。</p></div>
+      <div class="pain"><div class="pain-icon">&#x1F634;</div><h3>社長しかできない</h3><p>見積は経験がないと出せない。社長が倒れたら会社が止まる。若手に引き継げない。</p></div>
     </div>
   </div>
 </section>
 
-<!-- ===== 従来比較 ===== -->
-<section class="section">
-  <div class="container">
-    <div class="section-title">従来の方法との比較</div>
-    <div class="section-sub">建築ブーストがどれだけ業務を変えるか</div>
-    <table class="compare-table">
-      <thead>
-        <tr><th>項目</th><th>従来の方法</th><th>建築ブースト</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>見積作成時間</td><td>数時間〜半日</td><td class="yes">30秒</td></tr>
-        <tr><td>請求書作成</td><td>Excelで手入力</td><td class="yes">自動生成+PDF出力</td></tr>
-        <tr><td>発注書作成</td><td>別ソフトで転記</td><td class="yes">内訳クリックで即生成</td></tr>
-        <tr><td>粗利の把握</td><td>工事後に計算</td><td class="yes">見積時点で自動算出</td></tr>
-        <tr><td>見積の属人化</td><td>社長しかできない</td><td class="yes">誰でも同品質</td></tr>
-        <tr><td>精度向上</td><td>経験頼み</td><td class="yes">AIが自動学習</td></tr>
-        <tr><td>帳票の連携</td><td>バラバラ管理</td><td class="yes">全帳票が自動連携</td></tr>
-      </tbody>
-    </table>
+<!-- 解決 -->
+<section class="sec sec-alt">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">Solution</div>
+      <h2>建築ブーストなら、全部解決します</h2>
+      <p>写真を入れるだけ。あとはAIが全部やります。</p>
+    </div>
+    <div class="solve-row">
+      <div class="solve"><div class="solve-num">30秒</div><h3>見積作成</h3><p>半日 → 30秒に短縮<br>写真1枚で内訳付き見積完成</p></div>
+      <div class="solve"><div class="solve-num">5種</div><h3>帳票一括自動生成</h3><p>物件・施工・材料・請求書・発注書<br>ボタン1つで全部作成</p></div>
+      <div class="solve"><div class="solve-num">0人</div><h3>属人化を解消</h3><p>社長のノウハウをAIが学習<br>事務員でも同品質の見積が出せる</p></div>
+    </div>
   </div>
 </section>
 
-<!-- ===== 料金 ===== -->
-<section class="section section-dark" id="pricing">
-  <div class="container">
-    <div class="section-title">料金プラン（年間契約）</div>
-    <div class="section-sub">年間契約で2ヶ月分お得。規模に合わせて選べる3プラン。</div>
-    <div class="plans" style="grid-template-columns: repeat(3, 1fr);">
-      <div class="plan recommend">
+<!-- AI完成イメージ -->
+<section class="sec">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">AI Generated</div>
+      <h2>AIが約30秒で完成イメージを生成</h2>
+      <p>現場写真を撮るだけで、施工後の完成予想画像をAIが自動生成します。</p>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 60px 1fr;gap:0;align-items:center;max-width:800px;margin:0 auto">
+      <div style="text-align:center">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:var(--red);margin-bottom:12px">Before</div>
+        <div style="border-radius:var(--radius);overflow:hidden;border:2px solid #fecaca;box-shadow:0 4px 16px rgba(0,0,0,0.08)">
+          <img src="lp_before.jpg" alt="施工前" style="width:100%;display:block">
+        </div>
+        <div style="font-size:13px;color:var(--gray400);margin-top:8px">照明なし・古い壁紙</div>
+      </div>
+      <div style="text-align:center;font-size:36px;color:var(--green);font-weight:900">&#x2192;</div>
+      <div style="text-align:center">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:var(--green2);margin-bottom:12px">After（AI生成）</div>
+        <div style="border-radius:var(--radius);overflow:hidden;border:2px solid #bbf7d0;box-shadow:0 4px 16px rgba(0,0,0,0.08)">
+          <img src="lp_after.png" alt="施工後（AI生成）" style="width:100%;display:block">
+        </div>
+        <div style="font-size:13px;color:var(--gray400);margin-top:8px">LED照明設置・天井リフォーム</div>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:24px">
+      <div style="display:inline-flex;align-items:center;gap:8px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.15);padding:10px 20px;border-radius:50px">
+        <span style="font-size:20px">&#x26A1;</span>
+        <span style="font-size:14px;font-weight:700;color:var(--green2)">この完成イメージはAIが約30秒で自動生成しました</span>
+      </div>
+    </div>
+    <p style="text-align:center;font-size:13px;color:var(--gray400);margin-top:12px">お客様への提案時に「工事後のイメージ」を見せることで、受注率がアップします。</p>
+  </div>
+</section>
+
+<!-- 機能 -->
+<section class="sec" id="features">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">Features</div>
+      <h2>見積だけじゃない。現場業務をまるごとカバー。</h2>
+    </div>
+    <div class="feat-row">
+      <a href="LP_機能詳細.html#ai-estimate" class="feat"><div class="feat-ic">&#x1F4F7;</div><h4>AI見積</h4><p>写真・図面からAIが自動見積</p></a>
+      <a href="LP_機能詳細.html#beforeafter" class="feat"><div class="feat-ic">&#x1F504;</div><h4>ビフォーアフター</h4><p>施工前後から工事内容を判定</p></a>
+      <a href="LP_機能詳細.html#invoice" class="feat"><div class="feat-ic">&#x1F4C4;</div><h4>請求書・発注書</h4><p>ワンクリックでPDF出力</p></a>
+      <a href="LP_機能詳細.html#budget" class="feat"><div class="feat-ic">&#x1F4CA;</div><h4>予実管理</h4><p>粗利をリアルタイム把握</p></a>
+      <a href="LP_機能詳細.html#daily-report" class="feat"><div class="feat-ic">&#x1F4D3;</div><h4>作業日報</h4><p>現場の日報を簡単作成</p></a>
+      <a href="LP_機能詳細.html#gantt" class="feat"><div class="feat-ic">&#x1F4C5;</div><h4>工程表</h4><p>ガントチャートで管理</p></a>
+      <a href="LP_機能詳細.html#safety" class="feat"><div class="feat-ic">&#x26D1;</div><h4>安全書類</h4><p>名簿・KY・入場者教育</p></a>
+      <a href="LP_機能詳細.html#photo" class="feat"><div class="feat-ic">&#x1F4F8;</div><h4>写真台帳</h4><p>施工写真を台帳PDF化</p></a>
+      <a href="LP_機能詳細.html#attendance" class="feat"><div class="feat-ic">&#x1F465;</div><h4>出面管理</h4><p>出勤・日当を施工別集計</p></a>
+      <a href="LP_機能詳細.html#quote-compare" class="feat"><div class="feat-ic">&#x1F4DD;</div><h4>見積比較</h4><p>複数社を並列比較</p></a>
+      <a href="LP_機能詳細.html#ai-learning" class="feat"><div class="feat-ic">&#x1F9E0;</div><h4>AI学習</h4><p>使うほど精度が上がる</p></a>
+      <a href="LP_機能詳細.html#pdf-import" class="feat"><div class="feat-ic">&#x1F4C2;</div><h4>PDF取込</h4><p>請求書PDFを自動読取</p></a>
+    </div>
+  </div>
+</section>
+
+<!-- 導入効果 -->
+<section class="sec sec-dark">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">Impact</div>
+      <h2>導入効果</h2>
+    </div>
+    <div class="impact-row">
+      <div class="impact"><div class="impact-num">10<span class="impact-unit">x</span></div><p>見積作成スピード</p></div>
+      <div class="impact"><div class="impact-num">+15<span class="impact-unit">%</span></div><p>粗利率の改善</p></div>
+      <div class="impact"><div class="impact-num">月5<span class="impact-unit">日</span></div><p>事務作業の削減</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 導入実績 -->
+<section class="sec sec-alt">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">Case Study</div>
+      <h2>導入実績</h2>
+      <p>建築ブースト スタンダードプランをご利用中の企業様</p>
+    </div>
+    <div style="max-width:720px;margin:0 auto">
+      <div style="background:#fff;border-radius:var(--radius);padding:32px;border:1px solid #e5e7eb;box-shadow:0 2px 8px rgba(0,0,0,0.04)">
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px">
+          <div style="width:56px;height:56px;background:linear-gradient(135deg,var(--blue),var(--green));border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:28px;color:#fff;font-weight:900">A</div>
+          <div>
+            <div style="font-size:18px;font-weight:900;color:var(--gray900)">A社 様</div>
+            <div style="font-size:13px;color:var(--gray400)">鹿児島県 ｜ 建築一式工事</div>
+          </div>
+          <div style="margin-left:auto">
+            <span style="background:rgba(34,197,94,0.08);color:var(--green2);font-size:11px;font-weight:700;padding:4px 12px;border-radius:20px">スタンダードプラン</span>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px">
+          <div style="background:var(--gray50);border-radius:12px;padding:16px;text-align:center;border:1px solid #e5e7eb">
+            <div style="font-size:11px;font-weight:600;color:var(--gray400);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">導入日</div>
+            <div style="font-size:18px;font-weight:900;color:var(--gray900)">2026.6</div>
+          </div>
+          <div style="background:var(--gray50);border-radius:12px;padding:16px;text-align:center;border:1px solid #e5e7eb">
+            <div style="font-size:11px;font-weight:600;color:var(--gray400);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">プラン</div>
+            <div style="font-size:18px;font-weight:900;color:var(--blue)">Standard</div>
+          </div>
+          <div style="background:var(--gray50);border-radius:12px;padding:16px;text-align:center;border:1px solid #e5e7eb">
+            <div style="font-size:11px;font-weight:600;color:var(--gray400);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">契約形態</div>
+            <div style="font-size:18px;font-weight:900;color:var(--gray900)">電子契約</div>
+          </div>
+        </div>
+        <div style="border-top:1px solid #f1f5f9;padding-top:16px">
+          <div style="font-size:14px;font-weight:700;color:var(--gray900);margin-bottom:8px">ご利用中の機能</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            <span style="background:rgba(59,130,246,0.06);color:var(--blue);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px">AI見積</span>
+            <span style="background:rgba(59,130,246,0.06);color:var(--blue);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px">請求書PDF</span>
+            <span style="background:rgba(59,130,246,0.06);color:var(--blue);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px">発注書</span>
+            <span style="background:rgba(59,130,246,0.06);color:var(--blue);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px">予実管理</span>
+            <span style="background:rgba(59,130,246,0.06);color:var(--blue);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px">PDF取込</span>
+            <span style="background:rgba(59,130,246,0.06);color:var(--blue);font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px">AI学習ループ</span>
+          </div>
+        </div>
+      </div>
+      <p style="text-align:center;margin-top:16px;font-size:12px;color:var(--gray400)">※ 掲載許可をいただいたお客様のみ表示しています</p>
+    </div>
+  </div>
+</section>
+
+<!-- 比較 -->
+<section class="sec">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">Compare</div>
+      <h2>従来の方法との比較</h2>
+    </div>
+    <div class="cmp">
+      <table>
+        <thead><tr><th style="text-align:left">項目</th><th>従来の方法</th><th>建築ブースト</th></tr></thead>
+        <tbody>
+          <tr><td>見積作成時間</td><td style="color:var(--gray400)">数時間〜半日</td><td>30秒</td></tr>
+          <tr><td>請求書作成</td><td style="color:var(--gray400)">Excelで手入力</td><td>自動生成+PDF</td></tr>
+          <tr><td>発注書作成</td><td style="color:var(--gray400)">別ソフトで転記</td><td>クリックで即生成</td></tr>
+          <tr><td>粗利の把握</td><td style="color:var(--gray400)">工事後に計算</td><td>見積時に自動算出</td></tr>
+          <tr><td>見積の属人化</td><td style="color:var(--gray400)">社長しかできない</td><td>誰でも同品質</td></tr>
+          <tr><td>精度向上</td><td style="color:var(--gray400)">経験頼み</td><td>AIが自動学習</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 料金 -->
+<section class="sec" id="pricing">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">Pricing</div>
+      <h2>料金プラン</h2>
+      <p style="font-size:15px;margin-bottom:8px;">年間契約で2ヶ月分お得。規模に合わせて選べる3プラン。</p>
+      <div style="display:inline-block;background:linear-gradient(135deg,rgba(34,197,94,0.08),rgba(34,197,94,0.15));border:1px solid rgba(34,197,94,0.25);border-radius:12px;padding:12px 28px;margin-top:8px;">
+        <span style="font-size:13px;color:var(--green2);font-weight:700;">🏛 IT導入補助金対応 ｜ 最大80%補助で</span>
+        <span style="font-size:22px;font-weight:900;color:var(--green2);">月額2万円〜</span>
+        <span style="font-size:13px;color:var(--green2);font-weight:700;">で導入可能</span>
+      </div>
+    </div>
+    <div class="price-row">
+      <div class="price">
         <h3>スタンダード</h3>
-        <div class="price">1,200,000<span>円/年（税抜）</span></div>
-        <div style="font-size:12px;color:#888;margin-bottom:4px">月あたり 100,000円</div>
-        <div class="stock">クレジット: 月50単位</div>
+        <div class="amt">1,200,000<span>円/年</span></div>
+        <div class="monthly">月あたり 100,000円（税抜）</div>
+        <div class="credit">AIクレジット: 月50単位</div>
+        <div style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border-radius:8px;padding:8px 12px;margin:12px 0;">
+          <div style="font-size:11px;color:var(--green2);font-weight:600;">補助金利用時</div>
+          <div style="font-size:20px;font-weight:900;color:var(--green2);">月額 2万円〜</div>
+        </div>
         <ul>
-          <li>AI見積</li>
-          <li>請求書・発注書PDF</li>
-          <li>帳票一括生成</li>
+          <li>AI見積（写真・テキスト）</li>
+          <li>請求書・発注書PDF出力</li>
+          <li>帳票一括自動生成</li>
           <li>ビフォーアフター解析</li>
-          <li>完成イメージ生成</li>
           <li>AI学習ループ</li>
           <li>予実管理</li>
           <li>電話サポート</li>
         </ul>
-        <a href="https://buy.stripe.com/dRmaEYadJ3h95rP9MO24003" target="_blank" class="cta-btn" style="display:block;margin-top:16px;padding:10px;font-size:13px;border-radius:8px;text-align:center;background:#5cb85c">申し込む</a>
+        <a href="https://buy.stripe.com/dRmaEYadJ3h95rP9MO24003" target="_blank" class="price-btn pb-green">申し込む</a>
       </div>
-      <div class="plan">
+      <div class="price pop">
+        <div class="price-badge">おすすめ</div>
         <h3>プロ</h3>
-        <div class="price">3,000,000<span>円/年（税抜）</span></div>
-        <div style="font-size:12px;color:#888;margin-bottom:4px">月あたり 250,000円</div>
-        <div class="stock">クレジット: 月200単位</div>
+        <div class="amt">3,000,000<span>円/年</span></div>
+        <div class="monthly">月あたり 250,000円（税抜）</div>
+        <div class="credit">AIクレジット: 月200単位</div>
+        <div style="background:rgba(59,130,246,0.08);border-radius:8px;padding:8px 12px;margin:12px 0;">
+          <div style="font-size:11px;color:var(--blue);font-weight:600;">補助金利用時</div>
+          <div style="font-size:20px;font-weight:900;color:var(--blue);">月額 5万円〜</div>
+        </div>
         <ul>
           <li>スタンダードの全機能</li>
           <li>複数担当者対応</li>
@@ -252,13 +512,17 @@ a { color: #3a7bd5; text-decoration: none; }
           <li>カスタム帳票</li>
           <li>データエクスポート</li>
         </ul>
-        <a href="https://buy.stripe.com/bJe7sMfy36tl7zX0ce24005" target="_blank" class="cta-btn" style="display:block;margin-top:16px;padding:10px;font-size:13px;border-radius:8px;text-align:center;background:#3a7bd5">申し込む</a>
+        <a href="https://buy.stripe.com/bJe7sMfy36tl7zX0ce24005" target="_blank" class="price-btn pb-blue">申し込む</a>
       </div>
-      <div class="plan">
+      <div class="price">
         <h3>法人カスタム</h3>
-        <div class="price">5,000,000<span>円〜/年（税抜）</span></div>
-        <div style="font-size:12px;color:#888;margin-bottom:4px">&nbsp;</div>
-        <div class="stock">クレジット: 個別設定</div>
+        <div class="amt">5,000,000<span>円〜/年</span></div>
+        <div class="monthly">&nbsp;</div>
+        <div class="credit">AIクレジット: 個別設定</div>
+        <div style="background:var(--gray100);border-radius:8px;padding:8px 12px;margin:12px 0;">
+          <div style="font-size:11px;color:var(--gray600);font-weight:600;">補助金利用時</div>
+          <div style="font-size:20px;font-weight:900;color:var(--gray900);">月額 8.4万円〜</div>
+        </div>
         <ul>
           <li>プロの全機能</li>
           <li>多店舗対応</li>
@@ -266,88 +530,128 @@ a { color: #3a7bd5; text-decoration: none; }
           <li>他システム連携</li>
           <li>専任サポート</li>
         </ul>
-        <a href="mailto:mitsuakinakano0215@gmail.com?subject=建築ブースト 法人カスタムプラン問い合わせ" class="cta-btn" style="display:block;margin-top:16px;padding:10px;font-size:13px;border-radius:8px;text-align:center;background:#666">お問い合わせ</a>
+        <a href="mailto:mitsuakinakano0215@gmail.com?subject=建築ブースト 法人カスタムプラン" class="price-btn pb-outline">お問い合わせ</a>
       </div>
     </div>
-    <p style="text-align:center;font-size:12px;color:#888;margin-top:16px">※ 初期費用: 198,000円（税抜）｜ 追加クレジット: 50単位 5,500円〜 ｜ 未使用ストックは翌月繰越可（最大3ヶ月）｜ 全プラン年間契約</p>
+    <p class="price-note">※ 初期費用: 198,000円（税抜）｜ 追加クレジット: 50単位 5,500円〜 ｜ 補助金利用で最大80%補助 ｜ 未使用ストックは翌月繰越可（最大3ヶ月）</p>
   </div>
 </section>
 
-<!-- ===== 導入フロー ===== -->
-<section class="section">
-  <div class="container">
-    <div class="section-title">導入の流れ</div>
-    <div class="section-sub">最短即日で利用開始できます</div>
-    <div class="flow">
-      <div class="flow-step"><div class="flow-num">1</div><br><span class="flow-label">お問い合わせ</span><br><span class="flow-desc">メール or 電話</span></div>
-      <div class="flow-arrow">&#x279C;</div>
-      <div class="flow-step"><div class="flow-num">2</div><br><span class="flow-label">無料デモ</span><br><span class="flow-desc">御社の写真で実演</span></div>
-      <div class="flow-arrow">&#x279C;</div>
-      <div class="flow-step"><div class="flow-num">3</div><br><span class="flow-label">プラン選定</span><br><span class="flow-desc">業務規模に合わせて</span></div>
-      <div class="flow-arrow">&#x279C;</div>
-      <div class="flow-step"><div class="flow-num">4</div><br><span class="flow-label">初期設定</span><br><span class="flow-desc">会社情報・材料登録</span></div>
-      <div class="flow-arrow">&#x279C;</div>
-      <div class="flow-step"><div class="flow-num">5</div><br><span class="flow-label">運用開始</span><br><span class="flow-desc">サポート付き</span></div>
+<!-- フロー -->
+<section class="sec sec-alt">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">Flow</div>
+      <h2>導入の流れ</h2>
+      <p>最短即日で利用開始</p>
     </div>
-  </div>
-</section>
-
-<!-- ===== FAQ ===== -->
-<section class="section section-dark">
-  <div class="container">
-    <div class="section-title">よくある質問</div>
-    <div class="section-sub"></div>
-    <div class="faq-item">
-      <div class="faq-q">パソコンが苦手でも使えますか？</div>
-      <div class="faq-a">写真を入れてボタンを押すだけです。難しい操作はありません。</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q">うちの工事は特殊なんですが、対応できますか？</div>
-      <div class="faq-a">AI学習機能があるので、使うほど御社の工事内容・相場に合った見積が出るようになります。一般建築、仮設リース、解体、外構、塗装、設備の6業種に対応。</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q">契約期間は？</div>
-      <div class="faq-a">年間契約です。年間一括払いで2ヶ月分お得になります。</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q">データのセキュリティは大丈夫ですか？</div>
-      <div class="faq-a">見積データはお客様のPC内に保存されます。AIに送信される画像は処理後に破棄され、保存されません。APIキーはAES-256で暗号化保存しています。</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q">AIの見積精度はどれくらいですか？</div>
-      <div class="faq-a">初期状態でも相場データベースに基づく概算が出ます。実績データを入力するほど精度が上がり、10件程度で御社専用の相場に近づきます。</div>
-    </div>
-    <div class="faq-item">
-      <div class="faq-q">スマホからも使えますか？</div>
-      <div class="faq-a">はい。同一ネットワーク内のスマホ・タブレットからブラウザでアクセスできます。現場からの写真送信・閲覧が可能です。</div>
+    <div class="flow-row">
+      <div class="flow-step"><div class="flow-n">1</div><h4>お問い合わせ</h4><p>メール or 電話</p></div>
+      <div class="flow-arr">&#x2192;</div>
+      <div class="flow-step"><div class="flow-n">2</div><h4>無料デモ</h4><p>御社の写真で実演</p></div>
+      <div class="flow-arr">&#x2192;</div>
+      <div class="flow-step"><div class="flow-n">3</div><h4>プラン選定</h4><p>規模に合わせて</p></div>
+      <div class="flow-arr">&#x2192;</div>
+      <div class="flow-step"><div class="flow-n">4</div><h4>初期設定</h4><p>会社情報登録</p></div>
+      <div class="flow-arr">&#x2192;</div>
+      <div class="flow-step"><div class="flow-n">5</div><h4>運用開始</h4><p>サポート付き</p></div>
     </div>
   </div>
 </section>
 
-<!-- ===== CTA ===== -->
-<section class="cta-section" id="contact">
-  <div class="container">
-    <h2>まずはデモで体験してください</h2>
-    <p>御社の現場写真を使って、実際にAI見積をお見せします。30分で終わります。</p>
-    <a href="mailto:mitsuakinakano0215@gmail.com?subject=建築ブースト 導入相談・デモ希望&body=会社名:%0D%0Aお名前:%0D%0Aご連絡先電話番号:%0D%0A%0D%0Aご希望の日時:%0D%0A" class="cta-btn">導入相談・デモを申し込む</a>
-    <div class="cta-contact">
-      <br>メール: mitsuakinakano0215@gmail.com
-      <br>電話: 080-6138-0698
-      <br><br>有限会社中野工務店 ｜ 大阪府大阪市都島区都島本通5-8-18
+<!-- FAQ -->
+<section class="sec" id="faq">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">FAQ</div>
+      <h2>よくある質問</h2>
+    </div>
+    <div class="faq-list">
+      <div class="faq-i"><div class="faq-q" onclick="this.classList.toggle('on');this.nextElementSibling.classList.toggle('on')">パソコンが苦手でも使えますか？</div><div class="faq-a">写真を入れてボタンを押すだけです。全ページに使い方ガイドが付いています。</div></div>
+      <div class="faq-i"><div class="faq-q" onclick="this.classList.toggle('on');this.nextElementSibling.classList.toggle('on')">うちの工事は特殊なんですが対応できますか？</div><div class="faq-a">AI学習機能があるので、使うほど御社の相場に合った見積が出るようになります。一般建築・仮設リース・解体・外構・塗装・設備の6業種に対応。</div></div>
+      <div class="faq-i"><div class="faq-q" onclick="this.classList.toggle('on');this.nextElementSibling.classList.toggle('on')">補助金は使えますか？</div><div class="faq-a">デジタル化・AI導入補助金（旧IT導入補助金）の対象です。最大80%の補助を受けられる場合があります。申請サポートも行っています。</div></div>
+      <div class="faq-i"><div class="faq-q" onclick="this.classList.toggle('on');this.nextElementSibling.classList.toggle('on')">データのセキュリティは大丈夫ですか？</div><div class="faq-a">見積データはお客様のPC内に保存。AIに送信される画像は処理後に破棄。APIキーはAES-256暗号化。</div></div>
+      <div class="faq-i"><div class="faq-q" onclick="this.classList.toggle('on');this.nextElementSibling.classList.toggle('on')">AIの見積精度はどれくらいですか？</div><div class="faq-a">初期状態でも相場DBに基づく概算が出ます。PDF請求書を取り込んで実績と紐づけるほど精度が上がり、10件程度で御社専用の相場に近づきます。</div></div>
+      <div class="faq-i"><div class="faq-q" onclick="this.classList.toggle('on');this.nextElementSibling.classList.toggle('on')">スマホからも使えますか？</div><div class="faq-a">はい。同一Wi-Fi内のスマホ・タブレットからブラウザでアクセス可能。現場からの写真送信・閲覧ができます。</div></div>
     </div>
   </div>
 </section>
 
-<!-- ===== フッター ===== -->
-<footer class="footer">
-  <div class="container">
-    <p style="margin-bottom:8px">
-      <a href="プライバシーポリシー_建築ブースト.html">プライバシーポリシー</a>
-      <a href="特定商取引法に基づく表記.html">特定商取引法に基づく表記</a>
-      <a href="SaaS利用契約書_建築ブースト.html">利用規約</a>
-    </p>
-    <p>&copy; 2026 有限会社中野工務店 All rights reserved. ｜ 建築ブースト 特許出願中</p>
+<!-- CTA -->
+<section class="cta">
+  <h2>まずはデモで体験してください</h2>
+  <p>御社の現場写真を使って、実際にAI見積をお見せします。</p>
+  <a href="#demo-booking" class="btn btn-lg btn-green">無料デモを申し込む</a>
+  <div class="cta-info">
+    メール: mitsuakinakano0215@gmail.com ｜ 電話: 080-6138-0698<br>
+    有限会社中野工務店 ｜ 大阪府大阪市都島区都島本通5-8-18
   </div>
+</section>
+
+<!-- デモ予約フォーム -->
+<section class="sec sec-dark" id="demo-booking">
+  <div class="w">
+    <div class="sec-header">
+      <div class="sec-tag">Demo</div>
+      <h2>無料デモを予約する</h2>
+      <p>30分のオンラインデモで建築ブーストの全機能をご体験いただけます</p>
+    </div>
+    <form class="demo-form" action="https://formspree.io/f/xpzvqvkr" method="POST">
+      <div class="form-grid">
+        <div>
+          <label>会社名<span class="req">*</span></label>
+          <input type="text" name="company" required placeholder="例: 中野工務店">
+        </div>
+        <div>
+          <label>お名前<span class="req">*</span></label>
+          <input type="text" name="name" required placeholder="例: 中野 光明">
+        </div>
+        <div>
+          <label>メールアドレス<span class="req">*</span></label>
+          <input type="email" name="email" required placeholder="例: info@example.com">
+        </div>
+        <div>
+          <label>電話番号</label>
+          <input type="tel" name="phone" placeholder="例: 080-1234-5678">
+        </div>
+        <div>
+          <label>従業員数</label>
+          <select name="employees">
+            <option value="" selected disabled>選択してください</option>
+            <option value="1-5">1-5名</option>
+            <option value="6-20">6-20名</option>
+            <option value="21-50">21-50名</option>
+            <option value="51+">51名以上</option>
+          </select>
+        </div>
+        <div>
+          <label>ご希望日時（第1希望）</label>
+          <input type="datetime-local" name="preferred_date_1">
+        </div>
+        <div class="form-full" style="max-width:calc(50% - 8px)">
+          <label>ご希望日時（第2希望）</label>
+          <input type="datetime-local" name="preferred_date_2">
+        </div>
+        <div class="form-full">
+          <label>お困りのこと</label>
+          <textarea name="message" placeholder="現在のお悩みやご質問がありましたらご記入ください"></textarea>
+        </div>
+        <div class="form-submit">
+          <button type="submit" class="btn btn-lg btn-green">デモを予約する</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</section>
+
+<!-- フッター -->
+<footer class="ft">
+  <p style="margin-bottom:8px">
+    <a href="プライバシーポリシー_建築ブースト.html">プライバシーポリシー</a>
+    <a href="特定商取引法に基づく表記.html">特定商取引法に基づく表記</a>
+    <a href="SaaS利用契約書_建築ブースト.html">利用規約</a>
+  </p>
+  <p>&copy; 2026 有限会社中野工務店 ｜ 建築ブースト 特許出願中</p>
 </footer>
 
 </body>

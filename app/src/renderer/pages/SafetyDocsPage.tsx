@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const api = (window as any).api;
 
@@ -84,7 +85,14 @@ export default function SafetyDocsPage() {
 
   return (
     <div>
-      <div className="page-header"><h1>🦺 安全書類</h1></div>
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>🦺 安全書類</h1>
+        <PageGuide pageKey="safety-docs" steps={[
+          { icon: '👷', title: 'STEP 1：作業員情報を登録', desc: '血液型・緊急連絡先・健康診断日・資格など安全管理に必要な情報を登録します。' },
+          { icon: '📚', title: 'STEP 2：安全教育を記録', desc: '新規入場者教育や安全講習の受講記録を案件ごとに管理します。' },
+          { icon: '⚠️', title: 'STEP 3：KY活動を記録', desc: '危険予知活動の記録（危険要因・対策・参加者）を登録し、PDFで出力できます。' },
+        ]} />
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         {([['workers', '作業員名簿'], ['education', '新規入場者教育'], ['ky', 'KY活動'], ['pdf', 'PDF出力']] as const).map(([k, label]) => (
           <button key={k} className={`btn ${tab === k ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(k as any)}>{label}</button>

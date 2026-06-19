@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const api = (window as any).api;
 const categories = ['着工前', '施工中', '完了', '是正前', '是正後', '検査', 'その他'];
@@ -74,7 +75,14 @@ export default function PhotoLedgerPage() {
 
   return (
     <div>
-      <div className="page-header"><h1>📷 現場写真台帳</h1></div>
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>📷 現場写真台帳</h1>
+        <PageGuide pageKey="photo-ledger" steps={[
+          { icon: '📸', title: 'STEP 1：現場写真を登録', desc: '施工案件を選び、撮影日・カテゴリ・工種・撮影場所とともに写真をアップロードします。' },
+          { icon: '🗂️', title: 'STEP 2：写真を閲覧・管理', desc: '案件・カテゴリ・工種で絞り込んで写真を一覧表示できます。', sub: '着工前・施工中・完了など工程別に整理されます' },
+          { icon: '📄', title: 'STEP 3：写真台帳PDFを出力', desc: '案件ごとに写真台帳をPDF出力し、施主や元請けに提出できます。' },
+        ]} />
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {(['upload', 'view', 'pdf'] as const).map(t => (
           <button key={t} className={`btn ${tab === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t)}>

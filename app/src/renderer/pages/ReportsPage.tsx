@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 export default function ReportsPage() {
   const [constructions, setConstructions] = useState<any[]>([]);
@@ -42,8 +43,13 @@ export default function ReportsPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>利益レポート</h1>
+        <PageGuide pageKey="reports" steps={[
+          { icon: '📊', title: 'STEP 1：月別サマリーを確認', desc: '月ごとの施工数・売上・材料費・人件費・粗利を一覧で確認できます。', sub: '粗利率も自動計算されます' },
+          { icon: '📈', title: 'STEP 2：推移を分析', desc: '月別の売上・粗利の推移をグラフで把握し、経営判断に活かせます。' },
+          { icon: '🏷️', title: 'STEP 3：ステータス別に確認', desc: '見積中・受注済・施工中・完了など、ステータス別の件数を確認できます。' },
+        ]} />
       </div>
 
       {/* ステータス別サマリー */}

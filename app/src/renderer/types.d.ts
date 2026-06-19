@@ -5,6 +5,7 @@ interface Window {
     updateProperty: (data: any) => Promise<void>;
     deleteProperty: (id: number) => Promise<void>;
     selectImage: () => Promise<string | null>;
+    selectPdf: () => Promise<{ page: number; data: string }[] | null>;
 
     listMaterials: () => Promise<any[]>;
     createMaterial: (data: any) => Promise<number>;

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 export default function PropertiesPage() {
   const [properties, setProperties] = useState<any[]>([]);
@@ -66,8 +67,13 @@ export default function PropertiesPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>物件管理</h1>
+        <PageGuide pageKey="properties" steps={[
+          { icon: '🏠', title: 'STEP 1：物件を登録', desc: '「+ 新規物件」から物件名・住所・間取り図を登録します。', sub: '間取り図の画像もアップロードできます' },
+          { icon: '🔗', title: 'STEP 2：施工と紐づけ', desc: '登録した物件に施工案件を紐づけることで、物件ごとの収支を管理できます。' },
+          { icon: '📊', title: 'STEP 3：物件別の収支確認', desc: '各物件の施工数・売上・粗利を一覧で確認できます。' },
+        ]} />
       </div>
       <div style={{ marginBottom: 12 }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 物件名・住所で検索..." style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6, width: 300, fontSize: 14 }} />

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { generateInvoicePDF } from '../utils/pdfGenerator';
+import { PageGuide } from '../components/PageGuide';
 
 export default function InvoicesPage({ highlightConstructionId, onHighlightClear }: { highlightConstructionId?: number | null; onHighlightClear?: () => void }) {
   const [invoices, setInvoices] = useState<any[]>([]);
@@ -138,9 +139,16 @@ export default function InvoicesPage({ highlightConstructionId, onHighlightClear
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>請求書管理</h1>
-        <button className="btn btn-primary" onClick={openCreate}>+ 新規請求書</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <PageGuide pageKey="invoices" steps={[
+            { icon: '📄', title: 'STEP 1：請求書を作成', desc: '「+ 新規請求書」から施工案件を選択すると、金額が自動入力されます。', sub: '請求先・発行日・支払期限を設定します' },
+            { icon: '📤', title: 'STEP 2：PDF出力・送付', desc: '請求書の詳細画面からPDFを出力できます。明細の追加・編集も可能です。' },
+            { icon: '✅', title: 'STEP 3：入金管理', desc: 'ステータスを「入金済」に更新して入金状況を管理します。期限超過は自動で警告されます。' },
+          ]} />
+          <button className="btn btn-primary" onClick={openCreate}>+ 新規請求書</button>
+        </div>
       </div>
       <div style={{ marginBottom: 12 }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 請求先・施工名で検索..." style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6, width: 300, fontSize: 14 }} />

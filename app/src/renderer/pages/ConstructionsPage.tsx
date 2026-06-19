@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 export default function ConstructionsPage({ highlightId, onHighlightClear }: { highlightId?: number | null; onHighlightClear?: () => void }) {
   const [constructions, setConstructions] = useState<any[]>([]);
@@ -159,9 +160,16 @@ export default function ConstructionsPage({ highlightId, onHighlightClear }: { h
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>施工・見積管理</h1>
-        <button className="btn btn-primary" onClick={openCreate}>+ 新規施工</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <PageGuide pageKey="constructions" steps={[
+            { icon: '🏗️', title: 'STEP 1：施工案件を登録', desc: '「+ 新規施工」から案件名・物件・工事日・人件費などを入力します。', sub: 'AI見積もりから自動登録することもできます' },
+            { icon: '📝', title: 'STEP 2：材料明細を追加', desc: '案件をクリックして詳細画面で材料・数量・単価を追加します。', sub: 'マスタ選択と手入力の両方に対応しています' },
+            { icon: '💹', title: 'STEP 3：原価と利益を確認', desc: '材料費・人件費・売価・粗利が自動計算されます。請求書や発注書もここから作成できます。' },
+          ]} />
+          <button className="btn btn-primary" onClick={openCreate}>+ 新規施工</button>
+        </div>
       </div>
       <div style={{ marginBottom: 12 }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 施工名・物件で検索..." style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6, width: 300, fontSize: 14 }} />

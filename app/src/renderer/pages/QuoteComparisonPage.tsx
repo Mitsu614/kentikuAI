@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const api = (window as any).api;
 const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
@@ -149,7 +150,14 @@ export default function QuoteComparisonPage() {
 
   return (
     <div>
-      <div className="page-header"><h1>⚖️ 見積比較</h1></div>
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>⚖️ 見積比較</h1>
+        <PageGuide pageKey="quote-comparison" steps={[
+          { icon: '📝', title: 'STEP 1：比較表を作成', desc: 'タイトルと施工案件を選んで比較表を作成します。' },
+          { icon: '🏢', title: 'STEP 2：業者の見積を追加', desc: '複数の業者から届いた見積もりの明細（品名・数量・単価）を入力します。' },
+          { icon: '⚖️', title: 'STEP 3：比較して最適な業者を選定', desc: '業者ごとの合計金額を並べて比較し、最適な発注先を判断できます。' },
+        ]} />
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <button className={`btn ${tab === 'create' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('create')}>比較表管理</button>
         <button className={`btn ${tab === 'compare' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('compare')}>比較ビュー</button>

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 // Sub-components are at the bottom of this file
 
@@ -57,8 +58,13 @@ export default function SettingsPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>設定</h1>
+        <PageGuide pageKey="settings" steps={[
+          { icon: '🏢', title: 'STEP 1：会社情報を設定', desc: '会社名・住所・電話番号・振込先を入力すると、請求書に自動反映されます。' },
+          { icon: '🔑', title: 'STEP 2：APIキーを設定', desc: 'AI見積もり機能を利用するためのAPIキーを設定します。', sub: 'プランによってAIストック数が異なります' },
+          { icon: '🏗️', title: 'STEP 3：業種を選択', desc: '業種を選択するとAI見積もりの相場データや材料マスタが最適化されます。' },
+        ]} />
       </div>
 
       {/* プラン・AIストック管理 */}

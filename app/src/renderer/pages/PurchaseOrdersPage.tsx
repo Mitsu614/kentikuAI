@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const api = (window as any).api;
 const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
@@ -100,9 +101,16 @@ export default function PurchaseOrdersPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>📝 発注書</h1>
-        <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ 新規作成</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <PageGuide pageKey="purchase-orders" steps={[
+            { icon: '📋', title: 'STEP 1：発注書を作成', desc: '「+ 新規作成」から仕入先と明細を入力するか、施工案件から自動生成します。', sub: '施工案件の材料明細をそのまま発注書にできます' },
+            { icon: '📦', title: 'STEP 2：発注・納品管理', desc: 'ステータスを「発注済」→「納品済」と更新して進捗を管理します。' },
+            { icon: '📄', title: 'STEP 3：PDF出力', desc: '発注書をPDFで出力して仕入先に送付できます。' },
+          ]} />
+          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ 新規作成</button>
+        </div>
       </div>
 
       {showCreate && (

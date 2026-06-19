@@ -17,6 +17,28 @@
         .then(reg => console.log('SW registered:', reg.scope))
         .catch(err => console.log('SW registration failed:', err));
     }
+    // 自動アップデート検知（Web版のみ）
+    if (!window.api) {
+      let currentVersion = null;
+      async function checkUpdate() {
+        try {
+          const r = await fetch('/api/version');
+          const j = await r.json();
+          if (currentVersion === null) {
+            currentVersion = j.version;
+          } else if (currentVersion !== j.version) {
+            console.log('新しいバージョンを検出。リロードします...');
+            if ('serviceWorker' in navigator) {
+              const reg = await navigator.serviceWorker.getRegistration();
+              if (reg) { await reg.update(); await caches.delete('kenchiku-boost-v1'); }
+            }
+            location.reload();
+          }
+        } catch (e) {}
+      }
+      checkUpdate();
+      setInterval(checkUpdate, 30000); // 30秒ごとにチェック
+    }
   </script>
 </body>
 </html>

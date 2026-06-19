@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   updateProperty: (data: any) => ipcRenderer.invoke('properties:update', data),
   deleteProperty: (id: number) => ipcRenderer.invoke('properties:delete', id),
   selectImage: () => ipcRenderer.invoke('dialog:selectImage'),
+  selectPdf: () => ipcRenderer.invoke('dialog:selectPdf'),
 
   // 材料マスタ
   listMaterials: () => ipcRenderer.invoke('materials:list'),

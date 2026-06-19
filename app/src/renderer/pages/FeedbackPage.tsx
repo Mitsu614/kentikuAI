@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 /* ────────── 型定義 ────────── */
 interface FeedbackItem {
@@ -223,8 +224,13 @@ export default function FeedbackPage() {
   /* ────────── 描画 ────────── */
   return (
     <div style={s.container}>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>📝 改善要望・受注管理</h1>
+        <PageGuide pageKey="feedback" steps={[
+          { icon: '💡', title: 'STEP 1：改善要望を送信', desc: '「改善要望」タブから機能追加やバグ報告などのフィードバックを送信できます。', sub: '優先度を設定して要望を整理できます' },
+          { icon: '📊', title: 'STEP 2：受注結果を記録', desc: '「受注管理」タブで見積案件の受注・失注結果を記録します。', sub: '受注率が自動計算されます' },
+          { icon: '🤖', title: 'STEP 3：AI精度が向上', desc: '受注結果のフィードバックが蓄積されると、AIの見積精度が自動的に向上します。' },
+        ]} />
       </div>
 
       {/* タブ */}

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 export default function MaterialsPage() {
   const [materials, setMaterials] = useState<any[]>([]);
@@ -48,8 +49,13 @@ export default function MaterialsPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>材料マスタ</h1>
+        <PageGuide pageKey="materials" steps={[
+          { icon: '🧱', title: 'STEP 1：材料を登録', desc: '「+ 新規材料」からよく使う材料の名前・カテゴリ・単位・単価を登録します。', sub: 'CSVインポートで一括登録も可能です' },
+          { icon: '📂', title: 'STEP 2：カテゴリで整理', desc: '材料はカテゴリ別に自動グループ化されます。検索で素早く見つけられます。' },
+          { icon: '⚡', title: 'STEP 3：施工時に呼び出し', desc: '登録した材料は施工案件の明細追加時にマスタから選択できます。入力の手間を大幅に削減します。' },
+        ]} />
       </div>
       <div style={{ marginBottom: 12 }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 材料名・カテゴリで検索..." style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6, width: 300, fontSize: 14 }} />

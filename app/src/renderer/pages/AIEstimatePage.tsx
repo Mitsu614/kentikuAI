@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigateToConstruction?: (id: number) => void }) {
   const [imageData, setImageData] = useState<string | null>(null);
@@ -233,8 +234,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   return (
     <div style={{ display: 'flex', gap: 16 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>AI 見積もり</h1>
+        <PageGuide pageKey="ai-estimate" steps={[
+          { icon: '📸', title: 'STEP 1：現場写真をアップロード', desc: '施工前の写真や図面を選択してください。テキストだけでの見積もりも可能です。', sub: 'ビフォーアフターモードで2枚の写真から見積もることもできます' },
+          { icon: '🤖', title: 'STEP 2：AIが自動で見積作成', desc: 'AIが写真を解析し、材料・数量・単価・人件費を自動算出します。', sub: '過去の実績データを学習し、精度が向上していきます' },
+          { icon: '📋', title: 'STEP 3：施工案件として登録', desc: '見積結果をワンクリックで施工案件に登録。請求書や発注書も自動生成できます。' },
+        ]} />
       </div>
 
       {/* モード切替 */}
@@ -400,9 +406,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               }}
               ref={chatInputRef}
               placeholder="工事の内容を入力... (Enter で送信、Shift+Enter で改行)"
-              style={{ flex: 1, minHeight: 48, maxHeight: 120, padding: '12px 16px', border: '2px solid #e0e0e0', borderRadius: 24, fontSize: 16, resize: 'none', fontFamily: 'inherit', lineHeight: 1.5, outline: 'none', transition: 'border-color 0.2s' }}
-              onFocus={e => e.target.style.borderColor = '#3a7bd5'}
-              onBlur={e => e.target.style.borderColor = '#e0e0e0'}
+              style={{ flex: 1, minHeight: 48, maxHeight: 120, padding: '12px 16px', border: '2px solid #e2e8f0', borderRadius: 24, fontSize: 16, resize: 'none', fontFamily: 'inherit', lineHeight: 1.5, outline: 'none', transition: 'border-color 0.2s', color: '#1e293b', background: '#fff', WebkitUserSelect: 'text', userSelect: 'text' }}
+              onFocus={e => { e.target.style.borderColor = '#3b82f6'; e.target.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)'; }}
+              onBlur={e => { e.target.style.borderColor = '#e2e8f0'; e.target.style.boxShadow = 'none'; }}
             />
             <button className="btn btn-primary" disabled={chatLoading || !chatInput.trim()} onClick={async () => {
               if (!chatInput.trim() || chatLoading) return;
@@ -531,9 +537,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             onChange={e => setComment(e.target.value)}
             placeholder="例:&#10;・キッチンとお風呂のリフォーム希望&#10;・築30年の木造2階建て&#10;・耐震補強も検討中&#10;・予算は500万円くらい&#10;・2階の洋室を和室に変更したい"
             style={{
-              width: '100%', minHeight: 120, padding: 12, border: '1px solid #ddd',
+              width: '100%', minHeight: 120, padding: 12, border: '1px solid #e2e8f0',
               borderRadius: 8, fontSize: 14, lineHeight: 1.7, resize: 'vertical',
-              fontFamily: 'inherit',
+              fontFamily: 'inherit', color: '#1e293b', background: '#fff',
+              WebkitUserSelect: 'text', userSelect: 'text',
             }}
           />
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -806,7 +813,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 value={comment}
                 onChange={e => setComment(e.target.value)}
                 placeholder="追加の工事内容や修正点を入力..."
-                style={{ flex: 1, minHeight: 60, padding: 10, border: '1px solid #ddd', borderRadius: 8, fontSize: 13, resize: 'vertical' }}
+                style={{ flex: 1, minHeight: 60, padding: 10, border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 13, resize: 'vertical', color: '#1e293b', background: '#fff', WebkitUserSelect: 'text', userSelect: 'text' }}
               />
               <button className="btn btn-primary" onClick={analyze} disabled={analyzing} style={{ height: 60 }}>
                 {analyzing ? '解析中...' : '🔄 再解析'}

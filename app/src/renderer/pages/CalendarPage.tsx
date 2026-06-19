@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 export default function CalendarPage() {
   const [constructions, setConstructions] = useState<any[]>([]);
@@ -71,8 +72,13 @@ export default function CalendarPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>カレンダー</h1>
+        <PageGuide pageKey="calendar" steps={[
+          { icon: '📅', title: 'STEP 1：月間スケジュールを確認', desc: '施工予定日・請求書発行日・支払期限がカレンダー上に表示されます。' },
+          { icon: '⚠️', title: 'STEP 2：期限管理', desc: '支払期限が超過した請求書は赤色で警告表示されます。', sub: '月間の売上・粗利サマリーも確認できます' },
+          { icon: '◀▶', title: 'STEP 3：月を切り替え', desc: '前月・翌月ボタンで月を切り替えて、先々の予定も確認できます。' },
+        ]} />
       </div>
 
       {/* 月ナビ */}

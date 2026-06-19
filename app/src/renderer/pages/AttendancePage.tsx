@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const api = (window as any).api;
 const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
@@ -72,8 +73,13 @@ export default function AttendancePage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>📋 出面管理</h1>
+        <PageGuide pageKey="attendance" steps={[
+          { icon: '👷', title: 'STEP 1：作業者を登録', desc: '「作業者管理」タブから作業者の名前・日当・役割を登録します。' },
+          { icon: '📝', title: 'STEP 2：出面を記録', desc: '「出面入力」タブで日付・案件・作業者・稼働時間を入力します。', sub: '複数の作業者をまとめて記録できます' },
+          { icon: '📊', title: 'STEP 3：集計を確認', desc: '「集計」タブで作業者別の稼働日数・合計人件費を確認できます。' },
+        ]} />
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const api = (window as any).api;
 const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
@@ -61,9 +62,16 @@ export default function BudgetPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <h1>💰 予実管理</h1>
-        <span style={{ fontSize: 12, color: '#888' }}>実績を入力すると学習ループが自動で走り、次回AI見積もりの精度が向上します</span>
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1>💰 予実管理</h1>
+          <span style={{ fontSize: 12, color: '#888' }}>実績を入力すると学習ループが自動で走り、次回AI見積もりの精度が向上します</span>
+        </div>
+        <PageGuide pageKey="budget" steps={[
+          { icon: '📋', title: 'STEP 1：見積と実績を比較', desc: '各施工案件の見積金額と実績金額を一覧で比較できます。', sub: '差額がプラスなら緑、マイナスなら赤で表示されます' },
+          { icon: '✏️', title: 'STEP 2：実績を入力', desc: '案件の実績売上・実績材料費・実績人件費を入力して予実管理を行います。' },
+          { icon: '🔄', title: 'STEP 3：AI精度が向上', desc: '実績データが蓄積されると、AIの見積精度が自動的に向上していきます。' },
+        ]} />
       </div>
 
       {/* KPIカード */}

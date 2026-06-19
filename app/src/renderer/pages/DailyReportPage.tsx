@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const api = (window as any).api;
 const weatherIcons: Record<string, string> = { '晴れ': '☀️', '曇り': '☁️', '雨': '🌧️', '雪': '❄️' };
@@ -57,7 +58,14 @@ export default function DailyReportPage() {
 
   return (
     <div>
-      <div className="page-header"><h1>📓 作業日報</h1></div>
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>📓 作業日報</h1>
+        <PageGuide pageKey="daily-report" steps={[
+          { icon: '📝', title: 'STEP 1：日報を入力', desc: '施工案件・天候・作業内容・安全事項を入力して日報を登録します。', sub: '進捗率も記録できます' },
+          { icon: '📋', title: 'STEP 2：日報一覧を確認', desc: '月ごとに過去の日報を一覧で確認できます。' },
+          { icon: '📄', title: 'STEP 3：PDFで出力', desc: '期間と案件を指定してPDFを出力し、元請けへの報告書として提出できます。' },
+        ]} />
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {(['input', 'list', 'pdf'] as const).map(t => (
           <button key={t} className={`btn ${tab === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t)}>

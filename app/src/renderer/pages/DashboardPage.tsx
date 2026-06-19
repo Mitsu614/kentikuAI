@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const STATUS_CONFIG: Record<string, { label: string; bg: string; color: string; border: string }> = {
   draft:   { label: '未受注', bg: '#f8f9fa', color: '#636e72', border: '#dfe6e9' },
@@ -64,6 +65,11 @@ export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onN
     <div>
       <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>ダッシュボード</h1>
+        <PageGuide pageKey="dashboard" steps={[
+          { icon: '📊', title: 'STEP 1：経営数字を一目で把握', desc: '売上・粗利・施工件数など、経営の重要指標をリアルタイムで確認できます。', sub: 'カードをクリックすると詳細が表示されます' },
+          { icon: '💰', title: 'STEP 2：請求状況を確認', desc: '未入金・請求中・入金済みの請求書をステータス別に管理します。', sub: '期限超過の請求書は赤く表示されます' },
+          { icon: '📈', title: 'STEP 3：受注率をチェック', desc: '見積もりの受注率を確認し、営業戦略の改善に活かせます。' },
+        ]} />
         {usage ? (
           <div style={{
             display: 'flex', alignItems: 'center', gap: 10,

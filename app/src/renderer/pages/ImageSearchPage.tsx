@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 const QUICK_TAGS = [
   'キッチン リフォーム 完成', '浴室 リフォーム after', '耐震補強 施工事例',
@@ -30,8 +31,12 @@ export default function ImageSearchPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 48px)' }}>
       <div style={{ padding: '16px 24px 0' }}>
-        <div className="page-header" style={{ marginBottom: 12 }}>
+        <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <h1>画像検索</h1>
+          <PageGuide pageKey="image-search" steps={[
+            { icon: '🔍', title: 'STEP 1：検索ワードを入力', desc: '施工事例のキーワードを入力して検索します。', sub: 'クイックタグをクリックして素早く検索することもできます' },
+            { icon: '🖼️', title: 'STEP 2：施工事例画像を閲覧', desc: 'Google画像検索で施工事例の写真を閲覧できます。お客様への提案資料に活用できます。' },
+          ]} />
         </div>
 
         {/* 検索バー */}

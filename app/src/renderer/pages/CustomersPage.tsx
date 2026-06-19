@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { PageGuide } from '../components/PageGuide';
 
 export default function CustomersPage() {
   const [invoices, setInvoices] = useState<any[]>([]);
@@ -29,8 +30,13 @@ export default function CustomersPage() {
 
   return (
     <div>
-      <div className="page-header">
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>顧客管理</h1>
+        <PageGuide pageKey="customers" steps={[
+          { icon: '👥', title: 'STEP 1：顧客一覧を確認', desc: '請求書データから顧客が自動集計されます。取引額順にランキング表示されます。' },
+          { icon: '🔁', title: 'STEP 2：リピーターを把握', desc: '2回以上取引のある顧客はリピーターとして表示。リピート率も確認できます。' },
+          { icon: '🔍', title: 'STEP 3：顧客を検索', desc: '顧客名で検索して、取引履歴やステータスを素早く確認できます。' },
+        ]} />
       </div>
 
       {/* サマリー */}

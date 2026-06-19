@@ -65,7 +65,7 @@ function loadApiConfig(): any {
       for (const f of SENSITIVE_FIELDS) { if (raw[f]) raw[f] = decryptField(raw[f]); }
       config = raw;
     }
-  } catch (_) {}
+  } catch (e) { console.error('loadApiConfig failed:', e); }
   // 埋め込みトライアルキーをフォールバック
   if (!config.anthropicKey) config.anthropicKey = decryptTrialKey(TRIAL_KEYS.anthropic);
   if (!config.openaiKey) config.openaiKey = decryptTrialKey(TRIAL_KEYS.openai);
@@ -96,7 +96,7 @@ function escapeHtml(str: string | null | undefined): string {
 }
 
 let mainWindow: BrowserWindow | null = null;
-let APP_VERSION = '2.4.3'; // CURRENT_VERSIONで上書きされる
+let APP_VERSION = '2.9.1'; // CURRENT_VERSIONで上書きされる
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
@@ -349,7 +349,7 @@ function getImagesDir(dbFilePath: string) {
 
 // ── 自動アップデート（GitHub Releases ベース）──
 const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = '2.8.0';
+const CURRENT_VERSION = '2.9.1';
 APP_VERSION = CURRENT_VERSION;
 
 async function checkForUpdates() {
@@ -415,7 +415,7 @@ async function checkForUpdates() {
 
     if (userChoice !== 'yes') {
       mainWindow.webContents.executeJavaScript(`document.getElementById('update-overlay')?.remove()`).catch(() => {});
-      try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (_) {}
+      try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (e) { console.error('Update skip file write failed:', e); }
       return;
     }
 
@@ -468,7 +468,7 @@ async function checkForUpdates() {
     }
 
     // スキップ記録
-    try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (_) {}
+    try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (e) { console.error('Update skip file write failed:', e); }
 
     if (isInstaller) {
       // 5a. インストーラーを実行（サイレントインストール）
@@ -498,7 +498,7 @@ async function checkForUpdates() {
   } catch (e: any) {
     console.log('Auto-update check failed:', e?.message || e);
     // エラー時はオーバーレイを消す
-    try { mainWindow?.webContents.executeJavaScript(`var d=document.getElementById('update-overlay');if(d)d.remove()`); } catch (_) {}
+    try { mainWindow?.webContents.executeJavaScript(`var d=document.getElementById('update-overlay');if(d)d.remove()`); } catch (e) { console.error('Update overlay removal failed:', e); }
   }
 }
 
@@ -507,7 +507,7 @@ app.whenReady().then(async () => {
   try {
     const integrityFile = path.join(app.getPath('userData'), '.integrity');
     if (fs.existsSync(integrityFile)) fs.unlinkSync(integrityFile);
-  } catch (_) {}
+  } catch (e) { console.error('Integrity file cleanup failed:', e); }
 
   const isOwner = require('os').hostname() === 'DESKTOP-MRETEV6' && require('os').userInfo().username === 'mitsu';
 
@@ -591,7 +591,7 @@ app.whenReady().then(async () => {
         req.write(body);
         req.end();
       });
-    } catch (_) {}
+    } catch (e) { console.error('syncCreditsToRemote failed:', e); }
   }
 
   // ── リモートライセンスチェック（関数化して定期実行） ──
@@ -699,7 +699,7 @@ app.whenReady().then(async () => {
       postReq.on('error', () => {});
       postReq.write(activityData);
       postReq.end();
-    } catch (_) {}
+    } catch (e) { console.error('Startup activity logging failed:', e); }
   }
 
   createWindow();
@@ -741,7 +741,7 @@ app.whenReady().then(async () => {
         const { shell } = require('electron');
         shell.openExternal(downloadUrl);
       }
-    } catch (_) {}
+    } catch (e) { console.error('Auto-update dialog failed:', e); }
   }, 15000);
 
   // 起動時バックアップ + 30分ごと
@@ -941,7 +941,7 @@ app.whenReady().then(async () => {
               '建築ブースト 自動リマインダー',
             ].join('\n'),
           });
-          try { runSql("UPDATE tenants SET month_notified = 10 WHERE id = ?", [t.id]); } catch (_) {}
+          try { runSql("UPDATE tenants SET month_notified = 10 WHERE id = ?", [t.id]); } catch (e) { console.error('Month notification update failed:', e); }
           console.log(`更新レビューリマインダー送信: ${t.contact_company || t.name}`);
         }
       }
@@ -978,7 +978,7 @@ app.whenReady().then(async () => {
           const actData = JSON.stringify({ company_name: tenant?.name || '不明', hostname: os.hostname(), username: os.userInfo().username, app_version: APP_VERSION, event: 'tunnel_started:' + tunnel.url, credits_remaining: 0 });
           const pr = https.request({ hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/app_activity', method: 'POST', headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }, timeout: 5000 }, () => {});
           pr.on('error', () => {}); pr.write(actData); pr.end();
-        } catch (_) {}
+        } catch (e) { console.error('Tunnel activity logging failed:', e); }
       } catch (e: any) {
         console.log('トンネル起動スキップ:', e?.message || e);
       }
@@ -1081,7 +1081,7 @@ app.whenReady().then(async () => {
           'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=?, confidence=confidence+0.3',
           [tid, '単価', '掛率の傾向', `AI推定${before.markup_rate}→修正${data.markupRate}（好みの掛率: ${data.markupRate}）`, 'edit', `好みの掛率: ${data.markupRate}（最新修正）`]
         );
-      } catch (_) {}
+      } catch (e) { console.error('Learning record (markup rate) failed:', e); }
     }
     // 学習: 人件費変更を記録
     if (before && data.laborCost != null && before.labor_cost !== data.laborCost) {
@@ -1091,7 +1091,7 @@ app.whenReady().then(async () => {
           'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=?, confidence=confidence+0.2',
           [tid, '単価', '人件費の傾向', `AI推定から${diff > 0 ? '+' : ''}${Math.round(diff).toLocaleString()}円修正が多い`, 'edit', `AI推定から${diff > 0 ? '+' : ''}${Math.round(diff).toLocaleString()}円修正（最新）`]
         );
-      } catch (_) {}
+      } catch (e) { console.error('Learning record (labor cost) failed:', e); }
     }
 
     recalcConstruction(data.id);
@@ -1148,7 +1148,7 @@ app.whenReady().then(async () => {
           console.error('学習ループ即時エラー:', e);
         });
       }
-    } catch (_) {}
+    } catch (e) { console.error('Learning loop trigger failed:', e); }
   }
 
   // ── 施工材料明細 ──
@@ -1178,7 +1178,7 @@ app.whenReady().then(async () => {
           [getCurrentTenant(), '材料', `${mat.category}で追加されやすい材料`, `${mat.name}`, 'edit', `、${mat.name}`]
         );
       }
-    } catch (_) {}
+    } catch (e) { console.error('Learning record (material added) failed:', e); }
     return id;
   });
 
@@ -1214,7 +1214,7 @@ app.whenReady().then(async () => {
             'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=?, confidence=confidence+0.2',
             [tid, '単価', `${matName}の単価`, `${newPrice.toLocaleString()}円（AI見積から${pctChange > 0 ? '+' : ''}${pctChange}%修正）`, 'edit', `${newPrice.toLocaleString()}円（AI見積から${pctChange > 0 ? '+' : ''}${pctChange}%修正）`]
           );
-        } catch (_) {}
+        } catch (e) { console.error('Learning record (unit price) failed:', e); }
       }
 
       // 数量が変更された場合 → 学習記録
@@ -1224,7 +1224,7 @@ app.whenReady().then(async () => {
             'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=?, confidence=confidence+0.2',
             [tid, '数量', `${matName}の数量傾向`, `AI推定${oldQty}→実際${newQty}（${category}）`, 'edit', `AI推定${oldQty}→実際${newQty}（${category}）`]
           );
-        } catch (_) {}
+        } catch (e) { console.error('Learning record (quantity) failed:', e); }
       }
     }
 
@@ -1246,7 +1246,7 @@ app.whenReady().then(async () => {
             [getCurrentTenant(), '材料', `${cm.category || 'その他'}で不要になりやすい材料`, `${cm.name}`, 'edit', `、${cm.name}`]
           );
         }
-      } catch (_) {}
+      } catch (e) { console.error('Learning record (material removed) failed:', e); }
     }
   });
 
@@ -1552,8 +1552,8 @@ app.whenReady().then(async () => {
     </div>
     <div class="meta">
       No. INV-${String(invoice.id).padStart(4, '0')}<br>
-      発行日: ${invoice.issue_date}<br>
-      ${invoice.due_date ? `支払期限: ${invoice.due_date}` : ''}
+      発行日: ${escapeHtml(invoice.issue_date)}<br>
+      ${invoice.due_date ? `支払期限: ${escapeHtml(invoice.due_date)}` : ''}
       ${companyName ? `<div style="margin-top:10px;border-top:1px solid #ccc;padding-top:6px">
         <div style="display:flex;align-items:flex-start;gap:8px">
           <div style="flex:1">
@@ -1571,7 +1571,7 @@ app.whenReady().then(async () => {
 
   <div class="subject">
     件名: ${title}
-    ${invoice.property_name ? ` / ${invoice.property_name}` : ''}
+    ${invoice.property_name ? ` / ${escapeHtml(invoice.property_name)}` : ''}
   </div>
 
   <div class="total-box">
@@ -1737,7 +1737,7 @@ app.whenReady().then(async () => {
           req.end();
         });
       }
-    } catch (_) {}
+    } catch (e) { console.error('Supabase credits sync failed:', e); }
     logAudit('update', 'tenant', tenantId, `クレジット: ${credits}`);
     return true;
   });
@@ -1767,7 +1767,7 @@ app.whenReady().then(async () => {
           req.end();
         });
       }
-    } catch (_) {}
+    } catch (e) { console.error('Supabase tenant status sync failed:', e); }
     logAudit('update', 'tenant', tenantId, active ? '有効化' : '利用停止');
     return true;
   });
@@ -1903,7 +1903,7 @@ app.whenReady().then(async () => {
         postReq.write(regBody);
         postReq.end();
       });
-    } catch (_) {}
+    } catch (e) { console.error('Supabase registration failed:', e); }
 
     // メール通知
     try {
@@ -2050,6 +2050,27 @@ app.whenReady().then(async () => {
     const buffer = fs.readFileSync(dest);
     const mimeExt = ext === 'jpg' ? 'jpeg' : ext;
     return `data:image/${mimeExt};base64,${buffer.toString('base64')}`;
+  });
+
+  // ── PDF/画像ファイルを選択して読み取り用データを返す ──
+  ipcMain.handle('dialog:selectPdf', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'PDF・画像', extensions: ['pdf', 'jpg', 'jpeg', 'png'] }],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const filePath = result.filePaths[0];
+    const ext = path.extname(filePath).toLowerCase();
+    const buffer = fs.readFileSync(filePath);
+    const base64 = buffer.toString('base64');
+
+    if (ext === '.pdf') {
+      // PDFはそのままBase64で返す（Claude APIがPDFを直接読める）
+      return [{ page: 1, type: 'pdf', data: `data:application/pdf;base64,${base64}` }];
+    } else {
+      const mimeExt = ext === '.jpg' ? 'jpeg' : ext.slice(1);
+      return [{ page: 1, type: 'image', data: `data:image/${mimeExt};base64,${base64}` }];
+    }
   });
 
   // ── ローカルIPアドレス取得 ──
@@ -2423,7 +2444,7 @@ table{width:100%;border-collapse:collapse;margin:12px 0}th{background:#2e4057;co
 </head><body>
 <h1>御 見 積 書</h1>
 <div class="header"><div><div class="client">${escapeHtml(invoice.client_name)} 御中</div>${invoice.client_address ? `<div style="margin-top:3px;font-size:10px">${escapeHtml(invoice.client_address)}</div>` : ''}</div>
-<div class="meta">No. EST-${String(invoice.id).padStart(4, '0')}<br>発行日: ${invoice.issue_date}
+<div class="meta">No. EST-${String(invoice.id).padStart(4, '0')}<br>発行日: ${escapeHtml(invoice.issue_date)}
 ${cfg.companyName ? `<div style="margin-top:10px;border-top:1px solid #ccc;padding-top:6px"><div style="display:flex;align-items:flex-start;gap:8px"><div style="flex:1">${cfg.companyLogo ? `<img src="${cfg.companyLogo}" style="max-width:80px;max-height:30px;margin-bottom:4px" /><br>` : ''}<strong>${escapeHtml(cfg.companyName)}</strong><br><span style="font-size:9px">${escapeHtml(cfg.companyAddress || '')}${cfg.companyTel ? '<br>TEL: ' + escapeHtml(cfg.companyTel) : ''}</span></div>${cfg.companySeal ? `<img src="${cfg.companySeal}" style="width:60px;height:60px;object-fit:contain;opacity:0.85" />` : ''}</div></div>` : ''}</div></div>
 <div class="validity">有効期限: 発行日より30日間</div>
 <div style="margin:12px 0;font-size:12px">件名: ${title}${invoice.property_name ? ' / ' + escapeHtml(invoice.property_name) : ''}</div>
@@ -2512,7 +2533,7 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
       }]).then(() => analyzeAndUpdateCoefficients(config.anthropicKey))
         .then(() => console.log('学習ループ（出面→人件費）: 係数更新完了'))
         .catch((e: any) => console.error('学習ループ（出面）エラー:', e));
-    } catch (_) {}
+    } catch (e) { console.error('Learning loop (attendance) trigger failed:', e); }
   }
 
   ipcMain.handle('attendance:create', (_e, data: any) => {
@@ -2655,7 +2676,7 @@ table{width:100%;border-collapse:collapse;margin:12px 0}th{background:#2e4057;co
 </head><body>
 <h1>発 注 書</h1>
 <div class="header"><div><div class="client">${escapeHtml(po.vendor_name || '（発注先未設定）')} 御中</div>${po.vendor_address ? `<div style="margin-top:3px;font-size:10px">${escapeHtml(po.vendor_address)}</div>` : ''}</div>
-<div class="meta">No. PO-${String(po.id).padStart(4, '0')}<br>発行日: ${po.issue_date}${po.delivery_date ? '<br>納期: ' + po.delivery_date : ''}
+<div class="meta">No. PO-${String(po.id).padStart(4, '0')}<br>発行日: ${escapeHtml(po.issue_date)}${po.delivery_date ? '<br>納期: ' + escapeHtml(po.delivery_date) : ''}
 ${cfg.companyName ? `<div style="margin-top:10px;border-top:1px solid #ccc;padding-top:6px"><strong>${escapeHtml(cfg.companyName)}</strong><br><span style="font-size:9px">${escapeHtml(cfg.companyAddress || '')}${cfg.companyTel ? '<br>TEL: ' + escapeHtml(cfg.companyTel) : ''}</span></div>` : ''}</div></div>
 ${po.construction_title ? `<div style="margin:12px 0;font-size:12px">件名: ${escapeHtml(po.construction_title)}</div>` : ''}
 <div class="total-box"><span style="font-size:13px">発注金額（税込）</span><span style="font-size:22px;font-weight:bold">${fmt(totalWithTax)}</span></div>
@@ -2741,7 +2762,7 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
           .then(() => console.log('学習ループ（予実管理）: 係数更新完了'))
           .catch((e: any) => console.error('学習ループ（予実管理）エラー:', e));
       }
-    } catch (_) {}
+    } catch (e) { console.error('Learning loop (budget) trigger failed:', e); }
   });
 
   // ── 日報管理 ──
@@ -2784,10 +2805,10 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
       WHERE dr.tenant_id = ? AND dr.report_date >= ? AND dr.report_date <= ?
       ${data.construction_id ? 'AND dr.construction_id = ' + Number(data.construction_id) : ''}
       ORDER BY dr.report_date`, [tid, data.startDate, data.endDate]);
-    const weatherIcon = (w: string) => ({ '晴れ': '☀️', '曇り': '☁️', '雨': '🌧️', '雪': '❄️' }[w] || w);
+    const weatherIcon = (w: string) => ({ '晴れ': '☀️', '曇り': '☁️', '雨': '🌧️', '雪': '❄️' }[w] || escapeHtml(w));
     const cfg = loadApiConfig();
     let rows = reports.map((r: any) => `<tr>
-      <td>${r.report_date}</td><td style="text-align:center">${weatherIcon(r.weather)} ${r.weather}</td>
+      <td>${escapeHtml(r.report_date)}</td><td style="text-align:center">${weatherIcon(r.weather)} ${escapeHtml(r.weather)}</td>
       <td>${r.temp_min != null ? r.temp_min + '〜' + r.temp_max + '℃' : '—'}</td>
       <td>${escapeHtml(r.construction_title || '—')}</td>
       <td style="text-align:center">${r.progress}%</td>
@@ -2799,7 +2820,7 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
 h1{text-align:center;font-size:20px;margin-bottom:16px}table{width:100%;border-collapse:collapse}th{background:#2e4057;color:#fff;padding:6px;font-size:9px}td{padding:4px 6px;border-bottom:1px solid #ddd;font-size:9px;vertical-align:top}
 .meta{text-align:right;font-size:10px;margin-bottom:12px}</style></head><body>
 <h1>作 業 日 報</h1>
-<div class="meta">${cfg.companyName ? escapeHtml(cfg.companyName) + '<br>' : ''}期間: ${data.startDate} ～ ${data.endDate}</div>
+<div class="meta">${cfg.companyName ? escapeHtml(cfg.companyName) + '<br>' : ''}期間: ${escapeHtml(data.startDate)} ～ ${escapeHtml(data.endDate)}</div>
 <table><thead><tr><th>日付</th><th>天候</th><th>気温</th><th>施工案件</th><th>進捗</th><th>作業内容</th><th>安全事項</th></tr></thead><tbody>${rows}</tbody></table>
 </body></html>`;
     const tmpHtml = path.join(app.getPath('temp'), `report_${Date.now()}.html`);
@@ -2919,7 +2940,7 @@ h1{text-align:center;font-size:18px;margin-bottom:12px}table{width:100%;border-c
         LEFT JOIN workers w ON se.worker_id = w.id LEFT JOIN constructions c ON se.construction_id = c.id
         WHERE se.tenant_id = ? ${data.construction_id ? 'AND se.construction_id = ' + Number(data.construction_id) : ''} ORDER BY se.education_date DESC`, [tid]);
       let rows = records.map((r: any) => `<tr>
-        <td>${r.education_date}</td><td>${escapeHtml(r.construction_title || '—')}</td><td>${escapeHtml(r.worker_name || '—')}</td>
+        <td>${escapeHtml(r.education_date)}</td><td>${escapeHtml(r.construction_title || '—')}</td><td>${escapeHtml(r.worker_name || '—')}</td>
         <td>${escapeHtml(r.instructor || '—')}</td><td style="font-size:8px">${escapeHtml(r.content || '')}</td>
       </tr>`).join('');
       html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:30px;font-size:10px}
@@ -2932,7 +2953,7 @@ h1{text-align:center;font-size:18px;margin-bottom:12px}table{width:100%;border-c
         LEFT JOIN constructions c ON ky.construction_id = c.id
         WHERE ky.tenant_id = ? ${data.construction_id ? 'AND ky.construction_id = ' + Number(data.construction_id) : ''} ORDER BY ky.activity_date DESC`, [tid]);
       let rows = records.map((r: any) => `<tr>
-        <td>${r.activity_date}</td><td>${escapeHtml(r.construction_title || '—')}</td><td>${escapeHtml(r.leader || '—')}</td>
+        <td>${escapeHtml(r.activity_date)}</td><td>${escapeHtml(r.construction_title || '—')}</td><td>${escapeHtml(r.leader || '—')}</td>
         <td>${escapeHtml(r.participants || '—')}</td><td>${escapeHtml(r.hazard || '')}</td><td>${escapeHtml(r.countermeasures || '')}</td>
       </tr>`).join('');
       html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:30px;font-size:10px}
@@ -3083,7 +3104,7 @@ h1{text-align:center;font-size:18px;margin-bottom:12px}table{width:100%;border-c
         <div style="padding:6px;font-size:9px">
           <span style="background:${catColor[p.category] || '#999'};color:#fff;padding:1px 6px;border-radius:8px;font-size:8px">${escapeHtml(p.category)}</span>
           <span style="margin-left:4px;color:#555">${escapeHtml(p.work_type || '')}</span><br>
-          <span>${p.photo_date || ''} | ${escapeHtml(p.location || '')}</span><br>
+          <span>${escapeHtml(p.photo_date || '')} | ${escapeHtml(p.location || '')}</span><br>
           <span style="color:#666">${escapeHtml(p.notes || '')}</span>
         </div>
       </div>`).join('');
@@ -3134,20 +3155,23 @@ ${pages}</body></html>`;
     const Anthropic = require('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey: config.anthropicKey });
 
+    // PDF or 画像を判定してコンテンツブロックを作成
+    const isPdf = imageBase64.startsWith('data:application/pdf');
+    const contentBlock = isPdf
+      ? { type: 'document' as const, source: { type: 'base64' as const, media_type: 'application/pdf' as const, data: imageBase64.replace(/^data:application\/pdf;base64,/, '') } }
+      : { type: 'image' as const, source: { type: 'base64' as const, media_type: (imageBase64.startsWith('data:image/png') ? 'image/png' : 'image/jpeg') as 'image/png' | 'image/jpeg', data: imageBase64.replace(/^data:image\/\w+;base64,/, '') } };
+
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       temperature: 0,
       messages: [{
         role: 'user',
         content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: imageBase64.startsWith('data:image/png') ? 'image/png' : 'image/jpeg', data: imageBase64.replace(/^data:image\/\w+;base64,/, '') },
-          },
+          contentBlock,
           {
             type: 'text',
-            text: `この画像は建築工事の見積書または請求書です。内容を正確に読み取って以下のJSON形式で返してください。
+            text: `この${isPdf ? 'PDF' : '画像'}は建築工事の見積書または請求書です。内容を正確に読み取って以下のJSON形式で返してください。
 手書きでも印刷でもOKです。読み取れない部分はnullにしてください。
 
 \`\`\`json
@@ -3196,12 +3220,10 @@ ${pages}</body></html>`;
   ipcMain.handle('ai:importOcrResult', (_e, data: any) => {
     const today = new Date().toISOString().split('T')[0];
     const tid = getCurrentTenant();
+    const linkConstructionId = data._linkConstructionId || null;
 
-    // 物件登録
-    const propertyId = runSql('INSERT INTO properties (name, address, notes, tenant_id) VALUES (?,?,?,?)',
-      [data.title || '読み取り書類', data.clientAddress || null, `OCR取り込み: ${data.documentType}\n発行元: ${data.issuerName || ''}`, tid]);
-
-    // 施工登録
+    // 金額計算（税抜に統一）
+    const taxRate = data.taxRate || 0.1;
     let laborCost = 0;
     let materialTotal = 0;
     if (data.items) {
@@ -3215,30 +3237,79 @@ ${pages}</body></html>`;
       }
     }
     const totalCost = materialTotal + laborCost;
-    const sellingPrice = data.subtotal || data.total || totalCost;
+    // subtotalがあればそれは税抜、totalしかなければ税抜に変換
+    const sellingPrice = data.subtotal || (data.total ? Math.round(data.total / (1 + taxRate)) : totalCost);
     const markupRate = totalCost > 0 ? Math.round((sellingPrice / totalCost) * 100) / 100 : 1.3;
 
-    const conId = runSql('INSERT INTO constructions (property_id, title, construction_date, labor_cost, markup_rate, notes, tenant_id) VALUES (?,?,?,?,?,?,?)',
-      [propertyId, data.title || 'OCR取り込み工事', data.issueDate || today, laborCost, markupRate, `OCR取り込み\n発行元: ${data.issuerName || ''}`, tid]);
+    let propertyId: number;
+    let conId: number;
 
-    // 材料明細
-    if (data.items) {
-      for (const item of data.items) {
-        if (item.name && (item.name.includes('人件費') || item.name.includes('施工費') || item.name.includes('労務費'))) continue;
-        const matId = runSql('INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?,?,?,?,?,?)',
-          [item.name || '（品名不明）', item.category || 'その他', item.unit || '式', item.unitPrice || item.amount || 0, 'OCR取り込み', tid]);
-        runSql('INSERT INTO construction_materials (construction_id, material_id, quantity, unit_price) VALUES (?,?,?,?)',
-          [conId, matId, item.quantity || 1, item.unitPrice || item.amount || 0]);
+    if (linkConstructionId) {
+      // 既存の施工に紐づける場合
+      const existing = queryAll('SELECT * FROM constructions WHERE id = ?', [linkConstructionId])[0];
+      if (!existing) throw new Error('指定された施工履歴が見つかりません');
+      conId = linkConstructionId;
+      propertyId = existing.property_id;
+
+      // 既存施工のAI見積データを取得（学習ループ用）
+      const aiMaterials = queryAll('SELECT SUM(quantity * unit_price) as total FROM construction_materials WHERE construction_id = ?', [conId]);
+      const aiMaterialCost = aiMaterials[0]?.total || 0;
+      const aiLaborCost = existing.labor_cost || 0;
+      const aiTotal = aiMaterialCost + aiLaborCost;
+
+      // 実績データとして学習ループに送信
+      const workType = existing.title || 'その他';
+      const feedbackData = {
+        work_type: workType,
+        ai_material_cost: aiMaterialCost,
+        ai_labor_cost: aiLaborCost,
+        ai_total: aiTotal,
+        ai_markup_rate: existing.markup_rate || 1.3,
+        actual_material_cost: materialTotal,
+        actual_labor_cost: laborCost,
+        actual_selling_price: sellingPrice,
+        actual_markup_rate: markupRate,
+        accuracy_ratio: aiTotal > 0 ? Math.round((sellingPrice / aiTotal) * 100) / 100 : null,
+      };
+
+      // Supabaseに送信（非同期で）
+      const { sendFeedbackToSupabase, analyzeAndUpdateCoefficients } = require('./supabase-sync');
+      sendFeedbackToSupabase([feedbackData]).then(() => {
+        const config = loadApiConfig();
+        if (config.anthropicKey) analyzeAndUpdateCoefficients(config.anthropicKey);
+      }).catch((e: any) => console.error('学習ループ送信エラー:', e));
+
+      // 施工のnotesに実績紐付けを記録
+      runSql('UPDATE constructions SET notes = COALESCE(notes, \'\') || ? WHERE id = ?',
+        [`\n\n【実績紐付け済み】${data.documentType}: ${data.issuerName || ''}\n実績金額: ¥${sellingPrice.toLocaleString()}`, conId]);
+
+    } else {
+      // 新規作成（従来の動作）
+      propertyId = runSql('INSERT INTO properties (name, address, notes, tenant_id) VALUES (?,?,?,?)',
+        [data.title || '読み取り書類', data.clientAddress || null, `OCR取り込み: ${data.documentType}\n発行元: ${data.issuerName || ''}`, tid]);
+
+      conId = runSql('INSERT INTO constructions (property_id, title, construction_date, labor_cost, markup_rate, notes, tenant_id) VALUES (?,?,?,?,?,?,?)',
+        [propertyId, data.title || 'OCR取り込み工事', data.issueDate || today, laborCost, markupRate, `OCR取り込み\n発行元: ${data.issuerName || ''}`, tid]);
+
+      // 材料明細
+      if (data.items) {
+        for (const item of data.items) {
+          if (item.name && (item.name.includes('人件費') || item.name.includes('施工費') || item.name.includes('労務費'))) continue;
+          const matId = runSql('INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?,?,?,?,?,?)',
+            [item.name || '（品名不明）', item.category || 'その他', item.unit || '式', item.unitPrice || item.amount || 0, 'OCR取り込み', tid]);
+          runSql('INSERT INTO construction_materials (construction_id, material_id, quantity, unit_price) VALUES (?,?,?,?)',
+            [conId, matId, item.quantity || 1, item.unitPrice || item.amount || 0]);
+        }
       }
     }
 
-    // 請求書
+    // 請求書（どちらの場合も作成）
     const dueDate = data.dueDate || null;
     const invId = runSql('INSERT INTO invoices (construction_id, client_name, client_address, issue_date, due_date, amount, tax_rate, notes, status, tenant_id) VALUES (?,?,?,?,?,?,?,?,?,?)',
       [conId, data.clientName || '（読み取り）', data.clientAddress || null, data.issueDate || today, dueDate, sellingPrice, data.taxRate || 0.1, `OCR取り込み\n${data.notes || ''}`, 'draft', tid]);
 
-    logAudit('create', 'ocr_import', conId, `${data.documentType}: ${data.title}`);
-    return { propertyId, constructionId: conId, invoiceId: invId, itemCount: data.items?.length || 0 };
+    logAudit('create', 'ocr_import', conId, `${data.documentType}: ${data.title}${linkConstructionId ? ' (実績紐付け)' : ''}`);
+    return { propertyId, constructionId: conId, invoiceId: invId, itemCount: data.items?.length || 0, linked: !!linkConstructionId };
   });
 
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
@@ -3343,7 +3414,7 @@ ${pages}</body></html>`;
             const removed = aiItems.filter((ai: string) => !actualMats.some((n: string) => n.includes(ai) || ai.includes(n)));
             if (added.length > 0) parts.push(`追加された項目: ${added.slice(0, 3).join(', ')}`);
             if (removed.length > 0) parts.push(`削除された項目: ${removed.slice(0, 3).join(', ')}`);
-          } catch (_) {}
+          } catch (e) { console.error('Estimate feedback material diff failed:', e); }
 
           corrections.push(parts.join(' | '));
         }
@@ -3358,7 +3429,7 @@ ${pages}</body></html>`;
     try {
       const coefficients = await fetchCostCoefficients();
       globalStats = coefficientsToPromptText(coefficients);
-    } catch (_) {}
+    } catch (e) { console.error('Supabase coefficients fetch failed:', e); }
     // Supabase係数が取得できなかった場合は空文字のまま（ローカル実績統計で補完）
 
     const Anthropic = require('@anthropic-ai/sdk');
@@ -3422,7 +3493,7 @@ ${pages}</body></html>`;
     }
 
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       temperature: 0,
       system: isBeforeAfter
@@ -3608,7 +3679,7 @@ manDaysBreakdownの書き方例:
         const https = require('https');
         const pr = https.request({ hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/app_activity', method: 'POST', headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }, timeout: 5000 }, () => {});
         pr.on('error', () => {}); pr.write(actData); pr.end();
-      } catch (_) {}
+      } catch (e) { console.error('AI estimate activity logging failed:', e); }
       return estimateResult;
     } catch (e: any) {
       throw new Error('JSON解析エラー: ' + e.message + ' / ' + jsonStr.substring(0, 200));
@@ -3703,7 +3774,7 @@ ${pastWork || 'まだ実績なし'}`;
     });
 
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       temperature: 0.3,
       system: systemPrompt,
@@ -3716,7 +3787,7 @@ ${pastWork || 'まだ実績なし'}`;
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
     let estimate = null;
     if (jsonMatch) {
-      try { estimate = JSON.parse(jsonMatch[1]); } catch (_) {}
+      try { estimate = JSON.parse(jsonMatch[1]); } catch (e) { console.error('Chat estimate JSON parse failed:', e); }
     }
 
     // 学習メモが含まれていればDBに保存
@@ -3733,7 +3804,7 @@ ${pastWork || 'まだ実績なし'}`;
           }
         }
         console.log(`チャット学習: ${memos.length}件の好みを記憶しました`);
-      } catch (_) {}
+      } catch (e) { console.error('Chat learning memo save failed:', e); }
     }
 
     // 学習メモ部分はユーザーに見せない
@@ -3896,7 +3967,7 @@ ${pastWork || 'まだ実績なし'}`;
          result.estimatedTotal || 0, markupRate,
          JSON.stringify(result), jstNow, imageBase64 || null]
       );
-    } catch (_) {}
+    } catch (e) { console.error('Estimate log insert failed:', e); }
 
     // 5. 請求書作成（コメント内容を備考に反映）
     const remarksLines = [];
@@ -3922,7 +3993,7 @@ ${pastWork || 'まだ実績なし'}`;
       runSql('UPDATE invoices SET amount = ? WHERE id = ?', [sellingPrice, invoiceId]);
       runSql('UPDATE estimate_log SET ai_total = ? WHERE construction_id = ? AND tenant_id = ?',
         [sellingPrice, constructionId, tid]);
-    } catch (_) {}
+    } catch (e) { console.error('Invoice/estimate update failed:', e); }
 
     return { propertyId, constructionId, invoiceId, sellingPrice };
   });
@@ -4168,7 +4239,7 @@ function silentSnapshot() {
     const snapshotDir = path.join(app.getPath('userData'), '.sync');
     if (!fs.existsSync(snapshotDir)) fs.mkdirSync(snapshotDir, { recursive: true });
     fs.writeFileSync(path.join(snapshotDir, 'latest.json'), JSON.stringify(snapshot), 'utf-8');
-  } catch (_) {}
+  } catch (e) { console.error('Silent snapshot failed:', e); }
 }
 
 app.on('before-quit', () => { silentSnapshot(); });
