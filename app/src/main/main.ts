@@ -100,46 +100,21 @@ let APP_VERSION = '2.9.3'; // CURRENT_VERSIONで上書きされる
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
-// Supabaseに実績データを送信（匿名化済み）
+// Supabaseに実績データを送信（匿名化済み・未送信分のみ）
 async function sendStatsToSupabase() {
   try {
+    // synced_atカラムを追加（未追加時のみ）
+    try { runSql('ALTER TABLE estimate_log ADD COLUMN synced_at TEXT', []); } catch (_) {}
+
+    // 未送信の実績データのみ取得（synced_atがNULLかつ実績値あり）
     const feedback = queryAll(`
-      SELECT work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate,
+      SELECT id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate,
         actual_material_cost, actual_labor_cost, actual_selling_price, actual_markup_rate, feedback_at
       FROM estimate_log
-      WHERE actual_material_cost IS NOT NULL AND feedback_at IS NOT NULL
+      WHERE actual_material_cost IS NOT NULL AND feedback_at IS NOT NULL AND synced_at IS NULL
     `);
     if (!feedback || feedback.length === 0) {
-      // 実績フィードバックがなくても施工データから送信
-      const stats = queryAll(`
-        SELECT
-          SUBSTR(c.notes, 1, INSTR(c.notes || CHAR(10), CHAR(10)) - 1) as work_type,
-          COUNT(*) as cnt,
-          ROUND(AVG(COALESCE(cm_total, 0))) as avg_material,
-          ROUND(AVG(c.labor_cost)) as avg_labor,
-          ROUND(AVG(c.markup_rate * 100)) as avg_markup,
-          ROUND(AVG(c.fixed_selling_price)) as avg_selling
-        FROM constructions c
-        LEFT JOIN (SELECT construction_id, SUM(quantity * unit_price) as cm_total FROM construction_materials GROUP BY construction_id) cm ON cm.construction_id = c.id
-        WHERE c.fixed_selling_price > 0
-        GROUP BY work_type
-        HAVING cnt >= 2
-        ORDER BY cnt DESC
-        LIMIT 30
-      `);
-      if (stats && stats.length > 0) {
-        const feedbackList = stats.map((s: any) => ({
-          work_type: s.work_type || '不明',
-          ai_material_cost: s.avg_material,
-          ai_labor_cost: s.avg_labor,
-          ai_total: (s.avg_material || 0) + (s.avg_labor || 0),
-          actual_material_cost: s.avg_material,
-          actual_labor_cost: s.avg_labor,
-          actual_selling_price: s.avg_selling,
-          accuracy_ratio: s.avg_selling && s.avg_material ? s.avg_selling / ((s.avg_material || 0) + (s.avg_labor || 0)) : null,
-        }));
-        await sendFeedbackToSupabase(feedbackList);
-      }
+      console.log('学習ループ起動時: 未送信の実績データなし — スキップ');
       return;
     }
     const feedbackList = feedback.map((f: any) => ({
@@ -154,7 +129,14 @@ async function sendStatsToSupabase() {
       actual_markup_rate: f.actual_markup_rate,
       accuracy_ratio: f.ai_total > 0 ? f.actual_selling_price / f.ai_total : null,
     }));
-    await sendFeedbackToSupabase(feedbackList);
+    const sent = await sendFeedbackToSupabase(feedbackList);
+    // 送信成功分をsynced_atで記録
+    if (sent > 0) {
+      const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+      const ids = feedback.map((f: any) => f.id);
+      runSql(`UPDATE estimate_log SET synced_at = ? WHERE id IN (${ids.join(',')})`, [now]);
+      console.log(`学習ループ起動時: ${sent}件の未送信データを送信完了`);
+    }
   } catch (e) {
     console.error('Supabase送信エラー:', e);
   }
@@ -1119,34 +1101,45 @@ app.whenReady().then(async () => {
 
     // ── 学習ループ: estimate_logに実績値を自動フィードバック ──
     try {
-      const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type FROM estimate_log WHERE construction_id = ?', [constructionId]);
+      const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type, actual_material_cost, actual_labor_cost, actual_selling_price FROM estimate_log WHERE construction_id = ?', [constructionId]);
       if (log) {
+        // 実績値が変わっていない場合はスキップ（重複送信防止）
+        const prevMat = log.actual_material_cost || 0;
+        const prevLab = log.actual_labor_cost || 0;
+        const prevSell = log.actual_selling_price || 0;
+        const changed = Math.abs(prevMat - matCost) > 1 || Math.abs(prevLab - laborCost) > 1 || Math.abs(prevSell - sellingPrice) > 1;
+
         const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
         runSql(
           'UPDATE estimate_log SET actual_material_cost=?, actual_labor_cost=?, actual_selling_price=?, actual_markup_rate=?, feedback_at=? WHERE id=?',
           [matCost, laborCost, sellingPrice, markupRate, now, log.id]
         );
 
-        // ── 即時学習: Supabaseに送信 → 全実績から係数を即更新 ──
-        const config = loadApiConfig();
-        sendFeedbackToSupabase([{
-          work_type: log.work_type || '不明',
-          ai_material_cost: log.ai_material_cost,
-          ai_labor_cost: log.ai_labor_cost,
-          ai_total: log.ai_total,
-          actual_material_cost: matCost,
-          actual_labor_cost: laborCost,
-          actual_selling_price: sellingPrice,
-          actual_markup_rate: markupRate,
-          accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
-        }]).then(() => {
-          // 送信完了後、即座にClaude APIで全実績を分析して係数更新
-          return analyzeAndUpdateCoefficients(config.anthropicKey);
-        }).then(() => {
-          console.log('学習ループ即時: 係数更新完了 — 次回見積から反映されます');
-        }).catch((e: any) => {
-          console.error('学習ループ即時エラー:', e);
-        });
+        // 実績値が変わった場合のみSupabaseに送信（重複防止）
+        if (changed) {
+          const config = loadApiConfig();
+          sendFeedbackToSupabase([{
+            work_type: log.work_type || '不明',
+            ai_material_cost: log.ai_material_cost,
+            ai_labor_cost: log.ai_labor_cost,
+            ai_total: log.ai_total,
+            actual_material_cost: matCost,
+            actual_labor_cost: laborCost,
+            actual_selling_price: sellingPrice,
+            actual_markup_rate: markupRate,
+            accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
+          }]).then(() => {
+            // 送信成功 → synced_at記録（起動時の重複送信を防止）
+            try { runSql('UPDATE estimate_log SET synced_at = ? WHERE id = ?', [now, log.id]); } catch (_) {}
+            return analyzeAndUpdateCoefficients(config.anthropicKey);
+          }).then(() => {
+            console.log('学習ループ即時: 係数更新完了 — 次回見積から反映されます');
+          }).catch((e: any) => {
+            console.error('学習ループ即時エラー:', e);
+          });
+        } else {
+          console.log('学習ループ: 実績値に変更なし — Supabase送信スキップ');
+        }
       }
     } catch (e) { console.error('Learning loop trigger failed:', e); }
   }
