@@ -96,7 +96,7 @@ function escapeHtml(str: string | null | undefined): string {
 }
 
 let mainWindow: BrowserWindow | null = null;
-let APP_VERSION = '2.9.2'; // CURRENT_VERSIONで上書きされる
+let APP_VERSION = '2.9.3'; // CURRENT_VERSIONで上書きされる
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
@@ -349,7 +349,7 @@ function getImagesDir(dbFilePath: string) {
 
 // ── 自動アップデート（GitHub Releases ベース）──
 const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = '2.9.2';
+const CURRENT_VERSION = '2.9.3';
 APP_VERSION = CURRENT_VERSION;
 
 async function checkForUpdates() {
@@ -1301,10 +1301,23 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('invoices:update', (_e, data: any) => {
+    // 変更前のステータスを取得
+    const before = queryOne('SELECT status, construction_id FROM invoices WHERE id = ?', [data.id]);
+
     runSql(
       'UPDATE invoices SET client_name=?, client_address=?, issue_date=?, due_date=?, amount=?, tax_rate=?, notes=?, status=? WHERE id=?',
       [data.clientName, data.clientAddress || null, data.issueDate, data.dueDate || null, data.amount || 0, data.taxRate != null ? data.taxRate : 0.1, data.notes || null, data.status || 'draft', data.id]
     );
+
+    // ── 入金済に変更されたら実績値として自動記憶 + 学習ループ発火 ──
+    if (data.status === 'paid' && before?.status !== 'paid' && before?.construction_id) {
+      try {
+        const cid = before.construction_id;
+        // recalcConstruction で estimate_log に実績値を書き込み → Supabase送信 → 係数更新
+        recalcConstruction(cid);
+        console.log(`学習ループ: 請求書ID=${data.id} が入金済に → 施工ID=${cid} の実績値を自動記憶`);
+      } catch (e) { console.error('入金済→学習ループトリガー失敗:', e); }
+    }
   });
 
   ipcMain.handle('invoices:delete', (_e, id: number) => {
@@ -3308,6 +3321,15 @@ ${pages}</body></html>`;
     const invId = runSql('INSERT INTO invoices (construction_id, client_name, client_address, issue_date, due_date, amount, tax_rate, notes, status, tenant_id) VALUES (?,?,?,?,?,?,?,?,?,?)',
       [conId, data.clientName || '（読み取り）', data.clientAddress || null, data.issueDate || today, dueDate, sellingPrice, data.taxRate || 0.1, `OCR取り込み\n${data.notes || ''}`, 'draft', tid]);
 
+    // estimate_logにOCR取込の結果を記録
+    try {
+      const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+      runSql(
+        'INSERT INTO estimate_log (tenant_id, construction_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [tid, conId, data.title || 'OCR取込', materialTotal, laborCost, sellingPrice, markupRate, JSON.stringify(data), jstNow]
+      );
+    } catch (e) { console.error('OCR estimate_log記録失敗:', e); }
+
     logAudit('create', 'ocr_import', conId, `${data.documentType}: ${data.title}${linkConstructionId ? ' (実績紐付け)' : ''}`);
     return { propertyId, constructionId: conId, invoiceId: invId, itemCount: data.items?.length || 0, linked: !!linkConstructionId };
   });
@@ -3805,6 +3827,29 @@ ${pastWork || 'まだ実績なし'}`;
         }
         console.log(`チャット学習: ${memos.length}件の好みを記憶しました`);
       } catch (e) { console.error('Chat learning memo save failed:', e); }
+    }
+
+    // チャット見積の結果をestimate_logに記録
+    if (estimate) {
+      try {
+        const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+        runSql(
+          'INSERT INTO estimate_log (tenant_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            tid,
+            estimate.workType || '',
+            estimate.estimatedMaterialCost || 0,
+            estimate.estimatedLaborCost || 0,
+            estimate.estimatedTotal || 0,
+            estimate.estimatedTotal && (estimate.estimatedMaterialCost || 0) + (estimate.estimatedLaborCost || 0) > 0
+              ? estimate.estimatedTotal / ((estimate.estimatedMaterialCost || 0) + (estimate.estimatedLaborCost || 0))
+              : 1.3,
+            JSON.stringify(estimate),
+            jstNow,
+          ]
+        );
+        console.log(`チャット見積ログ記録: ${estimate.workType} ¥${estimate.estimatedTotal}`);
+      } catch (e) { console.error('チャット見積ログ記録失敗:', e); }
     }
 
     // 学習メモ部分はユーザーに見せない

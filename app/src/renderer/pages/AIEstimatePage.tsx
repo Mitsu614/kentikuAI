@@ -123,6 +123,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           console.error('auto create error:', e);
         }
         setCreating(false);
+
+        // 金額修正の確認 → あれば編集ガイドへスクロール
+        const wantEdit = confirm('登録完了しました。金額に修正はありますか？\n\n「OK」→ 修正画面へ\n「キャンセル」→ そのまま確定');
+        if (wantEdit) {
+          setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 200);
+        }
       }
       // ログに追加（DBから再読込）
       try {
@@ -213,6 +219,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setSelectedLog(logItem.id);
     setLogPO(null);
     setLogInvoice(null);
+    // constructionIdがあれば金額編集・保存できるようにする
+    if (logItem.constructionId) {
+      setAutoCreated({ constructionId: logItem.constructionId, propertyId: null });
+    } else {
+      setAutoCreated(null);
+    }
     setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     // 関連する発注書・請求書を取得
     if (logItem.constructionId) {
@@ -356,7 +368,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       try {
                         const created = await (window as any).api.autoCreateFromEstimate({ result: chatEstimate });
                         setAutoCreated(created);
-                        alert('自動登録完了！');
+                        setResult(chatEstimate);
+                        setMode('single');
+                        const wantEdit = confirm('登録完了しました。金額に修正はありますか？\n\n「OK」→ 修正画面へ\n「キャンセル」→ そのまま確定');
+                        if (wantEdit) {
+                          setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 200);
+                        }
                       } catch (e: any) { alert('エラー: ' + e.message); }
                     }
                   }}>一括登録</button>
@@ -631,6 +648,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               </div>
             </div>
           )}
+
           {creating && (
             <div style={{ background: '#fff8e1', padding: '10px 16px', borderRadius: 8, marginBottom: 16, fontSize: 13, color: '#e67e22' }}>
               ⏳ 物件・施工・請求書を自動登録中...
@@ -679,11 +697,89 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </div>
           </div>
 
-          {/* お見積金額 */}
-          <div style={{ marginTop: 16, textAlign: 'center' }}>
-            <div className="card" style={{ display: 'inline-block', padding: '24px 60px', background: '#f0fff4', border: '3px solid #27ae60' }}>
-              <div style={{ fontSize: 14, color: '#888', marginBottom: 4 }}>お見積金額（税抜・利益込）</div>
-              <div style={{ fontSize: 36, fontWeight: 'bold', color: '#27ae60' }}>{fmt(result.estimatedTotal)}</div>
+          {/* お見積金額（編集可能） */}
+          <div style={{ marginTop: 16 }}>
+            <div className="card" style={{ background: '#f0fff4', border: '3px solid #27ae60', padding: '20px 24px' }}>
+              <div style={{ textAlign: 'center', marginBottom: 16 }}>
+                <div style={{ fontSize: 14, color: '#888', marginBottom: 4 }}>お見積金額（税抜・利益込）</div>
+                <div style={{ fontSize: 36, fontWeight: 'bold', color: '#27ae60' }}>{fmt(result.estimatedTotal)}</div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
+                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>材料費</div>
+                  <input
+                    type="number"
+                    value={Math.round(result.estimatedMaterialCost || 0)}
+                    onChange={e => {
+                      const matCost = Number(e.target.value);
+                      const laborCost = result.estimatedLaborCost || 0;
+                      const totalCost = matCost + laborCost;
+                      const markupRate = result.estimatedTotal && totalCost > 0 ? result.estimatedTotal / totalCost : 1.3;
+                      setResult({ ...result, estimatedMaterialCost: matCost });
+                    }}
+                    style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
+                  />
+                </div>
+                <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
+                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>人件費</div>
+                  <input
+                    type="number"
+                    value={Math.round(result.estimatedLaborCost || 0)}
+                    onChange={e => {
+                      const laborCost = Number(e.target.value);
+                      setResult({ ...result, estimatedLaborCost: laborCost });
+                    }}
+                    style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
+                  />
+                </div>
+                <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
+                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>売上金額（税抜）</div>
+                  <input
+                    type="number"
+                    value={Math.round(result.estimatedTotal || 0)}
+                    onChange={e => setResult({ ...result, estimatedTotal: Number(e.target.value) })}
+                    style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
+                  />
+                </div>
+              </div>
+              {autoCreated && (
+                <button className="btn btn-primary btn-sm" style={{ marginTop: 10, width: '100%' }} onClick={async () => {
+                  try {
+                    if (autoCreated.constructionId) {
+                      const mats = await (window as any).api.listConstructionMaterials(autoCreated.constructionId);
+                      const currentTotal = mats.reduce((s: number, m: any) => s + m.quantity * m.unit_price, 0);
+                      if (currentTotal > 0 && result.estimatedMaterialCost) {
+                        const ratio = result.estimatedMaterialCost / currentTotal;
+                        for (const m of mats) {
+                          await (window as any).api.updateConstructionMaterial({
+                            id: m.id, materialId: m.material_id, name: m.material_name,
+                            quantity: m.quantity, unit: m.unit || '式',
+                            unitPrice: Math.round(m.unit_price * ratio),
+                          });
+                        }
+                      }
+                      const totalCost = (result.estimatedMaterialCost || 0) + (result.estimatedLaborCost || 0);
+                      const markupRate = totalCost > 0 ? (result.estimatedTotal || 0) / totalCost : 1.3;
+                      await (window as any).api.updateConstruction({
+                        id: autoCreated.constructionId,
+                        propertyId: autoCreated.propertyId,
+                        title: result.workType || '工事',
+                        constructionDate: new Date().toISOString().split('T')[0],
+                        laborCost: result.estimatedLaborCost || 0,
+                        markupRate: Math.round(markupRate * 100) / 100,
+                        notes: '',
+                        status: '見積中',
+                      });
+                    }
+                    alert('金額を更新しました。AIの学習に反映されます。');
+                  } catch (e: any) {
+                    alert('更新に失敗しました: ' + (e.message || e));
+                  }
+                }}>修正を保存してAI学習に反映</button>
+              )}
+              <div style={{ fontSize: 11, color: '#888', marginTop: 6, textAlign: 'center' }}>
+                金額を修正するとAIの学習精度が向上します{!autoCreated ? '（一括登録後に保存できます）' : ''}
+              </div>
             </div>
           </div>
 

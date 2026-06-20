@@ -20,6 +20,7 @@ export default function InvoicesPage({ highlightConstructionId, onHighlightClear
     constructionId: '', clientName: '', clientAddress: '',
     issueDate: '', dueDate: '', amount: 0, taxRate: 0.1, notes: '', status: 'draft',
   });
+  const [showFeedbackGuide, setShowFeedbackGuide] = useState(false);
 
   useEffect(() => { load(); }, []);
 
@@ -221,9 +222,14 @@ export default function InvoicesPage({ highlightConstructionId, onHighlightClear
                     <label>ステータス</label>
                     <select value={detail.status} onChange={async e => {
                       const newStatus = e.target.value;
+                      const wasPaid = detail.status === 'paid';
                       setDetail({ ...detail, status: newStatus });
                       await window.api.updateInvoice({ ...detail, clientName: detail.client_name, clientAddress: detail.client_address, issueDate: detail.issue_date, dueDate: detail.due_date, taxRate: detail.tax_rate, id: detail.id, status: newStatus });
                       load();
+                      // 入金済にした瞬間にフィードバックガイドを表示
+                      if (newStatus === 'paid' && !wasPaid) {
+                        setShowFeedbackGuide(true);
+                      }
                     }}>
                       <option value="draft">下書き</option>
                       <option value="sent">送付済</option>
@@ -326,6 +332,60 @@ export default function InvoicesPage({ highlightConstructionId, onHighlightClear
                 <button className="btn btn-success" onClick={() => exportPDF(detail.id)} style={{ flex: 1 }}>📄 請求書PDF出力</button>
                 <button className="btn btn-secondary" onClick={async () => { const d = await window.api.getInvoiceDetail(detail.id); await (window as any).api.generateEstimatePDF(d); }} style={{ flex: 1 }}>📋 見積書PDF出力</button>
               </div>
+
+              {/* 入金済→実績記憶ガイド */}
+              {(showFeedbackGuide || detail.status === 'paid') && detail.construction_id && (
+                <div style={{ marginTop: 16, background: 'linear-gradient(135deg, #f0fdf4, #dcfce7)', borderRadius: 12, padding: 16, border: '2px solid #22c55e' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                    <div style={{ fontWeight: 'bold', fontSize: 14, color: '#15803d' }}>
+                      AI学習に実績を反映しました
+                    </div>
+                    {showFeedbackGuide && (
+                      <button className="btn btn-sm btn-secondary" onClick={() => setShowFeedbackGuide(false)} style={{ fontSize: 11 }}>閉じる</button>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#166534', marginBottom: 12, lineHeight: 1.6 }}>
+                    この請求書の金額と明細が<strong>実績値</strong>としてAIに記憶されました。
+                    次回以降、同じ工事種別の見積精度が向上します。
+                  </div>
+                  <div style={{ fontSize: 12, color: '#166534', marginBottom: 8, fontWeight: 'bold' }}>
+                    金額に修正がある場合は、下記から編集してください：
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <div style={{ flex: 1, minWidth: 150, background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
+                      <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>売上金額（税抜）</div>
+                      <input
+                        type="number"
+                        value={detail.amount}
+                        onChange={e => setDetail({ ...detail, amount: Number(e.target.value) })}
+                        style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '2px solid #22c55e', borderRadius: 6, textAlign: 'right' }}
+                      />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 150, background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
+                      <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>経費合計</div>
+                      <div style={{ fontSize: 15, fontWeight: 'bold', color: '#c0392b', padding: '6px 0' }}>
+                        {fmt(detail.total_cost || 0)}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#888' }}>明細をダブルクリックで編集可</div>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 150, background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
+                      <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>粗利</div>
+                      <div style={{ fontSize: 15, fontWeight: 'bold', color: (detail.gross_profit || 0) > 0 ? '#27ae60' : '#e74c3c', padding: '6px 0' }}>
+                        {fmt(detail.gross_profit || 0)}
+                      </div>
+                    </div>
+                  </div>
+                  <button className="btn btn-primary btn-sm" style={{ marginTop: 10, width: '100%' }} onClick={async () => {
+                    await window.api.updateInvoice({
+                      id: detail.id, clientName: detail.client_name, clientAddress: detail.client_address,
+                      issueDate: detail.issue_date, dueDate: detail.due_date, amount: detail.amount,
+                      taxRate: detail.tax_rate, notes: detail.notes, status: detail.status,
+                    });
+                    load();
+                    setShowFeedbackGuide(false);
+                  }}>実績値を保存してAI学習に反映</button>
+                </div>
+              )}
             </div>
           </div>
         )}

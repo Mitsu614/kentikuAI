@@ -60,6 +60,7 @@ export function runSql(sql: string, params?: any[]): number {
 
 // ── プラン定義 ──
 export const PLANS: Record<string, { name: string; monthlyLimit: number; price: number; description: string }> = {
+  demo:       { name: 'デモ',           monthlyLimit: 10,   price: 0,        description: '無料体験（月10単位まで）' },
   standard:   { name: 'スタンダード',   monthlyLimit: 50,   price: 1200000,  description: '個人〜15名規模の工務店（年間契約）' },
   pro:        { name: 'プロ',           monthlyLimit: 200,  price: 3000000,  description: '複数担当者・多案件（年間契約）' },
   enterprise: { name: '法人カスタム',   monthlyLimit: 9999, price: 5000000,   description: '多店舗・複数会社（年間契約）' },
@@ -95,7 +96,8 @@ export function getMonthlyUsage(tenantId?: number): { used: number; limit: numbe
 
   // フォールバック: 従来の月次計算
   let row;
-  if (plan === 'trial') {
+  if (plan === 'trial' || plan === 'demo') {
+    // デモ・トライアルは使い切り（月次リセットなし）
     row = queryOne(
       'SELECT COALESCE(SUM(ABS(amount)), 0) as used FROM credit_log WHERE tenant_id = ? AND amount < 0',
       [tid]
