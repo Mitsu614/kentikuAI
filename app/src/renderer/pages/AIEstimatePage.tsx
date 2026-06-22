@@ -181,8 +181,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               notes: 'AI完成予想画像（自動保存）',
             });
           }
+          const targetLogId = selectedLog || (estimateLog.length > 0 ? estimateLog[0].id : undefined);
           await (window as any).api.saveEstimateImage({
-            logId: selectedLog || undefined,
+            logId: targetLogId,
             constructionId: autoCreated?.constructionId,
             imageData: url,
           });
@@ -1151,6 +1152,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   onMouseEnter={e => { if (selectedLog !== log.id) e.currentTarget.style.background = '#f8f9fa'; }}
                   onMouseLeave={e => { if (selectedLog !== log.id) e.currentTarget.style.background = '#fff'; }}
                 >
+                  {(log.image || log.uploadedImage) && (
+                    <img src={log.image || log.uploadedImage} style={{ width: '100%', height: 60, objectFit: 'cover', borderRadius: 6, marginBottom: 6 }} alt="" />
+                  )}
                   <div style={{ fontSize: 11, color: '#888' }}>{log.date || ''} {log.time || ''}</div>
                   <div style={{ fontSize: 12, fontWeight: 'bold', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {log.uploadedImage ? '📷' : ''}{log.image ? '🖼' : ''} {log.workType}

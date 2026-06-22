@@ -96,7 +96,7 @@ function escapeHtml(str: string | null | undefined): string {
 }
 
 let mainWindow: BrowserWindow | null = null;
-let APP_VERSION = '2.9.4'; // CURRENT_VERSIONで上書きされる
+let APP_VERSION = '2.9.5'; // CURRENT_VERSIONで上書きされる
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
@@ -331,7 +331,7 @@ function getImagesDir(dbFilePath: string) {
 
 // ── 自動アップデート（GitHub Releases ベース）──
 const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = '2.9.4';
+const CURRENT_VERSION = '2.9.5';
 APP_VERSION = CURRENT_VERSION;
 
 async function checkForUpdates() {
@@ -373,10 +373,11 @@ async function checkForUpdates() {
     if (!downloadAsset) return;
     const isInstaller = !!setupAsset;
 
-    // 2. アプリ内オーバーレイで通知+確認+ダウンロードを一体化
+    // 2. アプリ内オーバーレイで通知 → ダウンロードページをブラウザで開く
     if (!mainWindow) return;
 
-    // 確認オーバーレイ表示 → ユーザーの応答を待つ
+    const releaseUrl = `https://github.com/Mitsu614/kentikuAI/releases/tag/v${latestVersion}`;
+
     const userChoice: string = await mainWindow.webContents.executeJavaScript(`
       new Promise((resolve) => {
         let d=document.getElementById('update-overlay');
@@ -387,7 +388,8 @@ async function checkForUpdates() {
           +'<h2 style="margin-bottom:12px;color:#1a2332">アップデートがあります</h2>'
           +'<p style="color:#555;font-size:15px;margin-bottom:8px">v${CURRENT_VERSION} → <strong style="color:#27ae60">v${latestVersion}</strong></p>'
           +'<p style="color:#888;font-size:13px;margin-bottom:24px;white-space:pre-wrap">${(release.body || '').replace(/'/g, "\\'").replace(/\n/g, '\\n')}</p>'
-          +'<button id="update-yes" style="width:100%;padding:14px;background:#3a7bd5;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;min-height:48px;margin-bottom:10px">更新する</button>'
+          +'<button id="update-yes" style="width:100%;padding:14px;background:#3a7bd5;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;min-height:48px;margin-bottom:10px">ダウンロードページを開く</button>'
+          +'<p style="color:#aaa;font-size:11px;margin-bottom:12px">ZIPをダウンロード → 既存フォルダに上書き展開で更新完了</p>'
           +'<button id="update-no" style="width:100%;padding:12px;background:none;border:2px solid #ddd;border-radius:10px;font-size:14px;cursor:pointer;color:#888">後で</button>'
           +'</div>';
         document.getElementById('update-yes').onclick=()=>resolve('yes');
@@ -395,87 +397,13 @@ async function checkForUpdates() {
       })
     `);
 
-    if (userChoice !== 'yes') {
-      mainWindow.webContents.executeJavaScript(`document.getElementById('update-overlay')?.remove()`).catch(() => {});
-      try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (e) { console.error('Update skip file write failed:', e); }
-      return;
-    }
-
-    // 3. プログレス表示に切替
-    const updateDir = path.join(app.getPath('userData'), 'update');
-    const downloadPath = path.join(updateDir, isInstaller ? 'setup.exe' : 'update.zip');
-    if (!fs.existsSync(updateDir)) fs.mkdirSync(updateDir, { recursive: true });
-
-    mainWindow.webContents.executeJavaScript(`
-      (function(){
-        let d=document.getElementById('update-overlay');
-        if(!d){d=document.createElement('div');d.id='update-overlay';document.body.appendChild(d)}
-        d.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:99999';
-        d.innerHTML='<div style="background:#fff;border-radius:16px;padding:36px;width:400px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3)"><h2 style="margin-bottom:16px;color:#1a2332">アップデート中...</h2><div style="width:100%;height:24px;background:#e0e0e0;border-radius:12px;overflow:hidden;margin-bottom:12px"><div id="update-bar" style="height:100%;background:linear-gradient(90deg,#3a7bd5,#27ae60);border-radius:12px;width:0%;transition:width 0.3s"></div></div><p id="update-text" style="color:#888;font-size:14px">ダウンロード中... 0%</p></div>';
-      })()
-    `).catch(() => {});
-
-    // ダウンロード
-    await new Promise<void>((resolve, reject) => {
-      const file = fs.createWriteStream(downloadPath);
-      const follow = (url: string) => {
-        https.get(url, { headers: { 'User-Agent': 'kenchiku-boost' } }, (res: any) => {
-          if (res.statusCode === 302 || res.statusCode === 301) return follow(res.headers.location);
-          const total = parseInt(res.headers['content-length'] || '0');
-          let downloaded = 0;
-          res.on('data', (chunk: Buffer) => {
-            downloaded += chunk.length;
-            file.write(chunk);
-            if (total > 0 && mainWindow) {
-              const pct = Math.round((downloaded / total) * 100);
-              mainWindow.webContents.executeJavaScript(`
-                document.getElementById('update-bar').style.width='${pct}%';
-                document.getElementById('update-text').textContent='ダウンロード中... ${pct}%';
-              `).catch(() => {});
-            }
-          });
-          res.on('end', () => { file.end(); resolve(); });
-          res.on('error', reject);
-        }).on('error', reject);
-      };
-      follow(downloadAsset.browser_download_url);
-    });
-
-    // 4. 展開中表示
-    if (mainWindow) {
-      mainWindow.webContents.executeJavaScript(`
-        document.getElementById('update-bar').style.width='100%';
-        document.getElementById('update-text').textContent='アップデートを適用しています...';
-      `).catch(() => {});
-    }
-
-    // スキップ記録
-    try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (e) { console.error('Update skip file write failed:', e); }
-
-    if (isInstaller) {
-      // 5a. インストーラーを実行（サイレントインストール）
-      require('child_process').spawn(downloadPath, ['/S'], { detached: true, stdio: 'ignore' }).unref();
-      app.quit();
+    if (userChoice === 'yes') {
+      // ブラウザでGitHub Releasesを開く
+      require('electron').shell.openExternal(releaseUrl);
     } else {
-      // 5b. ZIP展開方式（フォールバック）
-      const appDir = path.dirname(app.getPath('exe'));
-      const extractDir = path.join(updateDir, 'extracted');
-      const batPath = path.join(updateDir, 'update.bat');
-      const batContent = [
-        '@echo off',
-        'title 建築ブースト アップデート',
-        'timeout /t 3 /nobreak > nul',
-        `powershell -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('${downloadPath.replace(/\//g, '\\\\')}', '${extractDir.replace(/\//g, '\\\\')}', $true)"`,
-        `for /d %%d in ("${extractDir.replace(/\//g, '\\\\')}\\*") do xcopy /E /Y /Q "%%d\\*" "${appDir.replace(/\//g, '\\\\')}\\"`,
-        `rmdir /S /Q "${extractDir.replace(/\//g, '\\\\')}"`,
-        `del "${downloadPath.replace(/\//g, '\\\\')}"`,
-        `start "" "${app.getPath('exe')}"`,
-        `del "%~f0"`,
-      ].join('\r\n');
-      fs.writeFileSync(batPath, batContent, 'utf-8');
-      require('child_process').spawn('cmd.exe', ['/c', batPath], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-      app.quit();
+      try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (e) { console.error('Update skip file write failed:', e); }
     }
+    mainWindow.webContents.executeJavaScript(`document.getElementById('update-overlay')?.remove()`).catch(() => {});
 
   } catch (e: any) {
     console.log('Auto-update check failed:', e?.message || e);

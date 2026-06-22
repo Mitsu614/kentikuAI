@@ -145,7 +145,7 @@ export async function analyzeAndUpdateCoefficients(anthropicKey: string): Promis
 
     const claudeResponse: string = await new Promise((resolve, reject) => {
       const body = JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 2000,
         temperature: 0,
         messages: [{ role: 'user', content: prompt }],
