@@ -189,7 +189,7 @@ export default function InvoicesPage({ highlightConstructionId, onHighlightClear
                     <td style={{ textAlign: 'right', color: '#2980b9', fontWeight: 'bold', fontSize: 13 }}>{fmt(Math.ceil((inv.amount || 0) * (1 + (inv.tax_rate || 0.1))))}</td>
                     <td style={{ textAlign: 'right', fontSize: 12, color: '#e67e22' }}>{fmt(inv.total_cost || 0)}</td>
                     <td style={{ textAlign: 'right', fontSize: 12, fontWeight: 'bold', color: (inv.gross_profit || 0) > 0 ? '#27ae60' : '#e74c3c' }}>{fmt(inv.gross_profit || 0)}</td>
-                    <td><span className={`badge badge-${inv.status}`}>{statusLabel(inv.status)}</span></td>
+                    <td style={{ whiteSpace: 'nowrap' }}><span className={`badge badge-${inv.status}`}>{statusLabel(inv.status)}</span></td>
                     <td>
                       <button className="btn btn-sm btn-success" onClick={e => { e.stopPropagation(); exportPDF(inv.id); }}>PDF</button>
                       {' '}

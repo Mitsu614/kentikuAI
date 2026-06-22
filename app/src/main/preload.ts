@@ -159,6 +159,14 @@ contextBridge.exposeInMainWorld('api', {
   // AIチャット見積
   aiChat: (data: any) => ipcRenderer.invoke('ai:chat', data),
 
+  // チャットセッション管理
+  listChatSessions: () => ipcRenderer.invoke('chatSessions:list'),
+  saveChatSession: (data: any) => ipcRenderer.invoke('chatSessions:save', data),
+  getChatSession: (id: number) => ipcRenderer.invoke('chatSessions:get', id),
+  linkChatSession: (data: any) => ipcRenderer.invoke('chatSessions:link', data),
+  deleteChatSession: (id: number) => ipcRenderer.invoke('chatSessions:delete', id),
+  getChatSessionsByConstruction: (constructionId: number) => ipcRenderer.invoke('chatSessions:byConstruction', constructionId),
+
   // 予実管理
   getBudgetSummary: () => ipcRenderer.invoke('budget:summary'),
   updateBudgetActual: (data: any) => ipcRenderer.invoke('budget:updateActual', data),

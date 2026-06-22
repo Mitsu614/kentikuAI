@@ -96,7 +96,7 @@ function escapeHtml(str: string | null | undefined): string {
 }
 
 let mainWindow: BrowserWindow | null = null;
-let APP_VERSION = '2.9.5'; // CURRENT_VERSIONで上書きされる
+let APP_VERSION = '2.9.6'; // CURRENT_VERSIONで上書きされる
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
@@ -331,7 +331,7 @@ function getImagesDir(dbFilePath: string) {
 
 // ── 自動アップデート（GitHub Releases ベース）──
 const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = '2.9.5';
+const CURRENT_VERSION = '2.9.6';
 APP_VERSION = CURRENT_VERSION;
 
 async function checkForUpdates() {
@@ -3627,6 +3627,54 @@ manDaysBreakdownの書き方例:
     } catch (e: any) {
       throw new Error('JSON解析エラー: ' + e.message + ' / ' + jsonStr.substring(0, 200));
     }
+  });
+
+  // ── チャットセッション管理 ──
+  ipcMain.handle('chatSessions:list', (_e) => {
+    const tid = getCurrentTenant();
+    return queryAll(`
+      SELECT cs.*, c.title as construction_title
+      FROM chat_sessions cs
+      LEFT JOIN constructions c ON c.id = cs.construction_id
+      WHERE cs.tenant_id = ?
+      ORDER BY cs.updated_at DESC LIMIT 50
+    `, [tid]);
+  });
+
+  ipcMain.handle('chatSessions:save', (_e, data: { id?: number; title: string; messages: any[]; constructionId?: number; estimateLogId?: number }) => {
+    const tid = getCurrentTenant();
+    const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+    const messagesJson = JSON.stringify(data.messages);
+    if (data.id) {
+      runSql('UPDATE chat_sessions SET title=?, messages=?, construction_id=?, estimate_log_id=?, updated_at=? WHERE id=? AND tenant_id=?',
+        [data.title, messagesJson, data.constructionId || null, data.estimateLogId || null, now, data.id, tid]);
+      return data.id;
+    } else {
+      return runSql('INSERT INTO chat_sessions (tenant_id, title, messages, construction_id, estimate_log_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [tid, data.title, messagesJson, data.constructionId || null, data.estimateLogId || null, now, now]);
+    }
+  });
+
+  ipcMain.handle('chatSessions:get', (_e, id: number) => {
+    const session = queryOne('SELECT * FROM chat_sessions WHERE id = ? AND tenant_id = ?', [id, getCurrentTenant()]);
+    if (session && session.messages) {
+      session.messages = JSON.parse(session.messages);
+    }
+    return session;
+  });
+
+  ipcMain.handle('chatSessions:link', (_e, data: { id: number; constructionId: number }) => {
+    runSql('UPDATE chat_sessions SET construction_id = ? WHERE id = ? AND tenant_id = ?',
+      [data.constructionId, data.id, getCurrentTenant()]);
+  });
+
+  ipcMain.handle('chatSessions:delete', (_e, id: number) => {
+    runSql('DELETE FROM chat_sessions WHERE id = ? AND tenant_id = ?', [id, getCurrentTenant()]);
+  });
+
+  ipcMain.handle('chatSessions:byConstruction', (_e, constructionId: number) => {
+    return queryAll('SELECT * FROM chat_sessions WHERE construction_id = ? AND tenant_id = ? ORDER BY updated_at DESC',
+      [constructionId, getCurrentTenant()]);
   });
 
   // ── AIチャット見積（対話型）──

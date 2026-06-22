@@ -28,6 +28,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatEstimate, setChatEstimate] = useState<any>(null);
+  const [chatSessionId, setChatSessionId] = useState<number | null>(null);
+  const [chatSessions, setChatSessions] = useState<any[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -53,7 +55,34 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         }));
       }
     }).catch(() => {});
+    // チャットセッション一覧を読み込み
+    (window as any).api.listChatSessions?.().then((sessions: any[]) => {
+      if (sessions) setChatSessions(sessions);
+    }).catch(() => {});
   }, []);
+
+  // チャットメッセージが更新されたら自動保存（ユーザー送信時 or AI応答時）
+  useEffect(() => {
+    if (chatMessages.length <= 1) return; // 初期メッセージのみはスキップ
+    const hasUserMsg = chatMessages.some((m: any) => m.role === 'user');
+    if (!hasUserMsg) return; // ユーザーが何も打っていない場合はスキップ
+    const timer = setTimeout(async () => {
+      try {
+        const title = chatMessages.find((m: any) => m.role === 'user')?.content?.substring(0, 30) || 'チャット相談';
+        const id = await (window as any).api.saveChatSession({
+          id: chatSessionId || undefined,
+          title,
+          messages: chatMessages,
+          constructionId: autoCreated?.constructionId || undefined,
+          estimateLogId: selectedLog || undefined,
+        });
+        if (!chatSessionId) setChatSessionId(id);
+        const sessions = await (window as any).api.listChatSessions();
+        if (sessions) setChatSessions(sessions);
+      } catch (_) {}
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [chatMessages]);
 
   const selectImage = async () => {
     const img = await window.api.selectImage();
@@ -285,7 +314,28 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
 
       {/* チャットモード */}
       {mode === 'chat' && (
-        <div className="card" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 200px)', minHeight: 400, background: '#e8ecf1', padding: 0, overflow: 'hidden' }}>
+        <div className="card" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 200px)', minHeight: 400, background: '#e8ecf1', padding: 0, overflow: 'hidden', position: 'relative' }}>
+          {/* チャットセッション履歴バー */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', background: '#fff', borderBottom: '1px solid #e2e8f0', overflowX: 'auto', flexShrink: 0 }}>
+            <button onClick={() => { setChatMessages([{ role: 'assistant', content: 'こんにちは！建築見積のAIアシスタントです。\n\nどんな工事の見積もりをしたいですか？' }]); setChatSessionId(null); setChatEstimate(null); }} style={{ padding: '4px 10px', fontSize: 11, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 600 }}>+ 新規</button>
+            {chatSessions.slice(0, 8).map((s: any) => (
+              <button key={s.id} onClick={async () => {
+                const session = await (window as any).api.getChatSession(s.id);
+                if (session) {
+                  setChatMessages(session.messages || []);
+                  setChatSessionId(s.id);
+                  setChatEstimate(null);
+                  if (session.construction_id) setAutoCreated({ constructionId: session.construction_id, propertyId: null });
+                }
+              }} style={{
+                padding: '4px 10px', fontSize: 11, border: '1px solid #e2e8f0', borderRadius: 6, cursor: 'pointer',
+                background: chatSessionId === s.id ? '#dbeafe' : '#f8fafc', whiteSpace: 'nowrap', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis',
+                fontWeight: chatSessionId === s.id ? 600 : 400, color: '#475569',
+              }}>
+                {s.construction_title ? '🔗' : ''}{s.title || 'チャット'}
+              </button>
+            ))}
+          </div>
           {/* チャット履歴 */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
             {chatMessages.map((msg, i) => (
@@ -384,7 +434,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div ref={chatEndRef} />
           </div>
           {/* 入力エリア */}
-          <div style={{ borderTop: '2px solid #f0f0f0', padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'flex-end', background: '#fafafa' }}>
+          <div style={{ borderTop: '2px solid #f0f0f0', padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'flex-end', background: '#fafafa', flexShrink: 0, position: 'relative', zIndex: 10 }}>
             <button onClick={async () => {
               const img = await window.api.selectImage();
               if (img) {
@@ -921,9 +971,19 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   { role: 'assistant', content: `先ほどの見積結果を確認しました。\n\n工事種別: ${r.workType}\n売価: ¥${Math.round(r.estimatedTotal||0).toLocaleString()}\n材料費: ¥${Math.round(r.estimatedMaterialCost||0).toLocaleString()}\n人件費: ¥${Math.round(r.estimatedLaborCost||0).toLocaleString()}\n${r.breakdown ? '内訳:\n' + r.breakdown.map((b:any)=>`  ${b.item}: ¥${Math.round(b.cost||0).toLocaleString()}`).join('\n') : ''}\n\nこの見積について、何でもご質問ください。\n例：「材料をもっと安いものに変えたい」「工期を短くしたい」「追加で○○もやりたい」` },
                 ]);
                 setChatEstimate(null);
+                setChatSessionId(null);
                 setResult(null);
                 setMode('chat');
-                setTimeout(() => chatInputRef.current?.focus(), 100);
+                // 入力欄にフォーカスを繰り返しかける
+                const focusInterval = setInterval(() => {
+                  if (chatInputRef.current) {
+                    chatInputRef.current.focus();
+                    chatInputRef.current.click();
+                    clearInterval(focusInterval);
+                  }
+                }, 100);
+                setTimeout(() => clearInterval(focusInterval), 3000);
+                window.scrollTo({ top: 0, behavior: 'smooth' });
               }} style={{ height: 60, background: '#8e44ad', color: '#fff', border: 'none', borderRadius: 8, padding: '0 16px', cursor: 'pointer', fontSize: 13, fontWeight: 'bold' }}>
                 💬 チャットで相談
               </button>

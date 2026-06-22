@@ -658,6 +658,20 @@ function migrate() {
   try {
     db.run("UPDATE materials SET name = '値引き' WHERE name = '諸経費' AND unit_price < 0");
   } catch (_) {}
+  // チャット履歴テーブル（案件紐づけ可能）
+  try {
+    db.run(`CREATE TABLE IF NOT EXISTS chat_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER DEFAULT 1,
+      construction_id INTEGER,
+      estimate_log_id INTEGER,
+      title TEXT,
+      messages TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL
+    )`);
+  } catch (_) {}
   // デフォルトテナント作成
   const tenants = queryAll('SELECT id FROM tenants');
   if (tenants.length === 0) {
