@@ -332,7 +332,8 @@ async function sendLearningCompleteNotification(tenantId: number, workType?: str
     if (tenant?.learning_notified_date === today) return;
 
     const ownerEmail = 'mitsuakinakano0215@gmail.com';
-    const to = tenant?.contact_email || ownerEmail; // 顧客メール未登録なら管理者へ
+    // 両社（実績を入力した顧客＋自社=建築ブースト）の両方に宛先(To)で送る
+    const recipients = Array.from(new Set([tenant?.contact_email, ownerEmail].filter(Boolean)));
     const now = new Date();
 
     const nodemailer = require('nodemailer');
@@ -343,8 +344,7 @@ async function sendLearningCompleteNotification(tenantId: number, workType?: str
 
     await transporter.sendMail({
       from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-      to,
-      bcc: to === ownerEmail ? undefined : ownerEmail, // 顧客宛のときは管理者にも控えを送る
+      to: recipients.join(', '),
       subject: '【建築ブースト】AIが御社の実績を学習しました 🎓',
       text: [
         `${tenant?.contact_company || tenant?.name || 'お客様'} 様`,
@@ -429,7 +429,7 @@ function getOcrFilesDir(dbFilePath: string) {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.1.6';
+const CURRENT_VERSION = '3.1.7';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
