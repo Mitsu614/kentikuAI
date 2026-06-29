@@ -142,7 +142,7 @@ async function main() {
 
   for (var i = 0; i < coefficients.length; i++) {
     var coeff = coefficients[i];
-    await supabasePost('cost_coefficients', {
+    await supabasePost('cost_coefficients?on_conflict=work_type', {
       work_type: coeff.work_type,
       material_adjustment: coeff.material_adjustment,
       labor_adjustment: coeff.labor_adjustment,
