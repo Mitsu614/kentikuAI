@@ -647,12 +647,18 @@ function migrate() {
     if (!tenantCols.find((c: any) => c.name === 'learning_notified_date')) {
       db.run('ALTER TABLE tenants ADD COLUMN learning_notified_date TEXT');
     }
-    // 山下さんのテナント（特許取得の遮熱シート専門）を自動判定して別系統に設定
-    // 既に industry_type が手動設定済みの場合は上書きしない（冪等）
+    // 山下八起さん＝屋号「ビューティープラス」のテナント（特許取得の遮熱シート専門）を
+    // 自動判定して別系統に設定。既に industry_type が手動設定済みの場合は上書きしない（冪等）
     try {
       db.run(`UPDATE tenants SET industry_type = 'heatshield', isolated_learning = 1
               WHERE (industry_type IS NULL OR industry_type = '')
-                AND (name LIKE '%山下%' OR contact_company LIKE '%山下%')`);
+                AND (
+                  name LIKE '%山下%' OR contact_company LIKE '%山下%'
+                  OR name LIKE '%山下八起%' OR contact_company LIKE '%山下八起%'
+                  OR name LIKE '%ビューティープラス%' OR contact_company LIKE '%ビューティープラス%'
+                  OR name LIKE '%ﾋﾞｭｰﾃｨｰﾌﾟﾗｽ%' OR contact_company LIKE '%ﾋﾞｭｰﾃｨｰﾌﾟﾗｽ%'
+                  OR LOWER(name) LIKE '%beauty%plus%' OR LOWER(contact_company) LIKE '%beauty%plus%'
+                )`);
     } catch (_) {}
   } catch (_) {}
   // ocr_log に pdf_path 列を追加（PDF本体はディスク保存、DBはパスのみで軽量化）

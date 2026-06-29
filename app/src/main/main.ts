@@ -429,7 +429,7 @@ function getOcrFilesDir(dbFilePath: string) {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.1.5';
+const CURRENT_VERSION = '3.1.6';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
