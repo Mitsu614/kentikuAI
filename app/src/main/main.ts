@@ -322,7 +322,9 @@ function getTenantProfile(tid: number): { industryType: string | null; isolated:
 // 学習完了を「学習させた人（＝実績を入力したテナント顧客）」へメール通知（1日1通まで）
 async function sendLearningCompleteNotification(tenantId: number, workType?: string) {
   try {
-    if (!tenantId || tenantId === 1) return; // 管理者テナントには通知しない
+    if (!tenantId) return;
+    // 管理者テナント(id=1)も学習時は通知する（動作確認・監視用）。
+    // 宛先は顧客メール＋自社、顧客メールが無ければ自社のみに届く。
     const tenant = queryOne(
       'SELECT name, contact_company, contact_email, learning_notified_date FROM tenants WHERE id = ?',
       [tenantId]
@@ -429,7 +431,7 @@ function getOcrFilesDir(dbFilePath: string) {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.1.7';
+const CURRENT_VERSION = '3.1.8';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -1228,6 +1230,8 @@ app.whenReady().then(async () => {
             console.log('学習ループ: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
             sendLearningCompleteNotification(learnTid, learnWorkType);
           } else {
+            // 学習(実績記録)完了を通知 — クラウド分析の成否に依存させない
+            sendLearningCompleteNotification(learnTid, learnWorkType);
             sendFeedbackToSupabase([{
               work_type: learnWorkType,
               ai_material_cost: log.ai_material_cost,
@@ -1244,7 +1248,6 @@ app.whenReady().then(async () => {
               return analyzeAndUpdateCoefficients(config.anthropicKey);
             }).then(() => {
               console.log('学習ループ即時: 係数更新完了 — 次回見積から反映されます');
-              return sendLearningCompleteNotification(learnTid, learnWorkType);
             }).catch((e: any) => {
               console.error('学習ループ即時エラー:', e);
             });
@@ -2676,13 +2679,14 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
         console.log('学習ループ（出面）: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
         sendLearningCompleteNotification(learnTid, learnWorkType);
       } else {
+        sendLearningCompleteNotification(learnTid, learnWorkType);
         sendFeedbackToSupabase([{
           work_type: learnWorkType,
           ai_material_cost: log.ai_material_cost, ai_labor_cost: log.ai_labor_cost, ai_total: log.ai_total,
           actual_material_cost: matCost, actual_labor_cost: actualLabor, actual_selling_price: sellingPrice,
           actual_markup_rate: markupRate, accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
         }]).then(() => analyzeAndUpdateCoefficients(config.anthropicKey))
-          .then(() => { console.log('学習ループ（出面→人件費）: 係数更新完了'); return sendLearningCompleteNotification(learnTid, learnWorkType); })
+          .then(() => console.log('学習ループ（出面→人件費）: 係数更新完了'))
           .catch((e: any) => console.error('学習ループ（出面）エラー:', e));
       }
     } catch (e) { console.error('Learning loop (attendance) trigger failed:', e); }
@@ -3457,11 +3461,11 @@ ${pages}</body></html>`;
         console.log('学習ループ（OCR紐付け）: 遮熱シート（特許）工事のため共有プール送信をスキップ');
         sendLearningCompleteNotification(ocrLearnTid, workType);
       } else {
+        sendLearningCompleteNotification(ocrLearnTid, workType);
         const { sendFeedbackToSupabase, analyzeAndUpdateCoefficients } = require('./supabase-sync');
         sendFeedbackToSupabase([feedbackData]).then(() => {
           const config = loadApiConfig();
           if (config.anthropicKey) analyzeAndUpdateCoefficients(config.anthropicKey);
-          return sendLearningCompleteNotification(ocrLearnTid, workType);
         }).catch((e: any) => console.error('学習ループ送信エラー:', e));
       }
 
@@ -3498,6 +3502,7 @@ ${pages}</body></html>`;
           console.log('学習ループ（OCR新規）: 遮熱シート（特許）工事のため共有プール送信をスキップ');
           sendLearningCompleteNotification(ocrNewTid, workType);
         } else {
+          sendLearningCompleteNotification(ocrNewTid, workType);
           sendFeedbackToSupabase([{
             work_type: workType,
             ai_material_cost: materialTotal,
@@ -3513,7 +3518,6 @@ ${pages}</body></html>`;
             const config = loadApiConfig();
             if (config.anthropicKey) analyzeAndUpdateCoefficients(config.anthropicKey);
             console.log('学習ループ: OCR新規取込データを送信完了');
-            return sendLearningCompleteNotification(ocrNewTid, workType);
           }).catch((e: any) => console.error('学習ループ: OCR新規送信エラー:', e));
         }
       }
