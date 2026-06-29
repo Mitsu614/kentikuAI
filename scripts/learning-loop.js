@@ -51,7 +51,7 @@ function supabasePost(table, body, extraHeaders) {
 function callClaude(prompt) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 4000,
       temperature: 0,
       messages: [{ role: 'user', content: prompt }],
