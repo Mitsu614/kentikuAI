@@ -69,6 +69,11 @@ export function flushSave() {
   saveToFile();
 }
 
+// 不要領域を回収してDBファイルを圧縮（画像のディスク移行後などに使用）
+export function vacuum() {
+  try { db.run('VACUUM'); saveToFile(); } catch (e) { console.error('VACUUM failed:', e); }
+}
+
 // ── プラン定義 ──
 export const PLANS: Record<string, { name: string; monthlyLimit: number; price: number; description: string }> = {
   demo:       { name: 'デモ',           monthlyLimit: 30,   price: 0,        description: '無料体験（月30単位まで）' },
@@ -689,6 +694,13 @@ function migrate() {
     }
     if (!elCols.find((c: any) => c.name === 'uploaded_image')) {
       db.run('ALTER TABLE estimate_log ADD COLUMN uploaded_image TEXT');
+    }
+    // 画像本体をディスク保存するためのパス列（DB肥大化・もっさり対策。カラムにはサムネのみ保持）
+    if (!elCols.find((c: any) => c.name === 'generated_image_path')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN generated_image_path TEXT');
+    }
+    if (!elCols.find((c: any) => c.name === 'uploaded_image_path')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN uploaded_image_path TEXT');
     }
   } catch (_) {}
   // constructions にカラム追加

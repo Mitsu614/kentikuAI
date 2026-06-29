@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { initDatabase, queryAll, queryOne, runSql, flushSave, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
+import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients } from './supabase-sync';
@@ -114,6 +114,7 @@ function escapeHtml(str: string | null | undefined): string {
 
 let mainWindow: BrowserWindow | null = null;
 let APP_VERSION = '3.0.1'; // CURRENT_VERSIONで上書きされる
+let activeDbPath = ''; // 起動時に確定するDBファイルパス（画像のディスク保存先算出に使用）
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
@@ -409,9 +410,9 @@ function runBackup(dbFilePath: string): string | null {
     const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`;
     const dest = path.join(dir, `kentiku_${ts}.db`);
     fs.copyFileSync(dbFilePath, dest);
-    // 古いバックアップ削除（10世代まで）
+    // 古いバックアップ削除（5世代まで。DBが画像分軽くなったので世代も整理）
     const files = fs.readdirSync(dir).filter((f: string) => f.startsWith('kentiku_') && f.endsWith('.db')).sort().reverse();
-    files.slice(10).forEach((f: string) => { try { fs.unlinkSync(path.join(dir, f)); } catch(_) {} });
+    files.slice(5).forEach((f: string) => { try { fs.unlinkSync(path.join(dir, f)); } catch(_) {} });
     return dest;
   } catch(e) { console.error('Backup failed:', e); return null; }
 }
@@ -430,8 +431,64 @@ function getOcrFilesDir(dbFilePath: string) {
   return dir;
 }
 
+// ── 見積画像をディスク保存し、DBには軽いサムネ＋ファイルパスだけ持たせる（もっさり対策）──
+// 戻り値 thumb はDBカラムに保存する縮小版(data URL)、filePath はフル画像のディスクパス。
+function saveImageToDiskWithThumb(dataUrl: string | null | undefined, kind: string): { thumb: string | null; filePath: string | null } {
+  try {
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+      return { thumb: dataUrl || null, filePath: null };
+    }
+    const { nativeImage } = require('electron');
+    const raw = dataUrl.replace(/^data:[^;]+;base64,/, '');
+    const buf = Buffer.from(raw, 'base64');
+    // フル画像をディスクへ保存
+    const ext = dataUrl.startsWith('data:image/png') ? 'png' : dataUrl.startsWith('data:image/webp') ? 'webp' : 'jpg';
+    const fileName = `est_${kind}_${Date.now()}_${Math.floor(buf.length % 100000)}.${ext}`;
+    const filePath = path.join(getImagesDir(activeDbPath), fileName);
+    fs.writeFileSync(filePath, buf);
+    // サムネ生成（幅1000pxまで縮小・JPEG）。失敗時は元データをそのまま使う
+    let thumb: string | null = dataUrl;
+    try {
+      let img = nativeImage.createFromBuffer(buf);
+      if (!img.isEmpty()) {
+        const size = img.getSize();
+        if (size.width > 1000) img = img.resize({ width: 1000 });
+        thumb = 'data:image/jpeg;base64,' + img.toJPEG(70).toString('base64');
+      }
+    } catch (_) { thumb = dataUrl; }
+    return { thumb, filePath };
+  } catch (e) {
+    console.error('画像ディスク保存失敗:', e);
+    return { thumb: dataUrl || null, filePath: null };
+  }
+}
+
+// ── 既存の見積ログ画像（base64がDBに直書き）を一度だけディスクへ移行してDBを圧縮 ──
+function migrateEstimateImagesToDisk() {
+  try {
+    const rows = queryAll(`SELECT id, generated_image, uploaded_image, generated_image_path, uploaded_image_path
+      FROM estimate_log
+      WHERE (generated_image_path IS NULL AND generated_image IS NOT NULL AND LENGTH(generated_image) > 200000)
+         OR (uploaded_image_path IS NULL AND uploaded_image IS NOT NULL AND LENGTH(uploaded_image) > 200000)`);
+    if (!rows.length) return;
+    console.log(`画像移行: ${rows.length}件の見積ログ画像をディスクへ移行します`);
+    for (const r of rows) {
+      if (r.generated_image && !r.generated_image_path && String(r.generated_image).length > 200000) {
+        const { thumb, filePath } = saveImageToDiskWithThumb(r.generated_image, 'gen');
+        runSql('UPDATE estimate_log SET generated_image = ?, generated_image_path = ? WHERE id = ?', [thumb, filePath, r.id]);
+      }
+      if (r.uploaded_image && !r.uploaded_image_path && String(r.uploaded_image).length > 200000) {
+        const { thumb, filePath } = saveImageToDiskWithThumb(r.uploaded_image, 'up');
+        runSql('UPDATE estimate_log SET uploaded_image = ?, uploaded_image_path = ? WHERE id = ?', [thumb, filePath, r.id]);
+      }
+    }
+    vacuum(); // 不要領域を回収してDBファイルを圧縮
+    console.log('画像移行: 完了（DBを圧縮しました）');
+  } catch (e) { console.error('画像移行エラー:', e); }
+}
+
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.1.8';
+const CURRENT_VERSION = '3.1.9';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -592,7 +649,11 @@ app.whenReady().then(async () => {
   // DB パスを設定から取得（共有フォルダ対応）
   const config = loadApiConfig();
   const dbPath = config.dbPath || path.join(app.getPath('userData'), 'kentiku.db');
+  activeDbPath = dbPath;
   await initDatabase(dbPath);
+
+  // 既存の見積ログ画像をディスクへ移行してDBを圧縮（一度だけ・もっさり対策）
+  migrateEstimateImagesToDisk();
 
   // テナントID=1以外があれば自動切替（トライアル版対応）
   const allTenants = queryAll('SELECT id FROM tenants WHERE id > 1 ORDER BY id ASC');
@@ -2278,14 +2339,15 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('estimates:saveImage', (_e, data: { constructionId?: number; logId?: number; imageData: string }) => {
+    const { thumb, filePath } = saveImageToDiskWithThumb(data.imageData, 'gen');
     if (data.constructionId) {
-      runSql('UPDATE estimate_log SET generated_image = ? WHERE construction_id = ? AND tenant_id = ?',
-        [data.imageData, data.constructionId, getCurrentTenant()]);
+      runSql('UPDATE estimate_log SET generated_image = ?, generated_image_path = ? WHERE construction_id = ? AND tenant_id = ?',
+        [thumb, filePath, data.constructionId, getCurrentTenant()]);
     } else if (data.logId) {
-      runSql('UPDATE estimate_log SET generated_image = ? WHERE id = ?', [data.imageData, data.logId]);
+      runSql('UPDATE estimate_log SET generated_image = ?, generated_image_path = ? WHERE id = ?', [thumb, filePath, data.logId]);
     } else {
-      runSql('UPDATE estimate_log SET generated_image = ? WHERE id = (SELECT MAX(id) FROM estimate_log WHERE tenant_id = ?)',
-        [data.imageData, getCurrentTenant()]);
+      runSql('UPDATE estimate_log SET generated_image = ?, generated_image_path = ? WHERE id = (SELECT MAX(id) FROM estimate_log WHERE tenant_id = ?)',
+        [thumb, filePath, getCurrentTenant()]);
     }
   });
 
@@ -4437,21 +4499,22 @@ ${pastWork || 'まだ実績なし'}`;
   function saveGeneratedImageToLog(imageData: string, logId?: number, constructionId?: number) {
     try {
       const tid = getCurrentTenant();
+      const { thumb, filePath } = saveImageToDiskWithThumb(imageData, 'gen');
       if (constructionId) {
         const row = queryOne('SELECT id FROM estimate_log WHERE construction_id = ? AND tenant_id = ? ORDER BY id DESC LIMIT 1', [constructionId, tid]);
         if (row) {
-          runSql('UPDATE estimate_log SET generated_image = ? WHERE id = ?', [imageData, row.id]);
+          runSql('UPDATE estimate_log SET generated_image = ?, generated_image_path = ? WHERE id = ?', [thumb, filePath, row.id]);
           return;
         }
       }
       if (logId) {
-        runSql('UPDATE estimate_log SET generated_image = ? WHERE id = ?', [imageData, logId]);
+        runSql('UPDATE estimate_log SET generated_image = ?, generated_image_path = ? WHERE id = ?', [thumb, filePath, logId]);
         return;
       }
       // フォールバック: 最新レコード
       const latest = queryOne('SELECT id FROM estimate_log WHERE tenant_id = ? ORDER BY id DESC LIMIT 1', [tid]);
       if (latest) {
-        runSql('UPDATE estimate_log SET generated_image = ? WHERE id = ?', [imageData, latest.id]);
+        runSql('UPDATE estimate_log SET generated_image = ?, generated_image_path = ? WHERE id = ?', [thumb, filePath, latest.id]);
       }
     } catch (_) {}
   }
@@ -4609,12 +4672,14 @@ ${pastWork || 'まだ実績なし'}`;
     // 4. AI見積ログ保存（精度改善用フィードバック）
     try {
       const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+      // アップロード画像はディスク保存し、DBにはサムネ＋パスのみ
+      const { thumb: upThumb, filePath: upPath } = saveImageToDiskWithThumb(imageBase64, 'up');
       runSql(
-        'INSERT INTO estimate_log (tenant_id, construction_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, created_at, uploaded_image) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO estimate_log (tenant_id, construction_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, created_at, uploaded_image, uploaded_image_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [getCurrentTenant(), constructionId, result.workType || '',
          result.estimatedMaterialCost || 0, result.estimatedLaborCost || 0,
          result.estimatedTotal || 0, markupRate,
-         JSON.stringify(result), jstNow, imageBase64 || null]
+         JSON.stringify(result), jstNow, upThumb, upPath]
       );
     } catch (e) { console.error('Estimate log insert failed:', e); }
 
