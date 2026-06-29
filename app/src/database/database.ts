@@ -48,19 +48,30 @@ export function queryOne(sql: string, params?: any[]): any | null {
   return results.length > 0 ? results[0] : null;
 }
 
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function debouncedSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { saveToFile(); saveTimer = null; }, 500);
+}
+
 export function runSql(sql: string, params?: any[]): number {
   db.run(sql, params);
   const stmt = db.prepare('SELECT last_insert_rowid() as id');
   stmt.step();
   const id = stmt.getAsObject().id as number;
   stmt.free();
-  saveToFile();
+  debouncedSave();
   return id || 0;
+}
+
+export function flushSave() {
+  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  saveToFile();
 }
 
 // ── プラン定義 ──
 export const PLANS: Record<string, { name: string; monthlyLimit: number; price: number; description: string }> = {
-  demo:       { name: 'デモ',           monthlyLimit: 10,   price: 0,        description: '無料体験（月10単位まで）' },
+  demo:       { name: 'デモ',           monthlyLimit: 30,   price: 0,        description: '無料体験（月30単位まで）' },
   standard:   { name: 'スタンダード',   monthlyLimit: 50,   price: 1200000,  description: '個人〜15名規模の工務店（年間契約）' },
   pro:        { name: 'プロ',           monthlyLimit: 200,  price: 3000000,  description: '複数担当者・多案件（年間契約）' },
   enterprise: { name: '法人カスタム',   monthlyLimit: 9999, price: 5000000,   description: '多店舗・複数会社（年間契約）' },
@@ -344,6 +355,25 @@ function createTables() {
     role TEXT DEFAULT 'user',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+  // OCR読み取り履歴（読み取ったPDF/画像を保存し、後からコメント＝紐づけメモを付けられる）
+  db.run(`CREATE TABLE IF NOT EXISTS ocr_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER DEFAULT 1,
+    document_type TEXT,
+    title TEXT,
+    client_name TEXT,
+    issuer_name TEXT,
+    issue_date TEXT,
+    total REAL,
+    subtotal REAL,
+    ocr_json TEXT,
+    pdf_data TEXT,
+    pdf_path TEXT,
+    comment TEXT,
+    construction_id INTEGER,
+    imported INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
   db.run(`CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tenant_id INTEGER DEFAULT 1,
@@ -605,6 +635,45 @@ function migrate() {
     if (!tenantCols.find((c: any) => c.name === 'last_report_at')) {
       db.run('ALTER TABLE tenants ADD COLUMN last_report_at TEXT');
     }
+    // テナント別の業種/価格プロファイル（山下さん等の個別テナント対応）
+    if (!tenantCols.find((c: any) => c.name === 'industry_type')) {
+      db.run('ALTER TABLE tenants ADD COLUMN industry_type TEXT');
+    }
+    // 隔離学習: 1なら全国共有プールに混ぜず、自社実績だけで学習する
+    if (!tenantCols.find((c: any) => c.name === 'isolated_learning')) {
+      db.run('ALTER TABLE tenants ADD COLUMN isolated_learning INTEGER DEFAULT 0');
+    }
+    // 学習完了メールの送信済み日（1日1通までの制御用）
+    if (!tenantCols.find((c: any) => c.name === 'learning_notified_date')) {
+      db.run('ALTER TABLE tenants ADD COLUMN learning_notified_date TEXT');
+    }
+    // 山下さんのテナント（特許取得の遮熱シート専門）を自動判定して別系統に設定
+    // 既に industry_type が手動設定済みの場合は上書きしない（冪等）
+    try {
+      db.run(`UPDATE tenants SET industry_type = 'heatshield', isolated_learning = 1
+              WHERE (industry_type IS NULL OR industry_type = '')
+                AND (name LIKE '%山下%' OR contact_company LIKE '%山下%')`);
+    } catch (_) {}
+  } catch (_) {}
+  // ocr_log に pdf_path 列を追加（PDF本体はディスク保存、DBはパスのみで軽量化）
+  try {
+    const ocrCols = queryAll('PRAGMA table_info(ocr_log)');
+    if (ocrCols.length > 0 && !ocrCols.find((c: any) => c.name === 'pdf_path')) {
+      db.run('ALTER TABLE ocr_log ADD COLUMN pdf_path TEXT');
+    }
+  } catch (_) {}
+  // 過去のOCR取込分を ocr_log に履歴復元（PDF本体は当時保存していないので無いが、
+  // メタ情報＋抽出データを残し、後からコメント＝紐づけを付けられるようにする）。
+  // OCRの抽出JSONには必ず documentType が含まれるので、それで過去のOCR行を判別。冪等。
+  try {
+    db.run(`INSERT INTO ocr_log (tenant_id, document_type, title, total, ocr_json, comment, construction_id, imported, created_at)
+            SELECT el.tenant_id, NULL, el.work_type, el.ai_total, el.ai_json, '', el.construction_id, 1, el.created_at
+            FROM estimate_log el
+            WHERE el.ai_json LIKE '%documentType%'
+              AND el.construction_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM ocr_log o WHERE o.construction_id = el.construction_id AND o.imported = 1
+              )`);
   } catch (_) {}
   // estimate_log に generated_image カラム追加
   try {
@@ -672,6 +741,25 @@ function migrate() {
       FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL
     )`);
   } catch (_) {}
+  // パフォーマンス用インデックス
+  const indexes = [
+    'CREATE INDEX IF NOT EXISTS idx_properties_tenant ON properties(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_materials_tenant ON materials(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_constructions_tenant ON constructions(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_constructions_created ON constructions(tenant_id, created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_invoices_tenant ON invoices(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_invoices_created ON invoices(tenant_id, created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_construction_materials_cid ON construction_materials(construction_id)',
+    'CREATE INDEX IF NOT EXISTS idx_estimate_log_tenant ON estimate_log(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_estimate_log_created ON estimate_log(tenant_id, created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_credit_log_tenant ON credit_log(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_audit_log_tenant ON audit_log(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_chat_sessions_tenant ON chat_sessions(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_chat_sessions_construction ON chat_sessions(construction_id)',
+  ];
+  for (const idx of indexes) {
+    try { db.run(idx); } catch (_) {}
+  }
   // デフォルトテナント作成
   const tenants = queryAll('SELECT id FROM tenants');
   if (tenants.length === 0) {

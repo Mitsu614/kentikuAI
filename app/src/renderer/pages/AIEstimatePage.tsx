@@ -183,6 +183,14 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const genTimerRef = useRef<any>(null);
   const genElapsedRef = useRef(0);
 
+  // 最新値をrefで保持（クロージャ問題回避）
+  const autoCreatedRef = useRef(autoCreated);
+  autoCreatedRef.current = autoCreated;
+  const selectedLogRef = useRef(selectedLog);
+  selectedLogRef.current = selectedLog;
+  const estimateLogRef = useRef(estimateLog);
+  estimateLogRef.current = estimateLog;
+
   const generateImage = async () => {
     if (!result?.imagePrompt) return;
     setGenerating(true);
@@ -193,30 +201,38 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     try {
       // 元画像がある場合は編集モード（95%維持）、ない場合は生成モード
       const sourceImg = mode === 'beforeafter' ? (afterImage || beforeImage) : imageData;
+      const ac = autoCreatedRef.current;
+      const sl = selectedLogRef.current;
+      const el = estimateLogRef.current;
+      const saveTargetLogId = ac?.estimateLogId || sl || (el.length > 0 ? el[0].id : undefined);
+      const saveTargetConstructionId = ac?.constructionId || undefined;
       const url = await (window as any).api.generateImage(
         sourceImg
-          ? { prompt: result.imagePrompt, sourceImage: sourceImg }
-          : result.imagePrompt
+          ? { prompt: result.imagePrompt, sourceImage: sourceImg, targetLogId: saveTargetLogId, targetConstructionId: saveTargetConstructionId }
+          : { prompt: result.imagePrompt, targetLogId: saveTargetLogId, targetConstructionId: saveTargetConstructionId }
       );
       setGeneratedImage(url);
       // 施工写真として自動保存 + estimate_logにも保存
       if (url) {
         try {
-          if (autoCreated?.constructionId) {
+          const ac = autoCreatedRef.current;
+          const sl = selectedLogRef.current;
+          const el = estimateLogRef.current;
+          if (ac?.constructionId) {
             await (window as any).api.addConstructionPhoto({
-              constructionId: autoCreated.constructionId,
+              constructionId: ac.constructionId,
               photoData: url,
               label: 'after',
               notes: 'AI完成予想画像（自動保存）',
             });
           }
-          const targetLogId = selectedLog || (estimateLog.length > 0 ? estimateLog[0].id : undefined);
+          const targetLogId = ac?.estimateLogId || sl || (el.length > 0 ? el[0].id : undefined);
           await (window as any).api.saveEstimateImage({
             logId: targetLogId,
-            constructionId: autoCreated?.constructionId,
+            constructionId: ac?.constructionId,
             imageData: url,
           });
-        } catch (_) {}
+        } catch (e) { console.error('[saveEstimateImage] ERROR:', e); }
         // ログ再読込
         try {
           const logs = await (window as any).api.getEstimateLog();
@@ -417,7 +433,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <button className="btn btn-sm" style={{ fontSize: 11, background: '#27ae60', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer' }} onClick={async () => {
                     if (confirm('この見積から物件・施工・請求書・発注書を自動作成しますか？')) {
                       try {
-                        const created = await (window as any).api.autoCreateFromEstimate({ result: chatEstimate });
+                        const chatImage = [...chatMessages].reverse().find(m => m.image)?.image || null;
+                        const created = await (window as any).api.autoCreateFromEstimate({ result: chatEstimate, imageBase64: chatImage });
                         setAutoCreated(created);
                         setResult(chatEstimate);
                         setMode('single');
@@ -891,7 +908,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           {/* 人工内訳 */}
           {result.manDaysBreakdown && result.manDaysBreakdown.length > 0 && (
             <div className="card" style={{ marginTop: 16 }}>
-              <h3 style={{ marginBottom: 12 }}>工数内訳</h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ margin: 0 }}>工数内訳</h3>
+                <span style={{ fontSize: 11, color: '#888' }}>項目をクリック → 発注書PDF出力</span>
+              </div>
               <table className="data-table">
                 <thead>
                   <tr>
@@ -899,28 +919,56 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     <th style={{ textAlign: 'center' }}>人数</th>
                     <th style={{ textAlign: 'center' }}>日数</th>
                     <th style={{ textAlign: 'center' }}>人工</th>
-                    <th style={{ textAlign: 'right' }}>日額単価</th>
                     <th style={{ textAlign: 'right' }}>小計</th>
+                    <th style={{ textAlign: 'center', width: 80 }}>発注書</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {result.manDaysBreakdown.map((m: any, i: number) => (
-                    <tr key={i}>
-                      <td>{m.trade}</td>
+                  {result.manDaysBreakdown.map((m: any, i: number) => {
+                    const tradeName = (m.trade || '').replace(/[（(].*?レベル.*?[）)]/g, '').trim();
+                    const subtotal = m.manDays * m.dailyRate;
+                    return (
+                    <tr key={i} style={{ cursor: 'pointer' }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#f0f7ff'}
+                      onMouseLeave={e => e.currentTarget.style.background = ''}
+                      onClick={async () => {
+                        const today = new Date().toISOString().split('T')[0];
+                        const po = {
+                          id: 0,
+                          vendor_name: '',
+                          vendor_address: '',
+                          issue_date: today,
+                          delivery_date: '',
+                          tax_rate: 0.1,
+                          notes: '',
+                          construction_title: result.workType || '',
+                        };
+                        const items = [{ name: `${tradeName} ${m.workers}人×${m.days}日`, quantity: m.manDays, unit: '人工', unit_price: m.dailyRate || 0 }];
+                        try {
+                          await (window as any).api.generatePurchaseOrderPDF({ po, items });
+                        } catch (e: any) {
+                          alert('PDF生成に失敗: ' + (e.message || e));
+                        }
+                      }}
+                    >
+                      <td>{tradeName}</td>
                       <td style={{ textAlign: 'center' }}>{m.workers}人</td>
                       <td style={{ textAlign: 'center' }}>{m.days}日</td>
                       <td style={{ textAlign: 'center', fontWeight: 'bold' }}>{m.manDays}</td>
-                      <td style={{ textAlign: 'right' }}>{fmt(m.dailyRate)}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{fmt(m.manDays * m.dailyRate)}</td>
+                      <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{fmt(subtotal)}</td>
+                      <td style={{ textAlign: 'center' }}>
+                        <span style={{ fontSize: 11, color: '#3498db', fontWeight: 'bold' }}>📄 出力</span>
+                      </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                   <tr style={{ borderTop: '2px solid #333', fontWeight: 'bold' }}>
                     <td>合計</td>
                     <td></td>
                     <td></td>
                     <td style={{ textAlign: 'center' }}>{result.totalManDays}人工</td>
-                    <td></td>
                     <td style={{ textAlign: 'right' }}>{fmt(result.manDaysBreakdown.reduce((s: number, m: any) => s + m.manDays * m.dailyRate, 0))}</td>
+                    <td></td>
                   </tr>
                 </tbody>
               </table>
@@ -1219,8 +1267,34 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <div style={{ fontSize: 12, fontWeight: 'bold', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {log.uploadedImage ? '📷' : ''}{log.image ? '🖼' : ''} {log.workType}
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: 'bold', color: '#27ae60', marginTop: 2 }}>
-                    {fmt(log.total)}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
+                    <div style={{ fontSize: 14, fontWeight: 'bold', color: '#27ae60' }}>
+                      {fmt(log.total)}
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirm('この見積履歴を削除しますか？')) {
+                          (window as any).api.deleteEstimateLog?.(log.id).then(() => {
+                            setEstimateLog(prev => prev.filter(l => l.id !== log.id));
+                            if (selectedLog === log.id) {
+                              setSelectedLog(null);
+                              setResult(null);
+                              setGeneratedImage(null);
+                            }
+                          });
+                        }
+                      }}
+                      style={{
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        color: '#ccc', fontSize: 14, padding: '2px 4px', borderRadius: 4,
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.color = '#e74c3c'}
+                      onMouseLeave={e => e.currentTarget.style.color = '#ccc'}
+                      title="削除"
+                    >
+                      x
+                    </button>
                   </div>
                 </div>
               ))}

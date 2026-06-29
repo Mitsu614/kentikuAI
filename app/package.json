@@ -1,13 +1,14 @@
 {
   "name": "kenchiku-boost",
-  "version": "2.9.6",
+  "version": "3.1.5",
   "description": "建築ブースト — AI建築見積・請求書管理デスクトップアプリ",
   "main": "dist/main.js",
   "scripts": {
     "build": "webpack --config webpack.config.js",
     "start": "npm run build && electron .",
     "dev": "webpack --config webpack.config.js --watch",
-    "dist": "npm run build && electron-builder --win portable"
+    "dist": "npm run build && electron-builder --win",
+    "dist:portable": "npm run build && electron-builder --win portable"
   },
   "keywords": [
     "建築",
@@ -62,6 +63,11 @@
       "createStartMenuShortcut": true,
       "artifactName": "kenchiku-boost-v${version}-setup.exe",
       "shortcutName": "建築ブースト"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Mitsu614",
+      "repo": "kentikuAI"
     }
   },
   "devDependencies": {

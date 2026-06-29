@@ -101,13 +101,38 @@ export default function OcrPage() {
   const [error, setError] = useState('');
   const [constructions, setConstructions] = useState<any[]>([]);
   const [linkMap, setLinkMap] = useState<Record<number, number | null>>({});
+  const [commentMap, setCommentMap] = useState<Record<number, string>>({});
+  const [ocrLogs, setOcrLogs] = useState<any[]>([]);
+  const [logComments, setLogComments] = useState<Record<number, string>>({});
   const [showGuide, setShowGuide] = useState(() => {
     try { return !localStorage.getItem('ocr_guide_seen'); } catch { return true; }
   });
 
+  const loadLogs = () => (window as any).api.listOcrLog().then((rows: any[]) => {
+    setOcrLogs(rows || []);
+    const init: Record<number, string> = {};
+    (rows || []).forEach((r: any) => { init[r.id] = r.comment || ''; });
+    setLogComments(init);
+  });
+
   useEffect(() => {
     window.api.listConstructions().then(setConstructions);
+    loadLogs();
   }, []);
+
+  const saveLogComment = async (id: number) => {
+    await (window as any).api.setOcrLogComment(id, logComments[id] || '');
+    loadLogs();
+  };
+  const deleteLog = async (id: number) => {
+    if (!window.confirm('この読み取り履歴を削除しますか？')) return;
+    await (window as any).api.deleteOcrLog(id);
+    loadLogs();
+  };
+  const openPdf = async (id: number) => {
+    try { await (window as any).api.openOcrPdf(id); }
+    catch (e: any) { setError(e.message || 'PDFを開けませんでした'); }
+  };
 
   const closeGuide = () => {
     setShowGuide(false);
@@ -147,6 +172,7 @@ export default function OcrPage() {
     }
     setResults(newResults);
     setProcessing(false);
+    loadLogs(); // 読み取った時点でログに残る
   };
 
   const importOne = async (index: number) => {
@@ -154,9 +180,10 @@ export default function OcrPage() {
     if (!r || r._error) return;
     try {
       const linkedId = linkMap[index] || null;
-      await (window as any).api.importOcrResult({ ...r, _linkConstructionId: linkedId });
+      await (window as any).api.importOcrResult({ ...r, _linkConstructionId: linkedId, _comment: commentMap[index] || '', _ocrLogId: r._ocrLogId });
       setImported(prev => new Set(prev).add(index));
       window.api.listConstructions().then(setConstructions);
+      loadLogs();
     } catch (e: any) {
       setError(e.message);
     }
@@ -360,6 +387,22 @@ export default function OcrPage() {
                     </div>
                   )}
 
+                  {/* コメント欄（学習メモ＝紐づけ） */}
+                  {!imported.has(i) && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+                        <span style={{ fontSize: 13, fontWeight: 'bold' }}>📝 コメント（学習メモ・任意）</span>
+                        <Help text="この書類に対するメモ（工法・金額の根拠・特殊事情など）を書くと、次回以降のAI見積の学習に反映されます。後から「読み取り履歴」で編集もできます。" />
+                      </div>
+                      <textarea
+                        value={commentMap[i] || ''}
+                        onChange={e => setCommentMap(prev => ({ ...prev, [i]: e.target.value }))}
+                        placeholder="例: 屋根カバー工法の遮熱シート。金額は足場込み。次回も同じ単価で。"
+                        style={{ width: '100%', minHeight: 56, padding: 8, borderRadius: 6, border: '1px solid #ccc', fontSize: 13, resize: 'vertical', boxSizing: 'border-box' }}
+                      />
+                    </div>
+                  )}
+
                   <div style={{ marginTop: 12 }}>
                     {imported.has(i) ? (
                       <span style={{ color: '#27ae60', fontWeight: 'bold' }}>
@@ -382,6 +425,58 @@ export default function OcrPage() {
           ))}
         </div>
       )}
+
+      {/* 過去の読み取り履歴（呼び出し＋コメント＝紐づけ） */}
+      <div className="card" style={{ marginTop: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+          <h2 style={{ margin: 0 }}>🗂 読み取り履歴（過去のPDF・コメント）</h2>
+          <button onClick={loadLogs} className="btn btn-secondary btn-sm">🔄 更新</button>
+        </div>
+        <p style={{ color: '#888', fontSize: 13, marginBottom: 12 }}>
+          過去に読み取った書類の一覧です。コメントを書いて保存すると、AIの見積学習に反映されます（＝紐づけメモ）。
+          この更新以降に読み取ったものはPDF本体も保存され、「PDFを開く」で見返せます。
+        </p>
+        {ocrLogs.length === 0 ? (
+          <div style={{ color: '#aaa', fontSize: 13 }}>まだ読み取り履歴はありません。</div>
+        ) : (
+          ocrLogs.map(log => (
+            <div key={log.id} style={{ borderTop: '1px solid #eee', padding: '12px 0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ fontSize: 13 }}>
+                  <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: 12, fontSize: 11, fontWeight: 'bold',
+                    background: log.document_type === '請求書' ? '#fff3e0' : '#e3f2fd',
+                    color: log.document_type === '請求書' ? '#e65100' : '#1976d2' }}>
+                    {log.document_type || '書類'}
+                  </span>
+                  <strong style={{ marginLeft: 8 }}>{log.title || '（件名なし）'}</strong>
+                  {log.issuer_name && <span style={{ color: '#888', marginLeft: 8 }}>{log.issuer_name}</span>}
+                  {log.issue_date && <span style={{ color: '#888', marginLeft: 8 }}>{log.issue_date}</span>}
+                  {log.total != null && <span style={{ marginLeft: 8, fontWeight: 'bold' }}>{fmt(log.total)}</span>}
+                  {log.imported
+                    ? <span style={{ marginLeft: 8, color: '#27ae60', fontSize: 11 }}>取込済</span>
+                    : <span style={{ marginLeft: 8, color: '#e67e22', fontSize: 11 }}>未取込</span>}
+                  <span style={{ marginLeft: 8, color: '#bbb', fontSize: 11 }}>{(log.created_at || '').slice(0, 16)}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {log.has_pdf
+                    ? <button className="btn btn-secondary btn-sm" onClick={() => openPdf(log.id)}>📄 PDFを開く</button>
+                    : <span style={{ fontSize: 11, color: '#bbb', alignSelf: 'center' }}>※旧データ（PDFなし）</span>}
+                  <button className="btn btn-sm" style={{ color: '#c0392b', border: '1px solid #f0c0c0', background: '#fff' }} onClick={() => deleteLog(log.id)}>削除</button>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'flex-start' }}>
+                <textarea
+                  value={logComments[log.id] || ''}
+                  onChange={e => setLogComments(prev => ({ ...prev, [log.id]: e.target.value }))}
+                  placeholder="この書類へのメモ（工法・金額の根拠・特殊事情など）を書くと学習に反映されます"
+                  style={{ flex: 1, minHeight: 48, padding: 8, borderRadius: 6, border: '1px solid #ccc', fontSize: 13, resize: 'vertical', boxSizing: 'border-box' }}
+                />
+                <button className="btn btn-primary btn-sm" onClick={() => saveLogComment(log.id)} style={{ whiteSpace: 'nowrap' }}>💾 保存して学習</button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }

@@ -2,10 +2,11 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { initDatabase, queryAll, queryOne, runSql, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
+import { initDatabase, queryAll, queryOne, runSql, flushSave, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients } from './supabase-sync';
+import { fetchAllExternalData, fetchRegionalData } from './external-data';
 
 // ── トライアル用埋め込みキー ──
 const TRIAL_KEYS = {
@@ -84,6 +85,22 @@ function saveApiConfig(config: any) {
   fs.writeFileSync(getConfigPath(), JSON.stringify(toSave, null, 2), 'utf-8');
 }
 
+// ── 画像メディアタイプ検出 ──
+function detectMediaType(b64: string): 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' {
+  // data URLプレフィックスから判定
+  if (b64.startsWith('data:image/png')) return 'image/png';
+  if (b64.startsWith('data:image/webp')) return 'image/webp';
+  if (b64.startsWith('data:image/gif')) return 'image/gif';
+  if (b64.startsWith('data:image/jpeg') || b64.startsWith('data:image/jpg')) return 'image/jpeg';
+  // プレフィックスがない場合、base64のマジックバイトで判定
+  const raw = b64.replace(/^data:image\/\w+;base64,/, '');
+  if (raw.startsWith('iVBOR')) return 'image/png';      // PNG
+  if (raw.startsWith('/9j/'))  return 'image/jpeg';      // JPEG
+  if (raw.startsWith('UklGR')) return 'image/webp';      // WebP
+  if (raw.startsWith('R0lGO')) return 'image/gif';       // GIF
+  return 'image/jpeg'; // デフォルト
+}
+
 // ── HTMLエスケープ（XSS対策）──
 function escapeHtml(str: string | null | undefined): string {
   if (!str) return '';
@@ -96,7 +113,7 @@ function escapeHtml(str: string | null | undefined): string {
 }
 
 let mainWindow: BrowserWindow | null = null;
-let APP_VERSION = '2.9.6'; // CURRENT_VERSIONで上書きされる
+let APP_VERSION = '3.0.1'; // CURRENT_VERSIONで上書きされる
 
 // ── 学習ループ: Supabaseで実績データを管理 ──
 
@@ -106,12 +123,21 @@ async function sendStatsToSupabase() {
     // synced_atカラムを追加（未追加時のみ）
     try { runSql('ALTER TABLE estimate_log ADD COLUMN synced_at TEXT', []); } catch (_) {}
 
-    // 未送信の実績データのみ取得（synced_atがNULLかつ実績値あり）
+    // 未送信の実績データのみ取得（synced_atがNULLかつ実績値あり、またはOCR取込分）
     const feedback = queryAll(`
       SELECT id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate,
         actual_material_cost, actual_labor_cost, actual_selling_price, actual_markup_rate, feedback_at
       FROM estimate_log
-      WHERE actual_material_cost IS NOT NULL AND feedback_at IS NOT NULL AND synced_at IS NULL
+      WHERE synced_at IS NULL
+      AND NOT (
+        tenant_id IN (SELECT id FROM tenants WHERE isolated_learning = 1)
+        AND (work_type LIKE '%遮熱%' OR work_type LIKE '%特許%')
+      )
+      AND (
+        (actual_material_cost IS NOT NULL AND feedback_at IS NOT NULL)
+        OR (ai_material_cost > 0 AND work_type LIKE '%OCR%')
+        OR (ai_total > 0)
+      )
     `);
     if (!feedback || feedback.length === 0) {
       console.log('学習ループ起動時: 未送信の実績データなし — スキップ');
@@ -277,11 +303,77 @@ async function sendUsageNotification(operation: string, detail?: string, extras?
   }
 }
 
+// 特許の遮熱シートが絡む工事か判定（工種名に遮熱/特許を含む）
+function isHeatshieldWork(workType?: string): boolean {
+  if (!workType) return false;
+  return /遮熱|特許/.test(workType);
+}
+
+// テナント別の業種/学習プロファイル（山下さん等の個別テナント対応）
+function getTenantProfile(tid: number): { industryType: string | null; isolated: boolean } {
+  try {
+    const t = queryOne('SELECT industry_type, isolated_learning FROM tenants WHERE id = ?', [tid]);
+    return { industryType: t?.industry_type || null, isolated: !!(t?.isolated_learning) };
+  } catch (_) {
+    return { industryType: null, isolated: false };
+  }
+}
+
+// 学習完了を「学習させた人（＝実績を入力したテナント顧客）」へメール通知（1日1通まで）
+async function sendLearningCompleteNotification(tenantId: number, workType?: string) {
+  try {
+    if (!tenantId || tenantId === 1) return; // 管理者テナントには通知しない
+    const tenant = queryOne(
+      'SELECT name, contact_company, contact_email, learning_notified_date FROM tenants WHERE id = ?',
+      [tenantId]
+    );
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }); // YYYY-MM-DD(JST)
+    // 同じ日に既に通知済みならスキップ（メール過多防止）
+    if (tenant?.learning_notified_date === today) return;
+
+    const ownerEmail = 'mitsuakinakano0215@gmail.com';
+    const to = tenant?.contact_email || ownerEmail; // 顧客メール未登録なら管理者へ
+    const now = new Date();
+
+    const nodemailer = require('nodemailer');
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: ownerEmail, pass: 'cmlz usad gycg sbem' },
+    });
+
+    await transporter.sendMail({
+      from: '建築ブースト <mitsuakinakano0215@gmail.com>',
+      to,
+      bcc: to === ownerEmail ? undefined : ownerEmail, // 顧客宛のときは管理者にも控えを送る
+      subject: '【建築ブースト】AIが御社の実績を学習しました 🎓',
+      text: [
+        `${tenant?.contact_company || tenant?.name || 'お客様'} 様`,
+        '',
+        'いつも建築ブーストをご利用いただきありがとうございます。',
+        '本日ご入力いただいた実績データをAIが学習し、見積もりの精度が向上しました。',
+        workType ? `\n■ 今回学習した工事: ${workType}` : '',
+        `■ 学習日時: ${now.toLocaleString('ja-JP')}`,
+        '',
+        '使えば使うほど、御社の金額感に近い見積もりが自動で出せるようになります。',
+        '引き続きご活用ください。',
+        '',
+        '---',
+        '建築ブースト 自動通知',
+      ].filter(Boolean).join('\n'),
+    });
+
+    // 当日分は送信済みフラグを更新
+    try { runSql('UPDATE tenants SET learning_notified_date = ? WHERE id = ?', [today, tenantId]); } catch (_) {}
+  } catch (e: any) {
+    console.error('Learning notification email failed:', e?.message || e);
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    title: '建築ブースト',
+    title: `建築ブースト v${CURRENT_VERSION}`,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -329,87 +421,155 @@ function getImagesDir(dbFilePath: string) {
   return dir;
 }
 
-// ── 自動アップデート（GitHub Releases ベース）──
-const GITHUB_REPO = 'Mitsu614/kentikuAI';
-const CURRENT_VERSION = '2.9.6';
+// ── OCR読み取り原本（PDF/画像）の保存先。DB肥大化を避けるためディスクに置く ──
+function getOcrFilesDir(dbFilePath: string) {
+  const dir = path.join(path.dirname(dbFilePath), 'ocr_files');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// ── 自動アップデート（electron-updater）──
+const CURRENT_VERSION = '3.1.5';
 APP_VERSION = CURRENT_VERSION;
 
-async function checkForUpdates() {
+function setupAutoUpdater() {
   try {
-    const https = require('https');
+    const { autoUpdater } = require('electron-updater');
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
 
-    // 1. GitHubで最新バージョンを確認
-    const data: string = await new Promise((resolve, reject) => {
-      https.get(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-        headers: { 'User-Agent': 'kenchiku-boost', 'Accept': 'application/vnd.github.v3+json' },
-      }, (res: any) => {
-        let body = '';
-        res.on('data', (d: string) => body += d);
-        res.on('end', () => resolve(body));
-      }).on('error', reject);
+    autoUpdater.on('update-available', (info: any) => {
+      console.log('アップデートあり:', info.version);
+      if (mainWindow) {
+        mainWindow.webContents.executeJavaScript(`
+          (function(){
+            let d=document.getElementById('update-overlay');if(d)d.remove();
+            d=document.createElement('div');d.id='update-overlay';document.body.appendChild(d);
+            d.style.cssText='position:fixed;bottom:20px;right:20px;z-index:99999;pointer-events:none';
+            d.innerHTML='<div style="background:#3a7bd5;color:#fff;padding:14px 20px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.3);font-size:14px;pointer-events:auto">'
+              +'🔄 v${info.version} をダウンロード中...</div>';
+          })()
+        `).catch(() => {});
+      }
     });
-    const release = JSON.parse(data);
-    const latestVersion = (release.tag_name || '').replace(/^v/, '');
-    if (!latestVersion || latestVersion === CURRENT_VERSION) return;
 
-    // バージョン比較
-    const cur = CURRENT_VERSION.split('.').map(Number);
-    const lat = latestVersion.split('.').map(Number);
-    let isNewer = false;
-    for (let i = 0; i < 3; i++) {
-      if ((lat[i] || 0) > (cur[i] || 0)) { isNewer = true; break; }
-      if ((lat[i] || 0) < (cur[i] || 0)) break;
-    }
-    if (!isNewer) return;
+    autoUpdater.on('download-progress', (progress: any) => {
+      const pct = Math.round(progress.percent);
+      if (mainWindow && pct % 10 === 0) {
+        mainWindow.webContents.executeJavaScript(`
+          (function(){
+            const d=document.getElementById('update-overlay');
+            if(d) d.innerHTML='<div style="background:#3a7bd5;color:#fff;padding:14px 20px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.3);font-size:14px;pointer-events:auto">'
+              +'🔄 ダウンロード中... ${pct}%</div>';
+          })()
+        `).catch(() => {});
+      }
+    });
 
-    // スキップ済みチェック
-    const skipFile = path.join(app.getPath('userData'), '.update-skipped');
-    try { if (fs.existsSync(skipFile) && fs.readFileSync(skipFile, 'utf-8').trim() === latestVersion) return; } catch (_) {}
+    autoUpdater.on('update-downloaded', (info: any) => {
+      console.log('アップデートDL完了:', info.version);
+      if (mainWindow) {
+        mainWindow.webContents.executeJavaScript(`
+          (function(){
+            let d=document.getElementById('update-overlay');if(d)d.remove();
+            d=document.createElement('div');d.id='update-overlay';document.body.appendChild(d);
+            d.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:99999';
+            d.innerHTML='<div style="background:#fff;border-radius:16px;padding:36px;width:420px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3)">'
+              +'<h2 style="margin-bottom:12px;color:#1a2332">アップデート準備完了</h2>'
+              +'<p style="color:#555;font-size:15px;margin-bottom:20px">v${CURRENT_VERSION} → <strong style="color:#27ae60">v${info.version}</strong></p>'
+              +'<button id="update-now" style="width:100%;padding:14px;background:#27ae60;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;min-height:48px;margin-bottom:10px">今すぐ再起動して更新</button>'
+              +'<button id="update-later" style="width:100%;padding:12px;background:none;border:2px solid #ddd;border-radius:10px;font-size:14px;cursor:pointer;color:#888">次回起動時に更新</button>'
+              +'</div>';
+            document.getElementById('update-now').onclick=()=>{
+              window.api?.installUpdate?.();
+            };
+            document.getElementById('update-later').onclick=()=>{
+              document.getElementById('update-overlay')?.remove();
+            };
+          })()
+        `).catch(() => {});
+      }
+    });
 
-    // インストーラー(.exe)を優先、なければZIP
-    const setupAsset = release.assets?.find((a: any) => a.name.endsWith('-setup.exe') || a.name.endsWith('.exe'));
-    const zipAsset = release.assets?.find((a: any) => a.name.endsWith('.zip'));
-    const downloadAsset = setupAsset || zipAsset;
-    if (!downloadAsset) return;
-    const isInstaller = !!setupAsset;
+    autoUpdater.on('error', (err: any) => {
+      console.log('Auto-update error:', err?.message || err);
+      try { mainWindow?.webContents.executeJavaScript(`document.getElementById('update-overlay')?.remove()`); } catch (_) {}
+    });
 
-    // 2. アプリ内オーバーレイで通知 → ダウンロードページをブラウザで開く
-    if (!mainWindow) return;
+    // 「今すぐ再起動」のIPC
+    ipcMain.handle('update:install', () => {
+      autoUpdater.quitAndInstall(false, true);
+    });
 
-    const releaseUrl = `https://github.com/Mitsu614/kentikuAI/releases/tag/v${latestVersion}`;
+  // ── リモート登録申請管理（Supabase） ──
+  ipcMain.handle('remote:listRegistrations', async () => {
+    try {
+      const https = require('https');
+      return await new Promise((resolve) => {
+        const req = https.get(
+          'https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?select=*&order=created_at.desc',
+          { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 8000 },
+          (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve([]); } }); }
+        );
+        req.on('error', () => resolve([]));
+        req.on('timeout', () => { req.destroy(); resolve([]); });
+      });
+    } catch (_) { return []; }
+  });
 
-    const userChoice: string = await mainWindow.webContents.executeJavaScript(`
-      new Promise((resolve) => {
-        let d=document.getElementById('update-overlay');
-        if(d)d.remove();
-        d=document.createElement('div');d.id='update-overlay';document.body.appendChild(d);
-        d.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:99999';
-        d.innerHTML='<div style="background:#fff;border-radius:16px;padding:36px;width:420px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3)">'
-          +'<h2 style="margin-bottom:12px;color:#1a2332">アップデートがあります</h2>'
-          +'<p style="color:#555;font-size:15px;margin-bottom:8px">v${CURRENT_VERSION} → <strong style="color:#27ae60">v${latestVersion}</strong></p>'
-          +'<p style="color:#888;font-size:13px;margin-bottom:24px;white-space:pre-wrap">${(release.body || '').replace(/'/g, "\\'").replace(/\n/g, '\\n')}</p>'
-          +'<button id="update-yes" style="width:100%;padding:14px;background:#3a7bd5;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;min-height:48px;margin-bottom:10px">ダウンロードページを開く</button>'
-          +'<p style="color:#aaa;font-size:11px;margin-bottom:12px">ZIPをダウンロード → 既存フォルダに上書き展開で更新完了</p>'
-          +'<button id="update-no" style="width:100%;padding:12px;background:none;border:2px solid #ddd;border-radius:10px;font-size:14px;cursor:pointer;color:#888">後で</button>'
-          +'</div>';
-        document.getElementById('update-yes').onclick=()=>resolve('yes');
-        document.getElementById('update-no').onclick=()=>resolve('no');
-      })
-    `);
+  ipcMain.handle('remote:approve', async (_e, companyName: string, plan: string) => {
+    const https = require('https');
+    const credits = plan === 'demo' ? 30 : plan === 'standard' ? 50 : plan === 'pro' ? 200 : 50;
+    const body = JSON.stringify({ plan, credits, max_credits: credits, active: true, updated_at: new Date().toISOString() });
+    return new Promise((resolve) => {
+      const req = https.request({
+        hostname: 'slhgkedzlormaovwpadi.supabase.co',
+        path: `/rest/v1/remote_licenses?company_name=eq.${encodeURIComponent(companyName)}`,
+        method: 'PATCH',
+        headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
+        timeout: 8000,
+      }, () => resolve({ ok: true }));
+      req.on('error', () => resolve({ ok: false }));
+      req.write(body);
+      req.end();
+    });
+  });
 
-    if (userChoice === 'yes') {
-      // ブラウザでGitHub Releasesを開く
-      require('electron').shell.openExternal(releaseUrl);
-    } else {
-      try { fs.writeFileSync(skipFile, latestVersion, 'utf-8'); } catch (e) { console.error('Update skip file write failed:', e); }
-    }
-    mainWindow.webContents.executeJavaScript(`document.getElementById('update-overlay')?.remove()`).catch(() => {});
+  ipcMain.handle('remote:reject', async (_e, companyName: string) => {
+    const https = require('https');
+    const body = JSON.stringify({ active: false, blocked_message: '申請が却下されました', updated_at: new Date().toISOString() });
+    return new Promise((resolve) => {
+      const req = https.request({
+        hostname: 'slhgkedzlormaovwpadi.supabase.co',
+        path: `/rest/v1/remote_licenses?company_name=eq.${encodeURIComponent(companyName)}`,
+        method: 'PATCH',
+        headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
+        timeout: 8000,
+      }, () => resolve({ ok: true }));
+      req.on('error', () => resolve({ ok: false }));
+      req.write(body);
+      req.end();
+    });
+  });
+
+    // 起動後5秒で確認開始
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch((e: any) => console.log('Update check failed:', e?.message));
+    }, 5000);
+
+    // 以降30分ごとにチェック
+    setInterval(() => {
+      autoUpdater.checkForUpdates().catch(() => {});
+    }, 30 * 60 * 1000);
 
   } catch (e: any) {
-    console.log('Auto-update check failed:', e?.message || e);
-    // エラー時はオーバーレイを消す
-    try { mainWindow?.webContents.executeJavaScript(`var d=document.getElementById('update-overlay');if(d)d.remove()`); } catch (e) { console.error('Update overlay removal failed:', e); }
+    console.log('electron-updater setup failed:', e?.message || e);
   }
+}
+
+// 旧互換: checkForUpdates は setupAutoUpdater を呼ぶ
+function checkForUpdates() {
+  setupAutoUpdater();
 }
 
 app.whenReady().then(async () => {
@@ -532,6 +692,13 @@ app.whenReady().then(async () => {
       if (Array.isArray(licenseCheck) && licenseCheck.length > 0) {
         const lic = licenseCheck[0];
         if (!lic.active) {
+          if (lic.plan === 'pending') {
+            // 承認待ち → アプリは閉じない。承認されるまでローカルのデモデータで使える
+            if (isStartup) {
+              dialog.showMessageBox({ type: 'info', title: '承認待ち', message: '管理者の承認をお待ちください。\n承認後にアプリを再起動するとご利用いただけます。', buttons: ['OK'] });
+            }
+            return; // 同期せずに戻る（ローカルのpending状態のまま）
+          }
           if (isStartup) {
             dialog.showErrorBox('ご利用停止', lic.blocked_message || 'ご利用期間が終了しました。ご契約については担当者にお問い合わせください。');
             app.quit();
@@ -572,47 +739,48 @@ app.whenReady().then(async () => {
     }
   }
 
-  // 起動時に1回実行 + 5分ごとに定期チェック
-  if (!isOwner) {
-    await syncRemoteLicense(true);
-
-    // ── アクティビティ送信（起動通知） ──
-    try {
-      const https = require('https');
-      const os = require('os');
-      const tenant = queryOne('SELECT name, credits FROM tenants WHERE id = ?', [getCurrentTenant()]);
-      const licRow = await new Promise((resolve) => {
-        const tn = encodeURIComponent(tenant?.name || '');
-        const req = https.get(
-          `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${tn}&select=id`,
-          { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 5000 },
-          (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve(null); } }); }
-        );
-        req.on('error', () => resolve(null));
-        req.on('timeout', () => { req.destroy(); resolve(null); });
-      });
-      const licenseId = Array.isArray(licRow) && licRow.length > 0 ? licRow[0].id : null;
-      const activityData = JSON.stringify({
-        license_id: licenseId,
-        company_name: tenant?.name || '不明',
-        hostname: os.hostname(),
-        username: os.userInfo().username,
-        app_version: APP_VERSION,
-        event: 'startup',
-        credits_remaining: tenant?.credits || 0,
-      });
-      const postReq = https.request({
-        hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/app_activity', method: 'POST',
-        headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-        timeout: 5000,
-      }, () => {});
-      postReq.on('error', () => {});
-      postReq.write(activityData);
-      postReq.end();
-    } catch (e) { console.error('Startup activity logging failed:', e); }
-  }
-
   createWindow();
+
+  // 起動時に1回実行 + 5分ごとに定期チェック（ウィンドウ表示後にバックグラウンドで）
+  if (!isOwner) {
+    setTimeout(async () => {
+      try { await syncRemoteLicense(true); } catch (_) {}
+      // アクティビティ送信（起動通知）
+      try {
+        const https = require('https');
+        const os = require('os');
+        const tenant = queryOne('SELECT name, credits FROM tenants WHERE id = ?', [getCurrentTenant()]);
+        const licRow = await new Promise((resolve) => {
+          const tn = encodeURIComponent(tenant?.name || '');
+          const req = https.get(
+            `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${tn}&select=id`,
+            { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 5000 },
+            (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve(null); } }); }
+          );
+          req.on('error', () => resolve(null));
+          req.on('timeout', () => { req.destroy(); resolve(null); });
+        });
+        const licenseId = Array.isArray(licRow) && licRow.length > 0 ? licRow[0].id : null;
+        const activityData = JSON.stringify({
+          license_id: licenseId,
+          company_name: tenant?.name || '不明',
+          hostname: os.hostname(),
+          username: os.userInfo().username,
+          app_version: APP_VERSION,
+          event: 'startup',
+          credits_remaining: tenant?.credits || 0,
+        });
+        const postReq = https.request({
+          hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/app_activity', method: 'POST',
+          headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          timeout: 5000,
+        }, () => {});
+        postReq.on('error', () => {});
+        postReq.write(activityData);
+        postReq.end();
+      } catch (e) { console.error('Startup activity logging failed:', e); }
+    }, 2000);
+  }
 
   // ── 自動アップデートチェック ──
   setTimeout(async () => {
@@ -660,6 +828,11 @@ app.whenReady().then(async () => {
 
   // 学習ループ: 起動時に匿名統計をSupabaseへ送信
   setTimeout(() => sendStatsToSupabase(), 8000);
+
+  // 外部公的データをバックグラウンドで事前取得（キャッシュ更新）
+  setTimeout(() => {
+    fetchAllExternalData().then(() => console.log('[起動] 外部データ事前取得完了')).catch(() => {});
+  }, 12000);
 
   // 提供から1ヶ月経過チェック
   setTimeout(async () => {
@@ -1043,28 +1216,39 @@ app.whenReady().then(async () => {
           [matCost, laborCost, sellingPrice, markupRate, now, log.id]
         );
 
-        // 実績値が変わった場合のみSupabaseに送信（重複防止）
+        // 実績値が変わった場合のみ学習（重複防止）
         if (changed) {
           const config = loadApiConfig();
-          sendFeedbackToSupabase([{
-            work_type: log.work_type || '不明',
-            ai_material_cost: log.ai_material_cost,
-            ai_labor_cost: log.ai_labor_cost,
-            ai_total: log.ai_total,
-            actual_material_cost: matCost,
-            actual_labor_cost: laborCost,
-            actual_selling_price: sellingPrice,
-            actual_markup_rate: markupRate,
-            accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
-          }]).then(() => {
-            // 送信成功 → synced_at記録（起動時の重複送信を防止）
+          const learnTid = getCurrentTenant();
+          const learnWorkType = log.work_type || '不明';
+          const profile = getTenantProfile(learnTid);
+          if (profile.isolated && isHeatshieldWork(learnWorkType)) {
+            // 特許の遮熱シートが絡む工事のみ隔離: 全国共有プールには送らず自社実績だけで学習
             try { runSql('UPDATE estimate_log SET synced_at = ? WHERE id = ?', [now, log.id]); } catch (_) {}
-            return analyzeAndUpdateCoefficients(config.anthropicKey);
-          }).then(() => {
-            console.log('学習ループ即時: 係数更新完了 — 次回見積から反映されます');
-          }).catch((e: any) => {
-            console.error('学習ループ即時エラー:', e);
-          });
+            console.log('学習ループ: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
+            sendLearningCompleteNotification(learnTid, learnWorkType);
+          } else {
+            sendFeedbackToSupabase([{
+              work_type: learnWorkType,
+              ai_material_cost: log.ai_material_cost,
+              ai_labor_cost: log.ai_labor_cost,
+              ai_total: log.ai_total,
+              actual_material_cost: matCost,
+              actual_labor_cost: laborCost,
+              actual_selling_price: sellingPrice,
+              actual_markup_rate: markupRate,
+              accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
+            }]).then(() => {
+              // 送信成功 → synced_at記録（起動時の重複送信を防止）
+              try { runSql('UPDATE estimate_log SET synced_at = ? WHERE id = ?', [now, log.id]); } catch (_) {}
+              return analyzeAndUpdateCoefficients(config.anthropicKey);
+            }).then(() => {
+              console.log('学習ループ即時: 係数更新完了 — 次回見積から反映されます');
+              return sendLearningCompleteNotification(learnTid, learnWorkType);
+            }).catch((e: any) => {
+              console.error('学習ループ即時エラー:', e);
+            });
+          }
         } else {
           console.log('学習ループ: 実績値に変更なし — Supabase送信スキップ');
         }
@@ -1614,6 +1798,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('tenants:list', () => queryAll('SELECT * FROM tenants ORDER BY id'));
   ipcMain.handle('tenants:create', (_e, name: string) => {
     const id = runSql('INSERT INTO tenants (name) VALUES (?)', [name]);
+    // 会社名をcontact_companyにも設定
+    runSql('UPDATE tenants SET contact_company = ? WHERE id = ?', [name, id]);
     // 無料トライアル: 50回、1回限り
     const today = new Date().toISOString().split('T')[0];
     runSql('UPDATE tenants SET plan = ?, plan_limit = ?, plan_started_at = ? WHERE id = ?',
@@ -1794,6 +1980,24 @@ app.whenReady().then(async () => {
     return require('os').hostname() === 'DESKTOP-MRETEV6' && require('os').userInfo().username === 'mitsu';
   });
 
+  ipcMain.handle('auth:resetPassword', async (_e, username: string, email: string, newPassword: string) => {
+    const user = queryOne('SELECT id, username, tenant_id FROM users WHERE username = ?', [username]);
+    if (!user) return { ok: false, error: 'ユーザー名が見つかりません' };
+
+    // テナントのメールアドレスと照合
+    const tenant = queryOne('SELECT contact_email FROM tenants WHERE id = ?', [user.tenant_id]);
+    if (!tenant?.contact_email || tenant.contact_email.toLowerCase() !== email.toLowerCase()) {
+      return { ok: false, error: 'ユーザー名またはメールアドレスが一致しません' };
+    }
+
+    // パスワード更新
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.createHash('sha256').update(salt + newPassword).digest('hex');
+    runSql('UPDATE users SET password_hash = ? WHERE id = ?', [salt + ':' + hash, user.id]);
+    logAudit('update', 'user', user.id, 'パスワード変更');
+    return { ok: true };
+  });
+
   ipcMain.handle('auth:register', async (_e, data: any) => {
     const { username, password, company, email, tel } = data;
     // ユーザー名重複チェック
@@ -1823,7 +2027,7 @@ app.whenReady().then(async () => {
         company_name: company,
         plan: 'pending',
         credits: 0,
-        max_credits: 50,
+        max_credits: 30,
         active: false,
         blocked_message: `承認待ち — ユーザー: ${username}, メール: ${email || ''}, 電話: ${tel || ''}`,
       });
@@ -1882,9 +2086,10 @@ app.whenReady().then(async () => {
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = crypto.createHash('sha256').update(salt + data.password).digest('hex');
     const saltedHash = `${salt}:${hash}`;
+    const tid = data.tenantId || getCurrentTenant();
     const id = runSql('INSERT INTO users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
-      [data.username, saltedHash, data.role || 'user', getCurrentTenant()]);
-    logAudit('create', 'user', id, data.username);
+      [data.username, saltedHash, data.role || 'user', tid]);
+    logAudit('create', 'user', id, `${data.username} (tenant:${tid})`);
     return id;
   });
   ipcMain.handle('users:delete', (_e, id: number) => {
@@ -2070,16 +2275,20 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('estimates:saveImage', (_e, data: { constructionId?: number; logId?: number; imageData: string }) => {
-    if (data.logId) {
-      runSql('UPDATE estimate_log SET generated_image = ? WHERE id = ?', [data.imageData, data.logId]);
-    } else if (data.constructionId) {
+    if (data.constructionId) {
       runSql('UPDATE estimate_log SET generated_image = ? WHERE construction_id = ? AND tenant_id = ?',
         [data.imageData, data.constructionId, getCurrentTenant()]);
+    } else if (data.logId) {
+      runSql('UPDATE estimate_log SET generated_image = ? WHERE id = ?', [data.imageData, data.logId]);
     } else {
-      // 最新のレコードを更新
       runSql('UPDATE estimate_log SET generated_image = ? WHERE id = (SELECT MAX(id) FROM estimate_log WHERE tenant_id = ?)',
         [data.imageData, getCurrentTenant()]);
     }
+  });
+
+  ipcMain.handle('estimates:deleteLog', (_e, id: number) => {
+    runSql('DELETE FROM estimate_log WHERE id = ? AND tenant_id = ?', [id, getCurrentTenant()]);
+    return true;
   });
 
   ipcMain.handle('plan:list', () => PLANS);
@@ -2459,14 +2668,23 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
       runSql('UPDATE constructions SET actual_labor_cost=? WHERE id=?', [actualLabor, constructionId]);
       // Supabaseに送信 → 係数更新
       const config = loadApiConfig();
-      sendFeedbackToSupabase([{
-        work_type: log.work_type || '不明',
-        ai_material_cost: log.ai_material_cost, ai_labor_cost: log.ai_labor_cost, ai_total: log.ai_total,
-        actual_material_cost: matCost, actual_labor_cost: actualLabor, actual_selling_price: sellingPrice,
-        actual_markup_rate: markupRate, accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
-      }]).then(() => analyzeAndUpdateCoefficients(config.anthropicKey))
-        .then(() => console.log('学習ループ（出面→人件費）: 係数更新完了'))
-        .catch((e: any) => console.error('学習ループ（出面）エラー:', e));
+      const learnTid = getCurrentTenant();
+      const learnWorkType = log.work_type || '不明';
+      const profile = getTenantProfile(learnTid);
+      if (profile.isolated && isHeatshieldWork(learnWorkType)) {
+        // 特許の遮熱シートが絡む工事のみ隔離: 共有プールに送らず自社実績だけで学習
+        console.log('学習ループ（出面）: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
+        sendLearningCompleteNotification(learnTid, learnWorkType);
+      } else {
+        sendFeedbackToSupabase([{
+          work_type: learnWorkType,
+          ai_material_cost: log.ai_material_cost, ai_labor_cost: log.ai_labor_cost, ai_total: log.ai_total,
+          actual_material_cost: matCost, actual_labor_cost: actualLabor, actual_selling_price: sellingPrice,
+          actual_markup_rate: markupRate, accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
+        }]).then(() => analyzeAndUpdateCoefficients(config.anthropicKey))
+          .then(() => { console.log('学習ループ（出面→人件費）: 係数更新完了'); return sendLearningCompleteNotification(learnTid, learnWorkType); })
+          .catch((e: any) => console.error('学習ループ（出面）エラー:', e));
+      }
     } catch (e) { console.error('Learning loop (attendance) trigger failed:', e); }
   }
 
@@ -3093,7 +3311,7 @@ ${pages}</body></html>`;
     const isPdf = imageBase64.startsWith('data:application/pdf');
     const contentBlock = isPdf
       ? { type: 'document' as const, source: { type: 'base64' as const, media_type: 'application/pdf' as const, data: imageBase64.replace(/^data:application\/pdf;base64,/, '') } }
-      : { type: 'image' as const, source: { type: 'base64' as const, media_type: (imageBase64.startsWith('data:image/png') ? 'image/png' : 'image/jpeg') as 'image/png' | 'image/jpeg', data: imageBase64.replace(/^data:image\/\w+;base64,/, '') } };
+      : { type: 'image' as const, source: { type: 'base64' as const, media_type: (detectMediaType(imageBase64)) as 'image/png' | 'image/jpeg', data: imageBase64.replace(/^data:image\/\w+;base64,/, '') } };
 
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
@@ -3146,8 +3364,33 @@ ${pages}</body></html>`;
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('読み取りに失敗しました');
     const ocrResult = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+
+    // 読み取った書類をログに保存（取り込まなくても履歴に残す。後からコメント＝紐づけ可能）
+    // ★PDF/画像の原本はDBではなくディスクに保存し、DBにはパスのみ記録（業務に支障が出ないよう軽量化）
+    let ocrLogId: number | null = null;
+    try {
+      let pdfPath: string | null = null;
+      try {
+        const ext = isPdf ? 'pdf' : (imageBase64.startsWith('data:image/png') ? 'png' : imageBase64.startsWith('data:image/webp') ? 'webp' : 'jpg');
+        const raw = imageBase64.replace(/^data:[^;]+;base64,/, '');
+        const fileName = `ocr_${Date.now()}_${Math.floor(raw.length % 100000)}.${ext}`;
+        const dest = path.join(getOcrFilesDir(dbPath), fileName);
+        fs.writeFileSync(dest, Buffer.from(raw, 'base64'));
+        pdfPath = dest;
+      } catch (e) { console.error('OCR原本ファイル保存失敗:', e); }
+
+      const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+      ocrLogId = runSql(
+        `INSERT INTO ocr_log (tenant_id, document_type, title, client_name, issuer_name, issue_date, total, subtotal, ocr_json, pdf_path, comment, imported, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, ?)`,
+        [getCurrentTenant(), ocrResult.documentType || null, ocrResult.title || null, ocrResult.clientName || null,
+         ocrResult.issuerName || null, ocrResult.issueDate || null, ocrResult.total || null, ocrResult.subtotal || null,
+         JSON.stringify(ocrResult), pdfPath, jstNow]
+      );
+    } catch (e) { console.error('ocr_log保存失敗:', e); }
+
     sendUsageNotification('OCR取込', `書類種別: ${ocrResult.documentType || '不明'}, 金額: ${ocrResult.total || '不明'}円`);
-    return ocrResult;
+    return { ...ocrResult, _ocrLogId: ocrLogId };
   });
 
   // ── OCR結果をDBに一括登録 ──
@@ -3207,11 +3450,20 @@ ${pages}</body></html>`;
       };
 
       // Supabaseに送信（非同期で）
-      const { sendFeedbackToSupabase, analyzeAndUpdateCoefficients } = require('./supabase-sync');
-      sendFeedbackToSupabase([feedbackData]).then(() => {
-        const config = loadApiConfig();
-        if (config.anthropicKey) analyzeAndUpdateCoefficients(config.anthropicKey);
-      }).catch((e: any) => console.error('学習ループ送信エラー:', e));
+      const ocrLearnTid = getCurrentTenant();
+      const ocrProfile = getTenantProfile(ocrLearnTid);
+      if (ocrProfile.isolated && isHeatshieldWork(workType)) {
+        // 特許の遮熱シートが絡む工事のみ隔離: 共有プールに送らず自社実績だけで学習
+        console.log('学習ループ（OCR紐付け）: 遮熱シート（特許）工事のため共有プール送信をスキップ');
+        sendLearningCompleteNotification(ocrLearnTid, workType);
+      } else {
+        const { sendFeedbackToSupabase, analyzeAndUpdateCoefficients } = require('./supabase-sync');
+        sendFeedbackToSupabase([feedbackData]).then(() => {
+          const config = loadApiConfig();
+          if (config.anthropicKey) analyzeAndUpdateCoefficients(config.anthropicKey);
+          return sendLearningCompleteNotification(ocrLearnTid, workType);
+        }).catch((e: any) => console.error('学習ループ送信エラー:', e));
+      }
 
       // 施工のnotesに実績紐付けを記録
       runSql('UPDATE constructions SET notes = COALESCE(notes, \'\') || ? WHERE id = ?',
@@ -3235,6 +3487,36 @@ ${pages}</body></html>`;
             [conId, matId, item.quantity || 1, item.unitPrice || item.amount || 0]);
         }
       }
+
+      // 新規OCR取込も学習ループに送信（実績データとして扱う）
+      if (materialTotal > 0 || laborCost > 0) {
+        const workType = data.title || 'OCR取込';
+        const ocrNewTid = getCurrentTenant();
+        const ocrNewProfile = getTenantProfile(ocrNewTid);
+        if (ocrNewProfile.isolated && isHeatshieldWork(workType)) {
+          // 特許の遮熱シートが絡む工事のみ隔離: 共有プールに送らず自社実績だけで学習
+          console.log('学習ループ（OCR新規）: 遮熱シート（特許）工事のため共有プール送信をスキップ');
+          sendLearningCompleteNotification(ocrNewTid, workType);
+        } else {
+          sendFeedbackToSupabase([{
+            work_type: workType,
+            ai_material_cost: materialTotal,
+            ai_labor_cost: laborCost,
+            ai_total: sellingPrice,
+            ai_markup_rate: markupRate,
+            actual_material_cost: materialTotal,
+            actual_labor_cost: laborCost,
+            actual_selling_price: sellingPrice,
+            actual_markup_rate: markupRate,
+            accuracy_ratio: 1.0,
+          }]).then(() => {
+            const config = loadApiConfig();
+            if (config.anthropicKey) analyzeAndUpdateCoefficients(config.anthropicKey);
+            console.log('学習ループ: OCR新規取込データを送信完了');
+            return sendLearningCompleteNotification(ocrNewTid, workType);
+          }).catch((e: any) => console.error('学習ループ: OCR新規送信エラー:', e));
+        }
+      }
     }
 
     // 請求書（どちらの場合も作成）
@@ -3251,8 +3533,238 @@ ${pages}</body></html>`;
       );
     } catch (e) { console.error('OCR estimate_log記録失敗:', e); }
 
+    // OCRログに取り込み結果・コメント（紐づけメモ）を反映
+    try {
+      if (data._ocrLogId) {
+        runSql(
+          'UPDATE ocr_log SET imported = 1, construction_id = ?, comment = COALESCE(NULLIF(?, \'\'), comment) WHERE id = ? AND tenant_id = ?',
+          [conId, data._comment || '', data._ocrLogId, tid]
+        );
+      }
+    } catch (e) { console.error('ocr_log更新失敗:', e); }
+
     logAudit('create', 'ocr_import', conId, `${data.documentType}: ${data.title}${linkConstructionId ? ' (実績紐付け)' : ''}`);
     return { propertyId, constructionId: conId, invoiceId: invId, itemCount: data.items?.length || 0, linked: !!linkConstructionId };
+  });
+
+  // ── OCR読み取り履歴（過去のPDFを保存・コメント＝紐づけメモを後付け）──
+  ipcMain.handle('ocrLog:list', () => {
+    return queryAll(
+      `SELECT id, document_type, title, client_name, issuer_name, issue_date, total, subtotal,
+              comment, construction_id, imported, created_at,
+              CASE WHEN (pdf_path IS NOT NULL AND pdf_path != '') OR (pdf_data IS NOT NULL AND pdf_data != '') THEN 1 ELSE 0 END as has_pdf
+       FROM ocr_log WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 200`,
+      [getCurrentTenant()]
+    );
+  });
+  ipcMain.handle('ocrLog:get', (_e, id: number) => {
+    return queryOne('SELECT * FROM ocr_log WHERE id = ? AND tenant_id = ?', [id, getCurrentTenant()]);
+  });
+  ipcMain.handle('ocrLog:setComment', (_e, id: number, comment: string) => {
+    const tid = getCurrentTenant();
+    runSql('UPDATE ocr_log SET comment = ? WHERE id = ? AND tenant_id = ?', [comment || '', id, tid]);
+    // コメントは次回以降の見積プロンプトに「現場メモ」として反映される（＝学習）
+    logAudit('update', 'ocr_log_comment', id, comment ? comment.substring(0, 80) : '');
+    const row = queryOne('SELECT title FROM ocr_log WHERE id = ?', [id]);
+    sendLearningCompleteNotification(tid, row?.title || 'OCRコメント');
+    return { ok: true };
+  });
+  ipcMain.handle('ocrLog:delete', (_e, id: number) => {
+    const tid = getCurrentTenant();
+    // 原本ファイルも削除（ディスクを汚さない）
+    try {
+      const row = queryOne('SELECT pdf_path FROM ocr_log WHERE id = ? AND tenant_id = ?', [id, tid]);
+      if (row?.pdf_path && fs.existsSync(row.pdf_path)) fs.unlinkSync(row.pdf_path);
+    } catch (_) {}
+    runSql('DELETE FROM ocr_log WHERE id = ? AND tenant_id = ?', [id, tid]);
+    return { ok: true };
+  });
+  // PDF/画像を既定アプリで開く（ディスク保存分はそのまま、旧base64分は一時ファイルに書き出し）
+  ipcMain.handle('ocrLog:openPdf', (_e, id: number) => {
+    const row = queryOne('SELECT pdf_path, pdf_data FROM ocr_log WHERE id = ? AND tenant_id = ?', [id, getCurrentTenant()]);
+    if (row?.pdf_path && fs.existsSync(row.pdf_path)) {
+      require('electron').shell.openPath(row.pdf_path);
+      return { ok: true };
+    }
+    if (row?.pdf_data) {
+      const isPdf = row.pdf_data.startsWith('data:application/pdf');
+      const raw = row.pdf_data.replace(/^data:[^;]+;base64,/, '');
+      const ext = isPdf ? 'pdf' : (row.pdf_data.startsWith('data:image/png') ? 'png' : 'jpg');
+      const tmp = path.join(app.getPath('temp'), `ocr_${id}.${ext}`);
+      fs.writeFileSync(tmp, Buffer.from(raw, 'base64'));
+      require('electron').shell.openPath(tmp);
+      return { ok: true };
+    }
+    throw new Error('PDFデータがありません');
+  });
+
+  // ── ドローン写真EXIF解析（GPS・高度・撮影面積推定）──
+  function extractDroneMetadata(base64Data: string): { lat?: number; lng?: number; altitude?: number; estimatedAreaM2?: number; droneModel?: string; datetime?: string } | null {
+    try {
+      const raw = base64Data.replace(/^data:image\/\w+;base64,/, '');
+      const buf = Buffer.from(raw, 'base64');
+      // JPEG EXIF解析（軽量実装）
+      if (buf[0] !== 0xFF || buf[1] !== 0xD8) return null; // Not JPEG
+      let offset = 2;
+      while (offset < buf.length - 4) {
+        if (buf[offset] !== 0xFF) break;
+        const marker = buf[offset + 1];
+        if (marker === 0xE1) { // APP1 = EXIF
+          const len = buf.readUInt16BE(offset + 2);
+          const exifBlock = buf.subarray(offset + 4, offset + 2 + len);
+          const exifStr = exifBlock.toString('binary');
+
+          // GPS座標をバイナリから抽出（簡易実装）
+          let lat: number | undefined, lng: number | undefined, altitude: number | undefined;
+          let droneModel: string | undefined, datetime: string | undefined;
+
+          // メーカー/モデル検出（DJI等）
+          const modelMatch = exifStr.match(/DJI[^\0]{0,30}/);
+          if (modelMatch) droneModel = modelMatch[0].replace(/\0/g, '').trim();
+          if (!droneModel) {
+            const modelMatch2 = exifStr.match(/(Mavic|Phantom|Mini|Air|Matrice|Inspire|Autel|Skydio|Parrot)[^\0]{0,20}/i);
+            if (modelMatch2) droneModel = modelMatch2[0].replace(/\0/g, '').trim();
+          }
+
+          // 日時
+          const dtMatch = exifStr.match(/(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+          if (dtMatch) datetime = `${dtMatch[1]}-${dtMatch[2]}-${dtMatch[3]} ${dtMatch[4]}:${dtMatch[5]}:${dtMatch[6]}`;
+
+          // TIFFヘッダー解析でGPSを取得
+          const tiffStart = exifBlock.indexOf('Exif\0\0');
+          if (tiffStart >= 0) {
+            const tiffBuf = exifBlock.subarray(tiffStart + 6);
+            const isLE = tiffBuf[0] === 0x49; // Intel byte order
+            const readU16 = (o: number) => isLE ? tiffBuf.readUInt16LE(o) : tiffBuf.readUInt16BE(o);
+            const readU32 = (o: number) => isLE ? tiffBuf.readUInt32LE(o) : tiffBuf.readUInt32BE(o);
+
+            // IFD0を走査してGPS IFDポインタを探す
+            const ifdOffset = isLE ? tiffBuf.readUInt32LE(4) : tiffBuf.readUInt32BE(4);
+            if (ifdOffset < tiffBuf.length - 2) {
+              const ifdCount = readU16(ifdOffset);
+              for (let i = 0; i < ifdCount && ifdOffset + 2 + i * 12 + 12 <= tiffBuf.length; i++) {
+                const entryOff = ifdOffset + 2 + i * 12;
+                const tag = readU16(entryOff);
+                if (tag === 0x8825) { // GPSInfo IFD Pointer
+                  const gpsOff = readU32(entryOff + 8);
+                  if (gpsOff < tiffBuf.length - 2) {
+                    const gpsCount = readU16(gpsOff);
+                    const readRational = (o: number) => {
+                      if (o + 8 > tiffBuf.length) return 0;
+                      const num = readU32(o);
+                      const den = readU32(o + 4);
+                      return den ? num / den : 0;
+                    };
+                    const readGPSCoord = (valueOff: number) => {
+                      const deg = readRational(valueOff);
+                      const min = readRational(valueOff + 8);
+                      const sec = readRational(valueOff + 16);
+                      return deg + min / 60 + sec / 3600;
+                    };
+                    for (let g = 0; g < gpsCount && gpsOff + 2 + g * 12 + 12 <= tiffBuf.length; g++) {
+                      const gEntry = gpsOff + 2 + g * 12;
+                      const gTag = readU16(gEntry);
+                      const gValOff = readU32(gEntry + 8);
+                      if (gTag === 2 && gValOff < tiffBuf.length - 24) lat = readGPSCoord(gValOff); // GPSLatitude
+                      if (gTag === 4 && gValOff < tiffBuf.length - 24) lng = readGPSCoord(gValOff); // GPSLongitude
+                      if (gTag === 6 && gValOff < tiffBuf.length - 8) altitude = readRational(gValOff); // GPSAltitude
+                    }
+                    // 南緯・西経チェック
+                    for (let g = 0; g < gpsCount && gpsOff + 2 + g * 12 + 12 <= tiffBuf.length; g++) {
+                      const gEntry = gpsOff + 2 + g * 12;
+                      const gTag = readU16(gEntry);
+                      if (gTag === 1 && lat) { // GPSLatitudeRef
+                        const ref = tiffBuf[gEntry + 8];
+                        if (ref === 0x53) lat = -lat; // 'S'
+                      }
+                      if (gTag === 3 && lng) { // GPSLongitudeRef
+                        const ref = tiffBuf[gEntry + 8];
+                        if (ref === 0x57) lng = -lng; // 'W'
+                      }
+                    }
+                  }
+                  break;
+                }
+              }
+            }
+          }
+
+          // 高度から撮影面積を推定（ドローンカメラ画角84°想定）
+          let estimatedAreaM2: number | undefined;
+          if (altitude && altitude > 5 && altitude < 500) {
+            // DJI標準カメラ: 水平画角84°→ tan(42°) ≈ 0.9
+            const halfWidth = altitude * 0.9;
+            const halfHeight = altitude * 0.67; // 4:3アスペクト比
+            estimatedAreaM2 = Math.round((halfWidth * 2) * (halfHeight * 2));
+          }
+
+          if (lat || lng || altitude || droneModel) {
+            return { lat, lng, altitude, estimatedAreaM2, droneModel, datetime };
+          }
+          break;
+        }
+        const segLen = buf.readUInt16BE(offset + 2);
+        offset += 2 + segLen;
+      }
+      return null;
+    } catch (e) {
+      console.error('EXIF解析エラー:', e);
+      return null;
+    }
+  }
+
+  // ── ドローン測量CSVインポート ──
+  ipcMain.handle('drone:importCSV', async (_e) => {
+    const result = await dialog.showOpenDialog({
+      title: 'ドローン測量データを選択',
+      filters: [{ name: 'CSV / TSV', extensions: ['csv', 'tsv', 'txt'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+
+    const content = fs.readFileSync(result.filePaths[0], 'utf-8');
+    const lines = content.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return null;
+
+    const sep = lines[0].includes('\t') ? '\t' : ',';
+    const headers = lines[0].split(sep).map(h => h.replace(/"/g, '').trim().toLowerCase());
+    const rows = lines.slice(1).map(line => {
+      const vals = line.split(sep).map(v => v.replace(/"/g, '').trim());
+      const row: Record<string, string> = {};
+      headers.forEach((h, i) => { row[h] = vals[i] || ''; });
+      return row;
+    });
+
+    // 面積・体積・距離を自動検出
+    const findCol = (keywords: string[]) => headers.find(h => keywords.some(k => h.includes(k)));
+    const areaCol = findCol(['area', '面積', 'sqm', 'm2', 'm²']);
+    const volumeCol = findCol(['volume', '体積', 'cbm', 'm3', 'm³']);
+    const distanceCol = findCol(['distance', '距離', 'length', '長さ', 'perimeter', '周長']);
+    const nameCol = findCol(['name', '名前', '名称', 'label', 'ラベル', 'id', 'no']);
+
+    const items = rows.map(r => ({
+      name: nameCol ? r[nameCol] : '',
+      area: areaCol ? parseFloat(r[areaCol]) || 0 : 0,
+      volume: volumeCol ? parseFloat(r[volumeCol]) || 0 : 0,
+      distance: distanceCol ? parseFloat(r[distanceCol]) || 0 : 0,
+    })).filter(item => item.area > 0 || item.volume > 0 || item.distance > 0);
+
+    const totalArea = items.reduce((s, i) => s + i.area, 0);
+    const totalVolume = items.reduce((s, i) => s + i.volume, 0);
+    const totalDistance = items.reduce((s, i) => s + i.distance, 0);
+
+    console.log(`ドローンCSV取込: ${items.length}項目, 面積${totalArea.toFixed(1)}m², 体積${totalVolume.toFixed(1)}m³, 距離${totalDistance.toFixed(1)}m`);
+
+    return {
+      items,
+      summary: {
+        totalArea: Math.round(totalArea * 10) / 10,
+        totalVolume: Math.round(totalVolume * 10) / 10,
+        totalDistance: Math.round(totalDistance * 10) / 10,
+        itemCount: items.length,
+      },
+      fileName: path.basename(result.filePaths[0]),
+    };
   });
 
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
@@ -3367,13 +3879,45 @@ ${pages}</body></html>`;
       }
     }
 
+    // 過去の読み取り書類へのコメント（現場メモ＝紐づけ情報）をプロンプトに反映 → 学習
+    let ocrCommentSummary = '';
+    try {
+      const commentRows = queryAll(
+        `SELECT title, document_type, total, comment, created_at FROM ocr_log
+         WHERE tenant_id = ? AND comment IS NOT NULL AND comment != ''
+         ORDER BY created_at DESC LIMIT 30`,
+        [getCurrentTenant()]
+      );
+      if (commentRows.length > 0) {
+        const lines = commentRows.map((r: any) =>
+          `- ${r.title || r.document_type || '書類'}${r.total ? `（¥${Math.round(r.total).toLocaleString()}）` : ''}: ${r.comment}`
+        ).join('\n');
+        ocrCommentSummary = `\n## ★ 過去の実績書類への現場メモ（担当者コメント・最重要の補足）★\n以下は読み取った過去の見積書・請求書に対して、この会社の担当者が付けたメモです。金額の根拠・工法・特殊事情が書かれています。同種の工事ではこのメモの内容を必ず反映して見積もってください。\n${lines}\n`;
+      }
+    } catch (e) { console.error('OCRコメント取得失敗:', e); }
+
+    // テナント別プロファイル（山下さん=遮熱シート専門 等）
+    const estTid = getCurrentTenant();
+    const estProfile = getTenantProfile(estTid);
+
     // 学習ループ: Supabase係数 + 旧統計を取得してプロンプトに追加
+    // ※足場・人件費などは全テナント共有の相場/係数を参照する（山下さんも同様）。
+    //   特許の遮熱シート本体の価格だけは、後述の heatshield 業種分岐で「自社実績優先」と指示する。
     let globalStats = '';
     try {
       const coefficients = await fetchCostCoefficients();
       globalStats = coefficientsToPromptText(coefficients);
     } catch (e) { console.error('Supabase coefficients fetch failed:', e); }
-    // Supabase係数が取得できなかった場合は空文字のまま（ローカル実績統計で補完）
+
+    // 外部公的データ（e-Stat・国交省）を取得してプロンプトに追加
+    let externalData = '';
+    try {
+      const [allData, regionalData] = await Promise.all([
+        fetchAllExternalData(),
+        fetchRegionalData(location || ''),
+      ]);
+      externalData = allData + regionalData;
+    } catch (e) { console.error('External data fetch failed:', e); }
 
     const Anthropic = require('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey: config.anthropicKey });
@@ -3381,7 +3925,55 @@ ${pages}</body></html>`;
     const hasComment = comment && comment.trim().length > 0;
     const hasImage = imageBase64 && imageBase64.length > 0;
     const hasLocation = location && location.trim().length > 0;
-    const industryType = config.industryType || 'general';
+    // テナント個別の業種設定を最優先（山下さん=遮熱シート専門）。無ければインストール共通設定。
+    const industryType = estProfile.industryType || config.industryType || 'general';
+
+    // ドローン写真のEXIF情報を抽出（GPS・高度・撮影面積）
+    let droneInfo = '';
+    if (hasImage && !isBeforeAfter) {
+      const meta = extractDroneMetadata(imageBase64);
+      if (meta) {
+        const parts: string[] = ['## ★ ドローン撮影データ（EXIF自動抽出）★'];
+        if (meta.droneModel) parts.push(`機体: ${meta.droneModel}`);
+        if (meta.datetime) parts.push(`撮影日時: ${meta.datetime}`);
+        if (meta.lat && meta.lng) parts.push(`GPS座標: ${meta.lat.toFixed(6)}, ${meta.lng.toFixed(6)}`);
+        if (meta.altitude) parts.push(`飛行高度: ${meta.altitude.toFixed(1)}m`);
+        if (meta.estimatedAreaM2) parts.push(`推定撮影面積: 約${meta.estimatedAreaM2.toLocaleString()}m²（高度とカメラ画角から算出）`);
+        parts.push('★この面積データを見積もりの数量算出に活用してください。ドローン測量データがある場合は面積の精度が高いので信頼して使ってください。');
+        droneInfo = '\n' + parts.join('\n') + '\n';
+        console.log(`ドローンEXIF検出: ${meta.droneModel || '不明'} 高度${meta.altitude || '?'}m 面積${meta.estimatedAreaM2 || '?'}m²`);
+      }
+    }
+    // ドローンCSVデータが渡された場合
+    const droneCSV = data.droneCSV;
+    let droneCSVInfo = '';
+    if (droneCSV && droneCSV.summary) {
+      const s = droneCSV.summary;
+      const parts: string[] = ['## ★ ドローン測量データ（CSV取込）★'];
+      parts.push(`ファイル: ${droneCSV.fileName}`);
+      if (s.totalArea > 0) parts.push(`総面積: ${s.totalArea.toLocaleString()}m²`);
+      if (s.totalVolume > 0) parts.push(`総体積: ${s.totalVolume.toLocaleString()}m³`);
+      if (s.totalDistance > 0) parts.push(`総距離: ${s.totalDistance.toLocaleString()}m`);
+      if (droneCSV.items?.length > 0) {
+        parts.push('内訳:');
+        for (const item of droneCSV.items.slice(0, 20)) {
+          const vals: string[] = [];
+          if (item.name) vals.push(item.name);
+          if (item.area > 0) vals.push(`面積${item.area}m²`);
+          if (item.volume > 0) vals.push(`体積${item.volume}m³`);
+          if (item.distance > 0) vals.push(`距離${item.distance}m`);
+          parts.push(`  - ${vals.join(' / ')}`);
+        }
+      }
+      parts.push('★このデータを見積もりの数量として正確に使用してください。面積→m²単価で材料費を算出、体積→m³単価で土工費を算出すること。');
+      droneCSVInfo = '\n' + parts.join('\n') + '\n';
+    }
+
+    // 遮熱シートの工法別 基準単価メモ（★単価が分かったらここを編集してください）
+    //   遮熱シートは工事方法（工法）で単価が変わるため、工法ごとに目安を書くのが理想。
+    //   例: '\n- 参考単価の目安: 屋根カバー工法 材工込み ○○円/m²、内張り ○○円/m²（税抜）。'
+    //   空文字のままなら、上記の「同じ工法の自社実績の金額帯」だけを基準に見積もります。
+    const HEATSHIELD_PRICE_NOTE = '';
 
     // 業種別のAI指示
     const industryPrompt = industryType === 'lease'
@@ -3408,6 +4000,13 @@ ${pages}</body></html>`;
       : industryType === 'equipment'
       ? `\n## ★業種: 設備工事業★
 この会社は設備工事業（水道・電気・空調）です。設備機器の型番・施工費・配管配線工事を重視して見積もってください。\n`
+      : industryType === 'heatshield'
+      ? `\n## ★業種: 特許取得 遮熱シート専門★
+この会社（テナント）は特許を取得した高機能遮熱シートを扱います。見積もりは以下を厳守してください:
+- 【工事方法（工法）で単価が変わる — 最重要】遮熱シートは施工方法によって㎡単価が大きく変わります（例: 屋根葺き替え／屋根カバー工法／内張り／外張り／天井裏／吹付け 等）。まず依頼内容・画像・工事名から施工方法を特定し、必ず「同じ施工方法の過去実績の金額帯」に合わせること。施工方法が判別できない場合は、推測で安く見積もらず、recommendationsに「施工方法（工法）をご指定いただくと正確になります」と明記し、confidenceを下げること。
+- 【遮熱シート本体（特許商材）の価格は自社実績優先】ホームセンター等で売られている汎用の遮熱シート・断熱材・アルミ保温材の安い相場（数百円〜千円/m²程度）を遮熱シート本体に絶対に当てはめないこと。遮熱シート部分は必ず「この会社の過去実績（上記★修正履歴・自社の金額帯）」、特に同じ工法の実績を最優先の基準にすること。実績がまだ無ければ特許プレミアム商材として高めの専門単価で見積もり、confidenceは低め（0.3〜0.5）にし、recommendationsに「実績を入力いただくほど御社の工法別の金額帯に合った精度になります」と記載すること。
+- 【それ以外（足場・人件費・運搬・撤去・その他材料など）は通常どおり】上記の全国相場データ・補正係数・公的データを参照し、一般的な市場価格で見積もること。ここには特許プレミアムを上乗せしないこと。
+- breakdownでは「遮熱シート本体（特許商材・工法を明記）」と「足場・人件費などのその他項目」を必ず別項目に分けて記載すること。${HEATSHIELD_PRICE_NOTE}\n`
       : '';
 
     const userContent: any[] = [];
@@ -3418,7 +4017,7 @@ ${pages}</body></html>`;
       });
       userContent.push({
         type: 'image',
-        source: { type: 'base64', media_type: beforeImage.startsWith('data:image/png') ? 'image/png' : 'image/jpeg', data: beforeImage.replace(/^data:image\/\w+;base64,/, '') },
+        source: { type: 'base64', media_type: detectMediaType(beforeImage), data: beforeImage.replace(/^data:image\/\w+;base64,/, '') },
       });
       userContent.push({
         type: 'text',
@@ -3426,12 +4025,12 @@ ${pages}</body></html>`;
       });
       userContent.push({
         type: 'image',
-        source: { type: 'base64', media_type: afterImage.startsWith('data:image/png') ? 'image/png' : 'image/jpeg', data: afterImage.replace(/^data:image\/\w+;base64,/, '') },
+        source: { type: 'base64', media_type: detectMediaType(afterImage), data: afterImage.replace(/^data:image\/\w+;base64,/, '') },
       });
     } else if (hasImage) {
       userContent.push({
         type: 'image',
-        source: { type: 'base64', media_type: imageBase64.startsWith('data:image/png') ? 'image/png' : 'image/jpeg', data: imageBase64.replace(/^data:image\/\w+;base64,/, '') },
+        source: { type: 'base64', media_type: detectMediaType(imageBase64), data: imageBase64.replace(/^data:image\/\w+;base64,/, '') },
       });
     }
 
@@ -3480,7 +4079,7 @@ ${COST_REFERENCE}
 
 ${hasLocation ? `## 現場場所\n${location}\n\n★重要: 上記の場所に基づいて「全国 地域別 工事費係数」テーブルから該当する都道府県の係数を適用し、金額を補正すること。大阪以外の場合は必ず地域係数を掛けて算出すること。\n` : ''}
 ${comment ? `## ユーザーが依頼した工事内容（★最重要★）\n${comment}\n` : ''}
-${industryPrompt}
+${droneInfo}${droneCSVInfo}${industryPrompt}
 ## ★★★ 最重要ルール（絶対に守れ）★★★
 1. breakdownには「ユーザーが依頼した工事内容」に直接関係する項目だけを入れろ
 2. ユーザーが「キッチン交換」としか書いていないなら、キッチン関連の材料・施工費だけをbreakdownに入れろ。外壁・屋根・耐震・浴室など依頼されていない工事は絶対にbreakdownに入れるな
@@ -3505,7 +4104,9 @@ ${pastWorkSummary || 'まだ実績なし'}
 
 ※上記は${totalCount}件の実績データを工事タイプ別に集約した統計値です。この統計を見積もりの根拠として活用してください。
 ${feedbackSummary}
+${ocrCommentSummary}
 ${globalStats}
+${externalData}
 ${(() => {
   const chatMemos = queryAll('SELECT category, key, value FROM chat_learnings WHERE tenant_id = ? ORDER BY category', [getCurrentTenant()]);
   if (chatMemos.length === 0) return '';
@@ -3756,7 +4357,7 @@ ${pastWork || 'まだ実績なし'}`;
         return {
           role: 'user',
           content: [
-            { type: 'image', source: { type: 'base64', media_type: m.image.startsWith('data:image/png') ? 'image/png' : 'image/jpeg', data: m.image.replace(/^data:image\/\w+;base64,/, '') } },
+            { type: 'image', source: { type: 'base64', media_type: detectMediaType(m.image), data: m.image.replace(/^data:image\/\w+;base64,/, '') } },
             { type: 'text', text: m.content || '写真を見て見積もりしてください' },
           ],
         };
@@ -3828,6 +4429,29 @@ ${pastWork || 'まだ実績なし'}`;
   });
 
   // ── AI画像生成（完成イメージ — 元画像ベース編集）──
+  // 生成画像を正しいestimate_logレコードに保存するヘルパー
+  function saveGeneratedImageToLog(imageData: string, logId?: number, constructionId?: number) {
+    try {
+      const tid = getCurrentTenant();
+      if (constructionId) {
+        const row = queryOne('SELECT id FROM estimate_log WHERE construction_id = ? AND tenant_id = ? ORDER BY id DESC LIMIT 1', [constructionId, tid]);
+        if (row) {
+          runSql('UPDATE estimate_log SET generated_image = ? WHERE id = ?', [imageData, row.id]);
+          return;
+        }
+      }
+      if (logId) {
+        runSql('UPDATE estimate_log SET generated_image = ? WHERE id = ?', [imageData, logId]);
+        return;
+      }
+      // フォールバック: 最新レコード
+      const latest = queryOne('SELECT id FROM estimate_log WHERE tenant_id = ? ORDER BY id DESC LIMIT 1', [tid]);
+      if (latest) {
+        runSql('UPDATE estimate_log SET generated_image = ? WHERE id = ?', [imageData, latest.id]);
+      }
+    } catch (_) {}
+  }
+
   ipcMain.handle('ai:generateImage', async (_e, data: any) => {
     // クレジットチェック（画像生成 = 3ストック）
     await syncRemoteLicense(false);
@@ -3846,6 +4470,8 @@ ${pastWork || 'まだ実績なし'}`;
     // data が文字列の場合は旧API互換（プロンプトのみ）
     const prompt = typeof data === 'string' ? data : data.prompt;
     const sourceImage = typeof data === 'string' ? null : data.sourceImage;
+    const targetLogId = typeof data === 'string' ? null : data.targetLogId;
+    const targetConstructionId = typeof data === 'string' ? null : data.targetConstructionId;
 
     // 外構工事かどうかを判定
     const exteriorKeywords = ['exterior', 'outdoor', 'garden', 'parking', 'fence', 'deck', 'carport', 'gate', 'patio', 'landscap', 'driveway', 'yard', 'terrace'];
@@ -3883,9 +4509,11 @@ ${pastWork || 'まだ実績なし'}`;
             ...(b64 ? [{ filename: 'generated.png', content: `data:image/png;base64,${b64}` }] : []),
           ],
         });
-        if (b64) return `data:image/png;base64,${b64}`;
-        const url = response.data?.[0]?.url;
-        if (url) return url;
+        const editResult = b64 ? `data:image/png;base64,${b64}` : (response.data?.[0]?.url || null);
+        if (editResult) {
+          saveGeneratedImageToLog(editResult, targetLogId, targetConstructionId);
+          return editResult;
+        }
         throw new Error('画像データが取得できませんでした');
       } finally {
         try { fs.unlinkSync(tmpImg); } catch (_) {}
@@ -3909,8 +4537,11 @@ ${pastWork || 'まだ実績なし'}`;
     sendUsageNotification('完成イメージ画像生成', `プロンプト: ${prompt.substring(0, 80)}`, {
       images: b64 ? [{ filename: 'generated.png', content: `data:image/png;base64,${b64}` }] : [],
     });
-    if (b64) return `data:image/png;base64,${b64}`;
-    return response.data[0]?.url || null;
+    const imageResult = b64 ? `data:image/png;base64,${b64}` : (response.data[0]?.url || null);
+    if (imageResult) {
+      saveGeneratedImageToLog(imageResult, targetLogId, targetConstructionId);
+    }
+    return imageResult;
   });
 
   // ── AI解析結果から物件・施工・材料明細・請求書を一括自動作成 ──
@@ -4009,7 +4640,9 @@ ${pastWork || 'まだ実績なし'}`;
         [sellingPrice, constructionId, tid]);
     } catch (e) { console.error('Invoice/estimate update failed:', e); }
 
-    return { propertyId, constructionId, invoiceId, sellingPrice };
+    // estimate_log の最新IDを取得
+    const latestLog = queryOne('SELECT id FROM estimate_log WHERE construction_id = ? AND tenant_id = ? ORDER BY id DESC LIMIT 1', [constructionId, tid]);
+    return { propertyId, constructionId, invoiceId, sellingPrice, estimateLogId: latestLog?.id || null };
   });
 
   // ── テナントデータ エクスポート（トライアル企業→本体へ渡す用）──
@@ -4256,7 +4889,7 @@ function silentSnapshot() {
   } catch (e) { console.error('Silent snapshot failed:', e); }
 }
 
-app.on('before-quit', () => { silentSnapshot(); });
+app.on('before-quit', () => { flushSave(); silentSnapshot(); });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

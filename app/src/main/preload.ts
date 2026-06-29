@@ -1,6 +1,9 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webFrame } from 'electron';
 
 contextBridge.exposeInMainWorld('api', {
+  // 表示倍率
+  setZoom: (factor: number) => { webFrame.setZoomFactor(factor); },
+  getZoom: () => webFrame.getZoomFactor(),
   // 物件
   listProperties: () => ipcRenderer.invoke('properties:list'),
   createProperty: (data: any) => ipcRenderer.invoke('properties:create', data),
@@ -96,6 +99,13 @@ contextBridge.exposeInMainWorld('api', {
   ocrInvoice: (imageBase64: string) => ipcRenderer.invoke('ai:ocrInvoice', imageBase64),
   importOcrResult: (data: any) => ipcRenderer.invoke('ai:importOcrResult', data),
 
+  // OCR読み取り履歴（過去のPDF保存・コメント＝紐づけ）
+  listOcrLog: () => ipcRenderer.invoke('ocrLog:list'),
+  getOcrLog: (id: number) => ipcRenderer.invoke('ocrLog:get', id),
+  setOcrLogComment: (id: number, comment: string) => ipcRenderer.invoke('ocrLog:setComment', id, comment),
+  deleteOcrLog: (id: number) => ipcRenderer.invoke('ocrLog:delete', id),
+  openOcrPdf: (id: number) => ipcRenderer.invoke('ocrLog:openPdf', id),
+
   // クレジット（AIストック）
   getCredits: () => ipcRenderer.invoke('credits:get'),
   getMonthlyUsage: () => ipcRenderer.invoke('credits:usage'),
@@ -120,9 +130,11 @@ contextBridge.exposeInMainWorld('api', {
   // 見積ログ
   getEstimateLog: () => ipcRenderer.invoke('estimates:log'),
   saveEstimateImage: (data: any) => ipcRenderer.invoke('estimates:saveImage', data),
+  deleteEstimateLog: (id: number) => ipcRenderer.invoke('estimates:deleteLog', id),
 
   // AI
   analyzeImage: (data: any) => ipcRenderer.invoke('ai:analyzeImage', data),
+  importDroneCSV: () => ipcRenderer.invoke('drone:importCSV'),
   generateImage: (data: any) => ipcRenderer.invoke('ai:generateImage', data),
   autoCreateFromEstimate: (data: any) => ipcRenderer.invoke('ai:autoCreate', data),
 
@@ -230,6 +242,7 @@ contextBridge.exposeInMainWorld('api', {
   // ログイン認証
   login: (username: string, password: string) => ipcRenderer.invoke('auth:login', username, password),
   logout: () => ipcRenderer.invoke('auth:logout'),
+  resetPassword: (username: string, email: string, newPassword: string) => ipcRenderer.invoke('auth:resetPassword', username, email, newPassword),
   getSession: () => ipcRenderer.invoke('auth:session'),
   isOwnerPC: () => ipcRenderer.invoke('auth:isOwner'),
   setTenantCredits: (tenantId: number, credits: number) => ipcRenderer.invoke('tenants:setCredits', tenantId, credits),
@@ -238,4 +251,10 @@ contextBridge.exposeInMainWorld('api', {
   getTenantUsage: (tenantId: number) => ipcRenderer.invoke('tenants:getUsage', tenantId),
   setTenantActive: (tenantId: number, active: boolean) => ipcRenderer.invoke('tenants:setActive', tenantId, active),
   register: (data: any) => ipcRenderer.invoke('auth:register', data),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+
+  // リモート登録申請（Supabase）
+  listRemoteRegistrations: () => ipcRenderer.invoke('remote:listRegistrations'),
+  approveRemoteRegistration: (companyName: string, plan: string) => ipcRenderer.invoke('remote:approve', companyName, plan),
+  rejectRemoteRegistration: (companyName: string) => ipcRenderer.invoke('remote:reject', companyName),
 });
