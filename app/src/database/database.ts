@@ -135,12 +135,24 @@ export function getCredits(tenantId?: number): number {
   return remaining;
 }
 
-export function useCredits(amount: number, operation: string, tenantId?: number): { success: boolean; limitReached?: boolean } {
+// デモ／トライアルの有効期間（日数）。使い切り＋この日数で終了。
+export const DEMO_PERIOD_DAYS = 14;
+
+export function useCredits(amount: number, operation: string, tenantId?: number): { success: boolean; limitReached?: boolean; expired?: boolean } {
   const tid = tenantId ?? currentTenantId;
   // テナントID=1（管理者）は無制限
   if (tid === 1) return { success: true };
   // 消費0の操作は常に許可
   if (amount === 0) return { success: true };
+
+  // デモ・トライアルは開始から DEMO_PERIOD_DAYS 日で期限切れ（使い切り＋2週間）
+  const tp = queryOne('SELECT plan, plan_started_at FROM tenants WHERE id = ?', [tid]);
+  if (tp && (tp.plan === 'trial' || tp.plan === 'demo') && tp.plan_started_at) {
+    const started = new Date(tp.plan_started_at).getTime();
+    if (!isNaN(started) && (Date.now() - started) / 86400000 > DEMO_PERIOD_DAYS) {
+      return { success: false, limitReached: true, expired: true };
+    }
+  }
 
   const usage = getMonthlyUsage(tid);
   if (usage.remaining < amount) {

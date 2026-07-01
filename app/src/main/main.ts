@@ -535,7 +535,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.2.6';
+const CURRENT_VERSION = '3.2.7';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
