@@ -23,6 +23,30 @@ async function put(url: string, body: any) { const r = await fetch(BASE + url, {
 async function del(url: string) { const r = await fetch(BASE + url, { method: 'DELETE', headers: getAuthHeaders() }); return handleResponse(r); }
 
 export const webApi = {
+  // 認証（ブラウザ）。401でも handleResponse のリダイレクトを通さず、そのまま結果を返す
+  login: async (username: string, password: string) => {
+    try {
+      const r = await fetch(BASE + '/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 200 && j.ok && j.token) {
+        localStorage.setItem('auth_token', j.token);
+        return { ok: true, tenantId: j.tenantId, username: j.username, token: j.token };
+      }
+      return { ok: false, error: j.error || 'ログインに失敗しました' };
+    } catch (e: any) {
+      return { ok: false, error: 'サーバーに接続できませんでした' };
+    }
+  },
+  logout: async () => {
+    localStorage.removeItem('auth_token');
+    return { ok: true };
+  },
+  register: async () => ({ ok: false, error: '新規登録はデスクトップアプリから行ってください' }),
+
   listProperties: () => get('/api/properties'),
   createProperty: (d: any) => post('/api/properties', d).then(r => r.id),
   updateProperty: (d: any) => put(`/api/properties/${d.id}`, d),
