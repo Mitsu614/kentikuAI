@@ -535,7 +535,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.2.5';
+const CURRENT_VERSION = '3.2.6';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -3944,6 +3944,13 @@ ${pages}</body></html>`;
 
     const categories = materialCategories.map((c: any) => c.category).join(', ');
 
+    // テナント別プロファイル（山下さん=遮熱シート専門・隔離学習 等）
+    const estTid = getCurrentTenant();
+    const estProfile = getTenantProfile(estTid);
+    // 隔離テナント（特許遮熱シート等・相場が存在しない商材）は、自社実績が唯一の正解データ。
+    // → 取り込む実績件数を大幅に増やして「テナント内でめっちゃ学習」させる。
+    const feedbackLimit = estProfile.isolated ? 200 : 50;
+
     // AI見積 vs 実際の編集結果のフィードバックデータを生成（学習ループ: 自動蓄積された実績値を使用）
     const feedbackRows = queryAll(`
       SELECT el.work_type,
@@ -3957,8 +3964,8 @@ ${pages}</body></html>`;
       LEFT JOIN constructions c ON c.id = el.construction_id
       WHERE el.tenant_id = ? AND el.construction_id IS NOT NULL
       ORDER BY COALESCE(el.feedback_at, el.created_at) DESC
-      LIMIT 50
-    `, [getCurrentTenant()]);
+      LIMIT ${feedbackLimit}
+    `, [estTid]);
 
     let feedbackSummary = '';
     if (feedbackRows.length > 0) {
@@ -4001,6 +4008,76 @@ ${pages}</body></html>`;
       }
     }
 
+    // 【隔離テナント限定】自社実績の「実際の価格そのもの」を価格アンカーとして渡す。
+    // 相場が無い特許商材（遮熱シート等）は、差分学習だけでなく“実際に成約した金額”を
+    // 絶対基準にした方が精度が出る。差分の有無に関わらず全実績を工事タイプ別に列挙する。
+    if (estProfile.isolated) {
+      try {
+        const anchorRows = queryAll(`
+          SELECT c.title as work_type,
+            COALESCE(c.actual_material_cost, (SELECT SUM(cm.quantity * cm.unit_price) FROM construction_materials cm WHERE cm.construction_id = c.id), 0) as mat,
+            COALESCE(c.actual_labor_cost, c.labor_cost, 0) as labor,
+            COALESCE(c.actual_selling_price, c.fixed_selling_price, 0) as sell,
+            c.markup_rate, c.notes, c.construction_date
+          FROM constructions c
+          WHERE c.tenant_id = ?
+          ORDER BY c.id DESC
+          LIMIT 200
+        `, [estTid]);
+        const anchors = anchorRows
+          .filter((r: any) => (r.sell || 0) > 0 || (r.mat || 0) > 0)
+          .map((r: any) => {
+            const method = (r.notes || '').split('\n')[0] || '';
+            const bits = [`${r.work_type || '工事'}`];
+            if (method && !`${r.work_type}`.includes(method)) bits.push(`工法/メモ:${method}`);
+            if (r.mat > 0) bits.push(`材料費¥${Math.round(r.mat).toLocaleString()}`);
+            if (r.labor > 0) bits.push(`人件費¥${Math.round(r.labor).toLocaleString()}`);
+            if (r.sell > 0) bits.push(`成約売価¥${Math.round(r.sell).toLocaleString()}`);
+            return `- ${bits.join(' / ')}`;
+          });
+        if (anchors.length > 0) {
+          feedbackSummary += `\n## ★★★ 自社の実績価格アンカー（この会社の唯一の正解データ・最優先で合わせろ）★★★\nこの会社は相場が存在しない専門商材を扱うため、全国相場や汎用単価は当てにならない。\n以下は実際に自社が成約・実施した価格そのもの。同じ工事・同じ工法では、必ずこの実績価格帯に金額を合わせること。\n相場データと矛盾する場合は、必ず下記の自社実績価格を優先せよ。\n実績が近いものが無い場合のみ、最も近い工法の自社実績から推定し、confidenceを下げること。\n${anchors.join('\n')}\n`;
+          console.log(`隔離テナント学習強化: 自社実績アンカー ${anchors.length}件をプロンプトに投入`);
+        }
+      } catch (e) { console.error('自社実績アンカー生成失敗:', e); }
+
+      // 過去にAI-OCRで読み取った書類（見積書・請求書PDF/画像）も価格アンカーにする。
+      // 山下さんの過去の遮熱シート見積書PDFを読み込むほど、その実際の金額・明細で学習が進む。
+      try {
+        const ocrRows = queryAll(
+          `SELECT document_type, title, total, ocr_json, comment, created_at
+           FROM ocr_log WHERE tenant_id = ? AND (total > 0 OR ocr_json IS NOT NULL)
+           ORDER BY id DESC LIMIT 40`,
+          [estTid]
+        );
+        const ocrAnchors: string[] = [];
+        for (const r of ocrRows) {
+          const bits: string[] = [`[${r.document_type || '書類'}] ${r.title || '（件名なし）'}`];
+          if (r.total > 0) bits.push(`合計¥${Math.round(r.total).toLocaleString()}`);
+          // 明細から単価付き項目を最大6件抽出（遮熱/特許/シートを優先）
+          try {
+            const oj = JSON.parse(r.ocr_json || '{}');
+            const items = Array.isArray(oj.items) ? oj.items : [];
+            const scored = items
+              .filter((it: any) => it && it.name && (it.unitPrice > 0 || it.amount > 0))
+              .sort((a: any, b: any) => (/(遮熱|特許|シート)/.test(b.name) ? 1 : 0) - (/(遮熱|特許|シート)/.test(a.name) ? 1 : 0));
+            const detail = scored.slice(0, 6).map((it: any) => {
+              const u = it.unitPrice > 0 ? `¥${Math.round(it.unitPrice).toLocaleString()}${it.unit ? '/' + it.unit : ''}` : '';
+              const amt = it.amount > 0 ? `（金額¥${Math.round(it.amount).toLocaleString()}）` : '';
+              return `${it.name}${u ? ' ' + u : ''}${amt}`;
+            });
+            if (detail.length > 0) bits.push(`明細: ${detail.join(' / ')}`);
+          } catch (_) {}
+          if (r.comment) bits.push(`メモ: ${r.comment}`);
+          ocrAnchors.push(`- ${bits.join(' | ')}`);
+        }
+        if (ocrAnchors.length > 0) {
+          feedbackSummary += `\n## ★★★ 過去に読み取った自社書類（見積書・請求書）の実額（最優先アンカー）★★★\n以下はこの会社が実際に発行した見積書・請求書をOCRで読み取った実データ。金額・単価・明細はすべて実際に使われた正解値。\n同じ工種・同じ工法では、必ずこの実額・実単価に合わせて見積もること。全国相場より必ずこちらを優先せよ。\n${ocrAnchors.join('\n')}\n`;
+          console.log(`隔離テナント学習強化: 過去OCR書類アンカー ${ocrAnchors.length}件をプロンプトに投入`);
+        }
+      } catch (e) { console.error('OCR書類アンカー生成失敗:', e); }
+    }
+
     // 過去の読み取り書類へのコメント（現場メモ＝紐づけ情報）をプロンプトに反映 → 学習
     let ocrCommentSummary = '';
     try {
@@ -4018,9 +4095,7 @@ ${pages}</body></html>`;
       }
     } catch (e) { console.error('OCRコメント取得失敗:', e); }
 
-    // テナント別プロファイル（山下さん=遮熱シート専門 等）
-    const estTid = getCurrentTenant();
-    const estProfile = getTenantProfile(estTid);
+    // ※テナント別プロファイル（estTid / estProfile）は上部（フィードバック取得時）で取得済み
 
     // 学習ループ: Supabase係数 + 旧統計を取得してプロンプトに追加
     // ※足場・人件費などは全テナント共有の相場/係数を参照する（山下さんも同様）。
@@ -4230,10 +4305,44 @@ ${ocrCommentSummary}
 ${globalStats}
 ${externalData}
 ${(() => {
-  const chatMemos = queryAll('SELECT category, key, value FROM chat_learnings WHERE tenant_id = ? ORDER BY category', [getCurrentTenant()]);
-  if (chatMemos.length === 0) return '';
-  return '\n## ★ この会社の好み・傾向（チャットから学習済み）★\n以下はこの会社のユーザーがチャットで伝えた好みです。必ず反映してください。\n' +
-    chatMemos.map((m: any) => `- [${m.category}] ${m.key}: ${m.value}`).join('\n') + '\n';
+  // ── テナント別「クセ・好み」フィット（先方の値付け・好みにめっちゃ合わせる）──
+  const lines: string[] = [];
+  try {
+    // 1) 明示的な好み（チャット/実績から学習・確信度の高い順）
+    const chatMemos = queryAll('SELECT category, key, value, confidence FROM chat_learnings WHERE tenant_id = ? ORDER BY confidence DESC, category', [estTid]);
+    if (chatMemos.length > 0) {
+      lines.push('【この会社が明示した好み・ルール（必ず守れ）】');
+      for (const m of chatMemos) {
+        const strong = (m.confidence || 0) >= 0.5 ? '★繰り返し確認済み・特に厳守: ' : '';
+        lines.push(`- ${strong}[${m.category}] ${m.key}: ${m.value}`);
+      }
+    }
+  } catch (_) {}
+  try {
+    // 2) 習慣的な掛率（この会社の値付けのクセ）
+    const mk = queryOne('SELECT AVG(markup_rate) as avg_mk, COUNT(*) as cnt FROM constructions WHERE tenant_id = ? AND markup_rate > 0', [estTid]);
+    if (mk && mk.cnt >= 3 && mk.avg_mk > 0) {
+      lines.push(`【値付けのクセ】この会社は過去${mk.cnt}件で掛率が平均 約${Math.round(mk.avg_mk * 100)}%。粗利率ルールより、まずこの会社の実掛率に寄せて売価を出すこと。`);
+    }
+  } catch (_) {}
+  try {
+    // 3) AI見積に対する系統的な偏り（毎回いくらか高め/低めに直す傾向）
+    let sum = 0, n = 0;
+    for (const fb of feedbackRows) {
+      if (fb.ai_total > 0 && fb.actual_selling_price > 0) {
+        sum += ((fb.actual_selling_price - fb.ai_total) / fb.ai_total) * 100; n++;
+      }
+    }
+    if (n >= 3) {
+      const bias = Math.round(sum / n);
+      if (Math.abs(bias) >= 4) {
+        lines.push(`【売価の偏り】この会社は過去${n}件でAI見積を平均${bias > 0 ? '+' : ''}${bias}%に修正している。今回も同傾向を見込み、売価を${bias > 0 ? '高め' : '低め'}(約${bias > 0 ? '+' : ''}${bias}%)に寄せること。`);
+      }
+    }
+  } catch (_) {}
+  if (lines.length === 0) return '';
+  return '\n## ★★★ この会社にフィットさせる（最優先・相場より優先）★★★\n以下はこの会社（テナント）固有の好み・値付けのクセ。全国相場や一般ルールより、まずこの会社の傾向に必ず合わせること。\n' +
+    lines.join('\n') + '\n';
 })()}
 ## 登録済み材料カテゴリ
 ${categories}
