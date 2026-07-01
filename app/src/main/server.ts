@@ -104,6 +104,7 @@ export function startServer(distPath: string) {
     // 認証不要のパス
     if (req.path === '/api/auth' || req.path === '/api/version' || req.path === '/admin') return next();
     if (req.path === '/login') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>ログイン - 建築ブースト</title>
 <style>body{font-family:'Segoe UI','Yu Gothic UI','Meiryo',sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;margin:0}
 .box{background:#fff;padding:36px;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,0.12);width:360px;text-align:center}
@@ -371,8 +372,9 @@ async function login(){
     }
   });
 
-  // SPA fallback
+  // SPA fallback（スマホでダウンロード扱いにならないよう Content-Type を明示）
   app.use((_req: any, res: any) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.sendFile(path.join(distPath, 'index.html'));
   });
 

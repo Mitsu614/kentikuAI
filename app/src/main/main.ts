@@ -535,7 +535,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.2.0';
+const CURRENT_VERSION = '3.2.1';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -1096,6 +1096,33 @@ app.whenReady().then(async () => {
 
   // トンネル変数（外出先アクセス用）
   let activeTunnel: any = null;
+  let tunnelStopped = false;
+  let tunnelReconnectTimer: any = null;
+  // 端末ごとに固定のサブドメイン → URLが毎回変わらない（503/古URL問題を解消）
+  const _tos = require('os');
+  const TUNNEL_SUBDOMAIN = 'kb' + crypto.createHash('md5').update(_tos.hostname() + _tos.userInfo().username).digest('hex').slice(0, 12);
+  async function openTunnel(): Promise<any> {
+    const localtunnel = require('localtunnel');
+    let tunnel;
+    try {
+      // 固定サブドメインで取得（毎回同じURL）。取れなければランダムにフォールバック
+      tunnel = await localtunnel({ port: 3456, subdomain: TUNNEL_SUBDOMAIN });
+    } catch (_) {
+      tunnel = await localtunnel({ port: 3456 });
+    }
+    activeTunnel = tunnel;
+    tunnelStopped = false;
+    // 切断時の自動再接続（localtunnelの503対策）
+    tunnel.on('close', () => {
+      activeTunnel = null;
+      if (!tunnelStopped) {
+        if (tunnelReconnectTimer) clearTimeout(tunnelReconnectTimer);
+        tunnelReconnectTimer = setTimeout(() => { openTunnel().catch(() => {}); }, 5000);
+      }
+    });
+    tunnel.on('error', () => {});
+    return tunnel;
+  }
 
   // スマホ用Webサーバー起動
   try {
@@ -1109,10 +1136,7 @@ app.whenReady().then(async () => {
     // 外出先からもアクセスできるようにトンネルを自動起動
     setTimeout(async () => {
       try {
-        const localtunnel = require('localtunnel');
-        const tunnel = await localtunnel({ port: 3456 });
-        activeTunnel = tunnel;
-        tunnel.on('close', () => { activeTunnel = null; });
+        const tunnel = await openTunnel();
         console.log(`\n🌐 外出先からアクセス: ${tunnel.url}\n`);
         // トンネルURLをSupabaseに記録（ダッシュボードから確認可能に）
         try {
@@ -2291,14 +2315,13 @@ app.whenReady().then(async () => {
   // ── 外部公開トンネル ──
   ipcMain.handle('tunnel:start', async () => {
     if (activeTunnel) return activeTunnel.url;
-    const localtunnel = require('localtunnel');
-    const tunnel = await localtunnel({ port: 3456 });
-    activeTunnel = tunnel;
-    tunnel.on('close', () => { activeTunnel = null; });
+    const tunnel = await openTunnel();
     return tunnel.url;
   });
 
   ipcMain.handle('tunnel:stop', async () => {
+    tunnelStopped = true;
+    if (tunnelReconnectTimer) { clearTimeout(tunnelReconnectTimer); tunnelReconnectTimer = null; }
     if (activeTunnel) { activeTunnel.close(); activeTunnel = null; }
   });
 
