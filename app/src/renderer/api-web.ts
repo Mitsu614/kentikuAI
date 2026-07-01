@@ -52,19 +52,24 @@ export const webApi = {
   updateProperty: (d: any) => put(`/api/properties/${d.id}`, d),
   deleteProperty: (id: number) => del(`/api/properties/${id}`),
   selectImage: async () => {
-    // ブラウザ: file input で画像選択
+    // ブラウザ: file input で画像選択（カメラ or アルバムを端末に選ばせる）
+    // ※ capture を強制するとカメラのみになり、機種によっては何も取り込めない（画像が入らない）ため付けない
     return new Promise<string | null>((resolve) => {
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = 'image/*';
-      input.capture = 'environment';
+      input.style.position = 'fixed';
+      input.style.left = '-9999px';
       input.onchange = () => {
         const file = input.files?.[0];
-        if (!file) { resolve(null); return; }
+        if (!file) { resolve(null); cleanup(); return; }
         const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
+        reader.onload = () => { resolve(reader.result as string); cleanup(); };
+        reader.onerror = () => { alert('画像の読み込みに失敗しました。別の画像でお試しください。'); resolve(null); cleanup(); };
         reader.readAsDataURL(file);
       };
+      const cleanup = () => { try { document.body.removeChild(input); } catch (_) {} };
+      document.body.appendChild(input); // 一部端末は DOM に無いと click が効かない
       input.click();
     });
   },
@@ -94,7 +99,29 @@ export const webApi = {
   getDashboardSummary: () => get('/api/dashboard'),
   loadConfig: async () => ({}),
   saveConfig: async () => {},
-  analyzeImage: async () => { alert('AI見積もりはデスクトップアプリからのみ利用できます'); return null; },
+  // AI見積もり：PC(サーバー)側でClaude解析を実行し、結果だけ受け取る
+  analyzeImage: async (payload: any) => {
+    const r = await fetch(BASE + '/api/analyze-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(payload),
+    });
+    if (r.status === 401) { localStorage.removeItem('auth_token'); window.location.href = '/login'; throw new Error('認証エラー'); }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'AI解析に失敗しました');
+    return j;
+  },
+  autoCreateFromEstimate: async (payload: any) => {
+    const r = await fetch(BASE + '/api/auto-create-from-estimate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(payload),
+    });
+    if (r.status === 401) { localStorage.removeItem('auth_token'); window.location.href = '/login'; throw new Error('認証エラー'); }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || '自動作成に失敗しました');
+    return j;
+  },
+  // 画像生成はPC専用（スマホでは非表示扱い）
   generateImage: async () => null,
-  autoCreateFromEstimate: async () => null,
 };

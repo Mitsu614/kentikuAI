@@ -409,6 +409,8 @@ function createTables() {
     ai_total REAL,
     ai_markup_rate REAL,
     ai_json TEXT,
+    source TEXT DEFAULT 'photo',
+    source_log_id INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL
   )`);
@@ -701,6 +703,14 @@ function migrate() {
     }
     if (!elCols.find((c: any) => c.name === 'uploaded_image_path')) {
       db.run('ALTER TABLE estimate_log ADD COLUMN uploaded_image_path TEXT');
+    }
+    // 見積の由来（photo=写真/一発見積, chat=チャット見積, chat_followup=既存見積への相談から派生）
+    if (!elCols.find((c: any) => c.name === 'source')) {
+      db.run("ALTER TABLE estimate_log ADD COLUMN source TEXT DEFAULT 'photo'");
+    }
+    // 相談元になった見積ログID（後からの相談で別ログを作った際に元を辿れるように）
+    if (!elCols.find((c: any) => c.name === 'source_log_id')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN source_log_id INTEGER');
     }
   } catch (_) {}
   // constructions にカラム追加

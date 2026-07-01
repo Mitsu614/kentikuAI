@@ -5,9 +5,34 @@ import { queryAll, queryOne, runSql, getCurrentTenant } from '../database/databa
 
 let serverUrl = '';
 let getConfigFn: (() => any) | null = null;
+let analyzeFn: ((data: any) => Promise<any>) | null = null;
+let autoCreateFn: ((data: any) => any) | null = null;
 
 export function getServerUrl() { return serverUrl; }
+// 同一WiFiでスマホから届く実LANのIPを選ぶ。
+// VirtualBox/Hyper-V の host-only(192.168.56.x) や未接続APIPA(169.254.x)を除外し、
+// プライベートIP(192.168 / 10 / 172.16-31)を優先する（先頭を無条件採用しない）。
+export function pickLanIp(): string {
+  const os = require('os');
+  const nets = os.networkInterfaces();
+  const candidates: string[] = [];
+  for (const name of Object.keys(nets)) {
+    for (const net of (nets[name] || [])) {
+      if (net.family !== 'IPv4' || net.internal) continue;
+      const ip = net.address as string;
+      if (ip.startsWith('169.254.')) continue;     // APIPA（DHCP未取得＝実際は未接続）
+      if (ip.startsWith('192.168.56.')) continue;   // VirtualBox host-only の定番
+      if (ip.startsWith('192.168.99.')) continue;   // VirtualBox/docker-machine の定番
+      candidates.push(ip);
+    }
+  }
+  const isPrivate = (ip: string) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
+  return candidates.find(isPrivate) || candidates[0] || 'localhost';
+}
 export function setConfigLoader(fn: () => any) { getConfigFn = fn; }
+// AI見積もりのコア処理（main.ts側で実装）をスマホAPIから呼べるように登録する
+export function setAnalyzeHandler(fn: (data: any) => Promise<any>) { analyzeFn = fn; }
+export function setAutoCreateHandler(fn: (data: any) => any) { autoCreateFn = fn; }
 
 export function startServer(distPath: string) {
   const express = require('express');
@@ -21,18 +46,22 @@ export function startServer(distPath: string) {
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '1; mode=block');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    // カメラは自撮影(写真取り込み)のために self を許可。マイク・位置情報は不要なので禁止のまま
+    res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
     next();
   });
 
-  // ── CORS制限（ローカルネットワークのみ許可）──
+  // ── CORS制限（ローカルネットワーク + 外出先トンネル経由を許可）──
+  // ※ トンネル(loca.lt / trycloudflare)経由だとブラウザが同一オリジンPOSTでも
+  //   Origin: https://xxx.loca.lt を送るため、これを弾くとスマホからログインできない（500）。
   app.use(cors({
     origin: (origin: string | undefined, callback: any) => {
-      if (!origin) return callback(null, true); // 同一オリジン
-      if (/^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
-        return callback(null, true);
-      }
-      callback(new Error('CORS not allowed'));
+      if (!origin) return callback(null, true); // 同一オリジン（Originヘッダ無し）
+      const isLan = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin);
+      const isTunnel = /^https:\/\/[a-z0-9-]+\.(loca\.lt|trycloudflare\.com)$/.test(origin);
+      if (isLan || isTunnel) return callback(null, true);
+      // 不許可でも例外を投げず、単にCORSヘッダを付けないだけにする（500を避ける）
+      callback(null, false);
     },
     credentials: true,
   }));
@@ -332,6 +361,29 @@ async function login(){
     });
   });
 
+  // AI見積もり（スマホ）：PC側のClaude解析を呼び出して結果を返す
+  app.post('/api/analyze-image', async (req: any, res: any) => {
+    if (!analyzeFn) return res.status(503).json({ error: 'AI見積もりは現在利用できません（PC側の準備中）' });
+    try {
+      const result = await analyzeFn(req.body || {});
+      res.json(result);
+    } catch (e: any) {
+      const msg = (e && e.message) ? String(e.message) : 'AI解析に失敗しました';
+      res.status(400).json({ error: msg.replace(/^ERROR:\s*/, '') });
+    }
+  });
+
+  // 見積もり結果から物件・施工・請求書を自動作成（スマホ）
+  app.post('/api/auto-create-from-estimate', (req: any, res: any) => {
+    if (!autoCreateFn) return res.status(503).json({ error: '自動作成は現在利用できません' });
+    try {
+      const created = autoCreateFn(req.body || {});
+      res.json(created);
+    } catch (e: any) {
+      res.status(400).json({ error: (e && e.message) ? String(e.message) : '自動作成に失敗しました' });
+    }
+  });
+
   // 見積共有ページ
   app.get('/share/estimate/:id', (req: any, res: any) => {
     try {
@@ -383,15 +435,7 @@ async function login(){
 
   const PORT = 3456;
   const server = app.listen(PORT, '0.0.0.0', () => {
-    const os = require('os');
-    const nets = os.networkInterfaces();
-    let localIp = 'localhost';
-    for (const name of Object.keys(nets)) {
-      for (const net of nets[name]) {
-        if (net.family === 'IPv4' && !net.internal) { localIp = net.address; break; }
-      }
-    }
-    serverUrl = `http://${localIp}:${PORT}`;
+    serverUrl = `http://${pickLanIp()}:${PORT}`;
     console.log(`Web server: ${serverUrl}`);
   });
 

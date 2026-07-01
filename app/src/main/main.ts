@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
-import { startServer, getServerUrl, setConfigLoader } from './server';
+import { startServer, getServerUrl, setConfigLoader, setAnalyzeHandler, setAutoCreateHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData } from './external-data';
@@ -535,7 +535,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.2.3';
+const CURRENT_VERSION = '3.2.5';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -1101,27 +1101,69 @@ app.whenReady().then(async () => {
   // 端末ごとに固定のサブドメイン → URLが毎回変わらない（503/古URL問題を解消）
   const _tos = require('os');
   const TUNNEL_SUBDOMAIN = 'kb' + crypto.createHash('md5').update(_tos.hostname() + _tos.userInfo().username).digest('hex').slice(0, 12);
+  // トンネルが実際に配信できるか外部から自己チェック（loca.lt が固定サブドメインを掴んだまま
+  // 503を返す停滞状態を検出するため）。/api/version は認証不要・軽量なので確認に使う。
+  async function verifyTunnel(url: string): Promise<boolean> {
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(url + '/api/version', {
+        headers: { 'bypass-tunnel-reminder': '1', 'User-Agent': 'kenchiku-boost' },
+        signal: ctrl.signal,
+      });
+      clearTimeout(to);
+      return r.status === 200;
+    } catch (_) { return false; }
+  }
   async function openTunnel(): Promise<any> {
     const localtunnel = require('localtunnel');
-    let tunnel;
+    let tunnel: any = null;
+    // 1) まず固定サブドメインで取得（毎回同じURL）。ただし取得できても loca.lt 側の停滞で
+    //    503になることがあるので、配信できているか検証する。
     try {
-      // 固定サブドメインで取得（毎回同じURL）。取れなければランダムにフォールバック
       tunnel = await localtunnel({ port: 3456, subdomain: TUNNEL_SUBDOMAIN });
-    } catch (_) {
+      if (!(await verifyTunnel(tunnel.url))) {
+        console.log(`固定サブドメイン(${TUNNEL_SUBDOMAIN})が503停滞 → ランダムに切替`);
+        try { tunnel.close(); } catch (_) {}
+        tunnel = null;
+      }
+    } catch (_) { tunnel = null; }
+    // 2) 固定がダメならランダムサブドメインで取り直す（配信優先）
+    if (!tunnel) {
       tunnel = await localtunnel({ port: 3456 });
     }
     activeTunnel = tunnel;
     tunnelStopped = false;
     // 切断時の自動再接続（localtunnelの503対策）
-    tunnel.on('close', () => {
-      activeTunnel = null;
-      if (!tunnelStopped) {
-        if (tunnelReconnectTimer) clearTimeout(tunnelReconnectTimer);
-        tunnelReconnectTimer = setTimeout(() => { openTunnel().catch(() => {}); }, 5000);
-      }
-    });
+    tunnel.on('close', () => { activeTunnel = null; scheduleReconnect(); });
     tunnel.on('error', () => {});
+    startTunnelMonitor();
     return tunnel;
+  }
+  // 再接続を1本化（close/monitor から呼ばれても二重に張らない）
+  function scheduleReconnect() {
+    if (tunnelStopped) return;
+    if (tunnelReconnectTimer) clearTimeout(tunnelReconnectTimer);
+    tunnelReconnectTimer = setTimeout(() => {
+      tunnelReconnectTimer = null;
+      openTunnel().then(t => console.log(`\n🌐 外出先からアクセス（更新）: ${t.url}\n`)).catch(() => {});
+    }, 5000);
+  }
+  // 定期ヘルスチェック：loca.lt は close を出さず無言で502/503劣化することがあるため、
+  // 60秒ごとに外部から配信できているか確認し、ダメなら張り直す（URLは変わる場合あり）。
+  let tunnelMonitorTimer: any = null;
+  function startTunnelMonitor() {
+    if (tunnelMonitorTimer) return; // 1本だけ
+    tunnelMonitorTimer = setInterval(async () => {
+      if (tunnelStopped || !activeTunnel || tunnelReconnectTimer) return;
+      const url = activeTunnel.url;
+      if (await verifyTunnel(url)) return;
+      if (await verifyTunnel(url)) return; // 一時的な502誤検知を避けて2回確認
+      console.log(`トンネル(${url})が応答しない → 張り直し`);
+      try { activeTunnel.close(); } catch (_) {}
+      activeTunnel = null;
+      scheduleReconnect();
+    }, 60000);
   }
 
   // スマホ用Webサーバー起動
@@ -2300,16 +2342,8 @@ app.whenReady().then(async () => {
 
   // ── ローカルIPアドレス取得 ──
   ipcMain.handle('system:localIp', () => {
-    const os = require('os');
-    const nets = os.networkInterfaces();
-    for (const name of Object.keys(nets)) {
-      for (const net of nets[name]) {
-        if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('192.168.56')) {
-          return net.address;
-        }
-      }
-    }
-    return '';
+    const ip = pickLanIp();
+    return ip === 'localhost' ? '' : ip;
   });
 
   // ── 外部公開トンネル ──
@@ -2354,7 +2388,7 @@ app.whenReady().then(async () => {
   // ── 見積ログ ──
   ipcMain.handle('estimates:log', () => {
     return queryAll(
-      'SELECT id, work_type, ai_total, ai_material_cost, ai_labor_cost, ai_markup_rate, construction_id, created_at, ai_json, generated_image, uploaded_image FROM estimate_log WHERE tenant_id = ? ORDER BY id DESC LIMIT 50',
+      'SELECT id, work_type, ai_total, ai_material_cost, ai_labor_cost, ai_markup_rate, construction_id, created_at, ai_json, generated_image, uploaded_image, source, source_log_id FROM estimate_log WHERE tenant_id = ? ORDER BY id DESC LIMIT 50',
       [getCurrentTenant()]
     );
   });
@@ -3855,7 +3889,8 @@ ${pages}</body></html>`;
   });
 
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
-  ipcMain.handle('ai:analyzeImage', async (_e, data: any) => {
+  // AI見積もりのコア処理。デスクトップ(IPC)とスマホ(内蔵Webサーバー)の両方から呼ぶ
+  const analyzeImageCore = async (data: any) => {
     const { imageBase64, beforeImage, afterImage, comment, location } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '' } : data;
     const isBeforeAfter = beforeImage && afterImage;
 
@@ -4315,7 +4350,9 @@ manDaysBreakdownの書き方例:
     } catch (e: any) {
       throw new Error('JSON解析エラー: ' + e.message + ' / ' + jsonStr.substring(0, 200));
     }
-  });
+  };
+  ipcMain.handle('ai:analyzeImage', (_e, data: any) => analyzeImageCore(data));
+  setAnalyzeHandler(analyzeImageCore);
 
   // ── チャットセッション管理 ──
   ipcMain.handle('chatSessions:list', (_e) => {
@@ -4366,7 +4403,7 @@ manDaysBreakdownの書き方例:
   });
 
   // ── AIチャット見積（対話型）──
-  ipcMain.handle('ai:chat', async (_e, data: { messages: any[], imageBase64?: string }) => {
+  ipcMain.handle('ai:chat', async (_e, data: { messages: any[], imageBase64?: string, constructionId?: number, sourceLogId?: number }) => {
     await syncRemoteLicense(false);
     const creditResult = useCreditsSynced(1, 'チャット見積');
     if (!creditResult.success) {
@@ -4486,14 +4523,17 @@ ${pastWork || 'まだ実績なし'}`;
       } catch (e) { console.error('Chat learning memo save failed:', e); }
     }
 
-    // チャット見積の結果をestimate_logに記録
+    // チャット見積の結果をestimate_logに記録（写真見積とは別ログ・由来を明示）
+    // 既存見積についての「後からの相談」なら chat_followup として元ログIDを紐づける
     if (estimate) {
       try {
         const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+        const followup = data.sourceLogId ? 'chat_followup' : 'chat';
         runSql(
-          'INSERT INTO estimate_log (tenant_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO estimate_log (tenant_id, construction_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, source, source_log_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             tid,
+            data.constructionId || null,
             estimate.workType || '',
             estimate.estimatedMaterialCost || 0,
             estimate.estimatedLaborCost || 0,
@@ -4502,10 +4542,12 @@ ${pastWork || 'まだ実績なし'}`;
               ? estimate.estimatedTotal / ((estimate.estimatedMaterialCost || 0) + (estimate.estimatedLaborCost || 0))
               : 1.3,
             JSON.stringify(estimate),
+            followup,
+            data.sourceLogId || null,
             jstNow,
           ]
         );
-        console.log(`チャット見積ログ記録: ${estimate.workType} ¥${estimate.estimatedTotal}`);
+        console.log(`チャット見積ログ記録(${followup}): ${estimate.workType} ¥${estimate.estimatedTotal}`);
       } catch (e) { console.error('チャット見積ログ記録失敗:', e); }
     }
 
@@ -4633,7 +4675,7 @@ ${pastWork || 'まだ実績なし'}`;
   });
 
   // ── AI解析結果から物件・施工・材料明細・請求書を一括自動作成 ──
-  ipcMain.handle('ai:autoCreate', (_e, data: any) => {
+  const autoCreateFromEstimateCore = (data: any) => {
     const { result, imageBase64, comment, location } = data;
     const today = new Date().toISOString().split('T')[0];
     const dueDate = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
@@ -4733,7 +4775,9 @@ ${pastWork || 'まだ実績なし'}`;
     // estimate_log の最新IDを取得
     const latestLog = queryOne('SELECT id FROM estimate_log WHERE construction_id = ? AND tenant_id = ? ORDER BY id DESC LIMIT 1', [constructionId, tid]);
     return { propertyId, constructionId, invoiceId, sellingPrice, estimateLogId: latestLog?.id || null };
-  });
+  };
+  ipcMain.handle('ai:autoCreate', (_e, data: any) => autoCreateFromEstimateCore(data));
+  setAutoCreateHandler(autoCreateFromEstimateCore);
 
   // ── テナントデータ エクスポート（トライアル企業→本体へ渡す用）──
   ipcMain.handle('data:export', async () => {

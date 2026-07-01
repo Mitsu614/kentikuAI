@@ -30,6 +30,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [chatEstimate, setChatEstimate] = useState<any>(null);
   const [chatSessionId, setChatSessionId] = useState<number | null>(null);
   const [chatSessions, setChatSessions] = useState<any[]>([]);
+  // 「後からの相談」= 既存見積についてのチャットのとき、元見積ログ/施工に紐づける（別ログを chat_followup として残す）
+  const [chatSourceLogId, setChatSourceLogId] = useState<number | null>(null);
+  const [chatConstructionId, setChatConstructionId] = useState<number | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -51,6 +54,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             image: l.generated_image || null,
             uploadedImage: l.uploaded_image || null,
             constructionId: l.construction_id || null,
+            source: l.source || 'photo',
+            sourceLogId: l.source_log_id || null,
           };
         }));
       }
@@ -166,7 +171,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           setEstimateLog(logs.map((l: any) => {
             let parsed = null;
             try { parsed = JSON.parse(l.ai_json); } catch (_) {}
-            return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null };
+            return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null, source: l.source || 'photo', sourceLogId: l.source_log_id || null };
           }));
           // 最新のログをselectedに
           setSelectedLog(logs[0].id);
@@ -240,7 +245,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             setEstimateLog(logs.map((l: any) => {
               let parsed = null;
               try { parsed = JSON.parse(l.ai_json); } catch (_) {}
-              return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null };
+              return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null, source: l.source || 'photo', sourceLogId: l.source_log_id || null };
             }));
           }
         } catch (_) {}
@@ -333,7 +338,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         <div className="card" style={{ marginTop: 12, display: 'flex', flexDirection: 'column', height: 'calc(100vh - 200px)', minHeight: 400, background: '#e8ecf1', padding: 0, overflow: 'hidden', position: 'relative' }}>
           {/* チャットセッション履歴バー */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', background: '#fff', borderBottom: '1px solid #e2e8f0', overflowX: 'auto', flexShrink: 0 }}>
-            <button onClick={() => { setChatMessages([{ role: 'assistant', content: 'こんにちは！建築見積のAIアシスタントです。\n\nどんな工事の見積もりをしたいですか？' }]); setChatSessionId(null); setChatEstimate(null); }} style={{ padding: '4px 10px', fontSize: 11, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 600 }}>+ 新規</button>
+            <button onClick={() => { setChatMessages([{ role: 'assistant', content: 'こんにちは！建築見積のAIアシスタントです。\n\nどんな工事の見積もりをしたいですか？' }]); setChatSessionId(null); setChatEstimate(null); setChatSourceLogId(null); setChatConstructionId(null); }} style={{ padding: '4px 10px', fontSize: 11, background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 600 }}>+ 新規</button>
             {chatSessions.slice(0, 8).map((s: any) => (
               <button key={s.id} onClick={async () => {
                 const session = await (window as any).api.getChatSession(s.id);
@@ -341,6 +346,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   setChatMessages(session.messages || []);
                   setChatSessionId(s.id);
                   setChatEstimate(null);
+                  setChatConstructionId(session.construction_id || null);
+                  setChatSourceLogId(session.estimate_log_id || null);
                   if (session.construction_id) setAutoCreated({ constructionId: session.construction_id, propertyId: null });
                 }
               }} style={{
@@ -459,7 +466,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 setChatLoading(true);
                 setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
                 try {
-                  const res = await (window as any).api.aiChat({ messages: [...chatMessages, { role: 'user', content: 'この写真を見て見積もりしてください', image: img }] });
+                  const res = await (window as any).api.aiChat({ messages: [...chatMessages, { role: 'user', content: 'この写真を見て見積もりしてください', image: img }], constructionId: chatConstructionId || undefined, sourceLogId: chatSourceLogId || undefined });
                   setChatMessages(prev => [...prev, { role: 'assistant', content: res.text }]);
                   if (res.estimate) setChatEstimate(res.estimate);
                 } catch (e: any) { setChatMessages(prev => [...prev, { role: 'assistant', content: 'エラー: ' + e.message }]); }
@@ -481,7 +488,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
                   try {
                     const allMsgs = [...chatMessages, { role: 'user', content: userMsg }].filter(m => m.role !== 'system');
-                    const res = await (window as any).api.aiChat({ messages: allMsgs });
+                    const res = await (window as any).api.aiChat({ messages: allMsgs, constructionId: chatConstructionId || undefined, sourceLogId: chatSourceLogId || undefined });
                     setChatMessages(prev => [...prev, { role: 'assistant', content: res.text }]);
                     if (res.estimate) setChatEstimate(res.estimate);
                   } catch (e: any) { setChatMessages(prev => [...prev, { role: 'assistant', content: 'エラー: ' + e.message }]); }
@@ -1263,7 +1270,15 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   {(log.image || log.uploadedImage) && (
                     <img src={log.image || log.uploadedImage} style={{ width: '100%', height: 60, objectFit: 'cover', borderRadius: 6, marginBottom: 6 }} alt="" />
                   )}
-                  <div style={{ fontSize: 11, color: '#888' }}>{log.date || ''} {log.time || ''}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <div style={{ fontSize: 11, color: '#888', flex: 1 }}>{log.date || ''} {log.time || ''}</div>
+                    {log.source === 'chat_followup' && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#7c3aed', background: '#f3e8ff', borderRadius: 4, padding: '1px 5px' }} title="既存見積についての相談から作成された見積">💬 相談</span>
+                    )}
+                    {log.source === 'chat' && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: '#2563eb', background: '#dbeafe', borderRadius: 4, padding: '1px 5px' }} title="チャットで作成した見積">💬 チャット</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 12, fontWeight: 'bold', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {log.uploadedImage ? '📷' : ''}{log.image ? '🖼' : ''} {log.workType}
                   </div>
