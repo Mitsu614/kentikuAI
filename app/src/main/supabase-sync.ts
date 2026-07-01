@@ -1,9 +1,58 @@
 // Supabase 学習ループ同期モジュール
 // - 実績データをSupabaseに送信（匿名化済み）
 // - 最新の見積係数をSupabaseから取得
+// - ライセンスはトークン認証でEdge Function経由（STEP3）
 
 const SUPABASE_URL = 'https://slhgkedzlormaovwpadi.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e';
+
+// ── ライセンス用 Edge Function 呼び出し（STEP3） ──
+// remote_licenses への直アクセスをやめ、すべて license 関数経由にする。
+// 本人確認は会社名ではなく「秘密トークン」で行う。
+function licenseRequest(payload: any, timeoutMs = 8000): Promise<any> {
+  const https = require('https');
+  const url = new URL(`${SUPABASE_URL}/functions/v1/license`);
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: url.hostname, port: 443, path: url.pathname, method: 'POST',
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: timeoutMs,
+    }, (res: any) => {
+      let data = '';
+      res.on('data', (c: string) => { data += c; });
+      res.on('end', () => { try { resolve(data ? JSON.parse(data) : null); } catch { resolve(null); } });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.write(JSON.stringify(payload));
+    req.end();
+  });
+}
+
+// 確認: トークンで契約状況を取得 { active, plan, credits, max_credits, blocked_message } | { error } | null
+export function licenseVerify(token: string): Promise<any> {
+  return licenseRequest({ action: 'verify', token });
+}
+// クレジット消費: サーバー側で減算 { ok, credits } | { error } | null
+export function licenseConsume(token: string, amount: number): Promise<any> {
+  return licenseRequest({ action: 'consume', token, amount });
+}
+// 移行: 既存ライセンスのトークンを会社名で1回だけ受け取る { token, ... } | { error } | null
+export function licenseClaim(companyName: string): Promise<any> {
+  return licenseRequest({ action: 'claim', company_name: companyName });
+}
+// 新規登録: pending でライセンス作成しトークンを受け取る { token, status } | { error } | null
+export function licenseRegister(companyName: string): Promise<any> {
+  return licenseRequest({ action: 'register', company_name: companyName });
+}
+// 管理: 承認/却下/クレジット設定（要 adminSecret）
+export function licenseAdmin(adminSecret: string, sub: string, companyName: string, extra: any = {}): Promise<any> {
+  return licenseRequest({ action: 'admin', admin_secret: adminSecret, sub, company_name: companyName, ...extra });
+}
 
 interface FeedbackData {
   work_type: string;
@@ -71,12 +120,44 @@ async function supabaseRequest(table: string, method: string, body?: any, query?
   });
 }
 
+// 実績データのバリデーション — 明らかにあり得ない修正値を弾く
+function isReasonableFeedback(fb: FeedbackData): boolean {
+  const aiTotal = fb.ai_total || 0;
+  const actualTotal = fb.actual_selling_price || 0;
+
+  // 実績値が0以下は無効
+  if (actualTotal <= 0) return false;
+
+  // AI見積もりが0の場合はバリデーション不能なので通す
+  if (aiTotal <= 0) return true;
+
+  // 乖離率チェック: AI見積もりの10倍以上 or 1/10以下は異常値として除外
+  const ratio = actualTotal / aiTotal;
+  if (ratio > 10 || ratio < 0.1) {
+    console.warn(`学習ループ: 異常値を除外 (工種: ${fb.work_type}, AI: ${aiTotal}, 実績: ${actualTotal}, 乖離率: ${ratio.toFixed(2)})`);
+    return false;
+  }
+
+  // 個別コスト: マイナス値は無効
+  if ((fb.actual_material_cost ?? 0) < 0 || (fb.actual_labor_cost ?? 0) < 0) return false;
+
+  return true;
+}
+
 // 実績データをSupabaseに送信（匿名化 - テナントIDや案件名は含まない）
 export async function sendFeedbackToSupabase(feedbackList: FeedbackData[]): Promise<number> {
   if (!feedbackList || feedbackList.length === 0) return 0;
 
+  // バリデーション: あり得ない値を除外
+  const valid = feedbackList.filter(fb => isReasonableFeedback(fb));
+  const skipped = feedbackList.length - valid.length;
+  if (skipped > 0) {
+    console.log(`学習ループ: ${skipped}件を異常値として除外`);
+  }
+  if (valid.length === 0) return 0;
+
   let sent = 0;
-  for (const fb of feedbackList) {
+  for (const fb of valid) {
     try {
       await supabaseRequest('estimate_feedback', 'POST', fb);
       sent++;
@@ -84,7 +165,7 @@ export async function sendFeedbackToSupabase(feedbackList: FeedbackData[]): Prom
       console.error('Supabase送信エラー:', e);
     }
   }
-  console.log(`学習ループ: ${sent}/${feedbackList.length}件をSupabaseに送信`);
+  console.log(`学習ループ: ${sent}/${valid.length}件をSupabaseに送信`);
   return sent;
 }
 
@@ -109,91 +190,45 @@ export async function fetchCostCoefficients(): Promise<CostCoefficient[]> {
 }
 
 // 実績1件でも即時分析 → 係数更新
-export async function analyzeAndUpdateCoefficients(anthropicKey: string): Promise<void> {
+// セキュリティ(STEP2): 実績の集計・Claude分析・係数の書き込みは Edge Function 側で行う。
+// アプリは「再計算してほしい」という合図を送るだけ。入力データは渡さないため、
+// 公開キーを持っていても係数を汚染できない（DBの実データからのみ算出される）。
+// ※ 旧シグネチャ互換のため anthropicKey 引数は残すが未使用（キーはサーバー側のシークレット）。
+export async function analyzeAndUpdateCoefficients(_anthropicKey?: string): Promise<void> {
   try {
-    // 1. Supabaseから全実績を取得
-    const feedback = await supabaseRequest(
-      'estimate_feedback', 'GET', null,
-      '?select=*&order=created_at.desc&limit=1000'
-    );
-    if (!Array.isArray(feedback) || feedback.length === 0) {
-      console.log('学習ループ即時: 実績データなし、スキップ');
-      return;
-    }
-
-    // 2. 工事種別ごとに集計
-    const byType: Record<string, any[]> = {};
-    for (const fb of feedback) {
-      const wt = fb.work_type || '不明';
-      if (!byType[wt]) byType[wt] = [];
-      byType[wt].push(fb);
-    }
-
-    const summary = Object.entries(byType).map(([wt, list]) => {
-      const avgAiMat = list.reduce((s, f) => s + (f.ai_material_cost || 0), 0) / list.length;
-      const avgActMat = list.reduce((s, f) => s + (f.actual_material_cost || f.ai_material_cost || 0), 0) / list.length;
-      const avgAiLab = list.reduce((s, f) => s + (f.ai_labor_cost || 0), 0) / list.length;
-      const avgActLab = list.reduce((s, f) => s + (f.actual_labor_cost || f.ai_labor_cost || 0), 0) / list.length;
-      const avgAiTotal = list.reduce((s, f) => s + (f.ai_total || 0), 0) / list.length;
-      const avgActual = list.reduce((s, f) => s + (f.actual_selling_price || f.ai_total || 0), 0) / list.length;
-      return `${wt}(${list.length}件): AI材料費${Math.round(avgAiMat)}円→実績${Math.round(avgActMat)}円, AI労務費${Math.round(avgAiLab)}円→実績${Math.round(avgActLab)}円, AI合計${Math.round(avgAiTotal)}円→実績売価${Math.round(avgActual)}円`;
-    }).join('\n');
-
-    // 3. Claude APIで分析
     const https = require('https');
-    const prompt = `建築見積AIの精度改善データです。補正係数をJSON配列で返してください。\n\n${summary}\n\n出力: [{"work_type":"名前","material_adjustment":1.0,"labor_adjustment":1.0,"confidence":0.0,"avg_accuracy":1.0,"notes":"メモ"}]\nルール: 乖離5%未満は1.0、データ1件はconfidence=0.1`;
-
-    const claudeResponse: string = await new Promise((resolve, reject) => {
-      const body = JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 2000,
-        temperature: 0,
-        messages: [{ role: 'user', content: prompt }],
-      });
+    const result: { updated?: number; feedback?: number; error?: string } = await new Promise((resolve, reject) => {
       const req = https.request({
-        hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+        hostname: new URL(SUPABASE_URL).hostname,
+        path: '/functions/v1/update-coefficients',
+        method: 'POST',
         headers: {
-          'x-api-key': anthropicKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
         },
+        timeout: 30000,
       }, (res: any) => {
         let data = '';
         res.on('data', (c: string) => { data += c; });
         res.on('end', () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
-            const parsed = JSON.parse(data);
-            resolve(parsed.content[0].text);
-          } else reject(new Error(`Claude ${res.statusCode}: ${data}`));
+            try { resolve(data ? JSON.parse(data) : {}); } catch { resolve({}); }
+          } else {
+            reject(new Error(`update-coefficients ${res.statusCode}: ${data}`));
+          }
         });
       });
       req.on('error', reject);
-      req.write(body);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
       req.end();
     });
 
-    // 4. JSONを抽出してSupabaseに書き込み
-    const jsonMatch = claudeResponse.match(/\[[\s\S]*?\]/);
-    if (!jsonMatch) {
-      console.error('学習ループ即時: JSON抽出失敗');
-      return;
+    if (result.error) {
+      console.error('学習ループ即時(Edge): エラー', result.error);
+    } else {
+      console.log(`学習ループ即時(Edge): 実績${result.feedback ?? '?'}件から${result.updated ?? 0}工種の係数を更新`);
     }
-
-    const coefficients = JSON.parse(jsonMatch[0]);
-    for (const coeff of coefficients) {
-      await supabaseRequest('cost_coefficients', 'POST', {
-        work_type: coeff.work_type,
-        material_adjustment: coeff.material_adjustment,
-        labor_adjustment: coeff.labor_adjustment,
-        confidence: coeff.confidence,
-        sample_count: (byType[coeff.work_type] || []).length,
-        avg_accuracy: coeff.avg_accuracy,
-        notes: coeff.notes,
-        updated_at: new Date().toISOString(),
-      }, '?on_conflict=work_type');
-    }
-
-    console.log(`学習ループ即時: ${feedback.length}件の実績から${coefficients.length}工種の係数を更新`);
   } catch (e) {
     console.error('学習ループ即時分析エラー:', e);
   }

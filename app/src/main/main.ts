@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData } from './external-data';
 
 // ── トライアル用埋め込みキー ──
@@ -29,7 +29,7 @@ function decryptTrialKey(encoded: string): string {
 }
 
 // ── API キー暗号化 ──
-const SENSITIVE_FIELDS = ['anthropicKey', 'openaiKey', 'serverPassword'];
+const SENSITIVE_FIELDS = ['anthropicKey', 'openaiKey', 'serverPassword', 'licenseToken', 'adminSecret'];
 function getEncKey() {
   const os = require('os');
   return crypto.createHash('sha256').update(os.hostname() + os.userInfo().username + 'kentiku-salt').digest();
@@ -83,6 +83,53 @@ function saveApiConfig(config: any) {
   // 暗号化
   for (const f of SENSITIVE_FIELDS) { if (toSave[f]) toSave[f] = encryptField(toSave[f]); }
   fs.writeFileSync(getConfigPath(), JSON.stringify(toSave, null, 2), 'utf-8');
+}
+
+// ── ライセンストークン管理（STEP3） ──
+// remote_licenses への直アクセスをやめ、秘密トークンで本人確認する。
+let currentLicenseToken = '';
+function getStoredLicenseToken(): string {
+  try { return loadApiConfig().licenseToken || ''; } catch { return ''; }
+}
+function storeLicenseToken(token: string) {
+  if (!token) return;
+  try {
+    const cfg = loadApiConfig();
+    cfg.licenseToken = token;
+    saveApiConfig(cfg);
+    currentLicenseToken = token;
+  } catch (e) { console.error('storeLicenseToken failed:', e); }
+}
+// 会社名からトークンを確保する。
+//  1) 既に保存済みならそれを使う
+//  2) 既存ライセンスを claim（移行・1回限り）。名前ゆれ対策で候補名を順に試す
+//  3) claim できなければ register（新規・activeトライアル）
+async function ensureLicenseToken(...candidateNames: string[]): Promise<string> {
+  if (currentLicenseToken) return currentLicenseToken;
+  const stored = getStoredLicenseToken();
+  if (stored) { currentLicenseToken = stored; return stored; }
+  // 空・重複を除いた候補名（contact_company と name の両方に対応）
+  const names = Array.from(new Set(candidateNames.map((n) => (n || '').trim()).filter(Boolean)));
+  if (names.length === 0) return '';
+  // 移行: 既存ライセンスのトークンを受け取る（候補名を順に）
+  for (const name of names) {
+    const claimed = await licenseClaim(name);
+    if (claimed && claimed.token) { storeLicenseToken(claimed.token); return claimed.token; }
+  }
+  // 新規登録: activeトライアルでトークン発行（先頭の候補名で）
+  const reg = await licenseRegister(names[0]);
+  if (reg && reg.token) { storeLicenseToken(reg.token); return reg.token; }
+  return '';
+}
+// クレジット消費をローカル＋サーバー(トークン)へ反映する。
+// ローカルは即時（オフライン対応）、サーバーはベストエフォートで減算（真実はサーバー）。
+function useCreditsSynced(amount: number, operation: string): { success: boolean; limitReached?: boolean } {
+  const r = useCredits(amount, operation);
+  if (r.success && amount > 0 && currentLicenseToken) {
+    // fire-and-forget（ネット不通でもローカルは消費済み。次回verifyでサーバー値に整合）
+    licenseConsume(currentLicenseToken, amount).catch(() => {});
+  }
+  return r;
 }
 
 // ── 画像メディアタイプ検出 ──
@@ -488,7 +535,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.1.9';
+const CURRENT_VERSION = '3.2.0';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -577,38 +624,18 @@ function setupAutoUpdater() {
   });
 
   ipcMain.handle('remote:approve', async (_e, companyName: string, plan: string) => {
-    const https = require('https');
-    const credits = plan === 'demo' ? 30 : plan === 'standard' ? 50 : plan === 'pro' ? 200 : 50;
-    const body = JSON.stringify({ plan, credits, max_credits: credits, active: true, updated_at: new Date().toISOString() });
-    return new Promise((resolve) => {
-      const req = https.request({
-        hostname: 'slhgkedzlormaovwpadi.supabase.co',
-        path: `/rest/v1/remote_licenses?company_name=eq.${encodeURIComponent(companyName)}`,
-        method: 'PATCH',
-        headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
-        timeout: 8000,
-      }, () => resolve({ ok: true }));
-      req.on('error', () => resolve({ ok: false }));
-      req.write(body);
-      req.end();
-    });
+    // STEP3: 承認は管理Edge Function経由（service_role）。要 adminSecret。
+    const adminSecret = loadApiConfig().adminSecret || '';
+    if (!adminSecret) return { ok: false, error: 'adminSecret未設定（設定画面で管理者シークレットを入力してください）' };
+    const res = await licenseAdmin(adminSecret, 'approve', companyName, { plan });
+    return res && res.ok ? { ok: true } : { ok: false, error: res?.error || '承認失敗' };
   });
 
   ipcMain.handle('remote:reject', async (_e, companyName: string) => {
-    const https = require('https');
-    const body = JSON.stringify({ active: false, blocked_message: '申請が却下されました', updated_at: new Date().toISOString() });
-    return new Promise((resolve) => {
-      const req = https.request({
-        hostname: 'slhgkedzlormaovwpadi.supabase.co',
-        path: `/rest/v1/remote_licenses?company_name=eq.${encodeURIComponent(companyName)}`,
-        method: 'PATCH',
-        headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
-        timeout: 8000,
-      }, () => resolve({ ok: true }));
-      req.on('error', () => resolve({ ok: false }));
-      req.write(body);
-      req.end();
-    });
+    const adminSecret = loadApiConfig().adminSecret || '';
+    if (!adminSecret) return { ok: false, error: 'adminSecret未設定（設定画面で管理者シークレットを入力してください）' };
+    const res = await licenseAdmin(adminSecret, 'reject', companyName, { message: '申請が却下されました' });
+    return res && res.ok ? { ok: true } : { ok: false, error: res?.error || '却下失敗' };
   });
 
     // 起動後5秒で確認開始
@@ -704,27 +731,12 @@ app.whenReady().then(async () => {
     }
   }
 
-  // ── クレジット残量をSupabaseに同期 ──
+  // ── クレジット残量のリモート同期 ──
+  // STEP3: クライアントが残量を直接書き込む方式は廃止（改ざん防止）。
+  // 消費は useCreditsSynced → licenseConsume（サーバー側で減算）で反映され、
+  // 残量の真実は syncRemoteLicense の verify で取得する。ここは互換のため残す no-op。
   async function syncCreditsToRemote() {
-    if (getCurrentTenant() === 1) return;
-    try {
-      const https = require('https');
-      const tenant = queryOne('SELECT name, contact_company, credits FROM tenants WHERE id = ?', [getCurrentTenant()]);
-      const companyName = encodeURIComponent(tenant?.contact_company || tenant?.name || '');
-      const body = JSON.stringify({ credits: tenant?.credits ?? 0, updated_at: new Date().toISOString() });
-      await new Promise<void>((resolve) => {
-        const req = https.request({
-          hostname: 'slhgkedzlormaovwpadi.supabase.co',
-          path: `/rest/v1/remote_licenses?company_name=eq.${companyName}`,
-          method: 'PATCH',
-          headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
-          timeout: 5000,
-        }, () => resolve());
-        req.on('error', () => resolve());
-        req.write(body);
-        req.end();
-      });
-    } catch (e) { console.error('syncCreditsToRemote failed:', e); }
+    return;
   }
 
   // ── リモートライセンスチェック（関数化して定期実行） ──
@@ -744,57 +756,43 @@ app.whenReady().then(async () => {
   async function syncRemoteLicense(isStartup = false) {
     if (getCurrentTenant() === 1) return;
     try {
-      const https = require('https');
       const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [getCurrentTenant()]);
 
-      // contact_companyで検索、なければnameで検索
-      let licenseCheck = await fetchLicenseByName(tenant?.contact_company || tenant?.name || '');
-      if (licenseCheck.length === 0 && tenant?.name && tenant.name !== (tenant.contact_company || '')) {
-        licenseCheck = await fetchLicenseByName(tenant.name);
-      }
-      if (Array.isArray(licenseCheck) && licenseCheck.length > 0) {
-        const lic = licenseCheck[0];
-        if (!lic.active) {
-          if (lic.plan === 'pending') {
-            // 承認待ち → アプリは閉じない。承認されるまでローカルのデモデータで使える
-            if (isStartup) {
-              dialog.showMessageBox({ type: 'info', title: '承認待ち', message: '管理者の承認をお待ちください。\n承認後にアプリを再起動するとご利用いただけます。', buttons: ['OK'] });
-            }
-            return; // 同期せずに戻る（ローカルのpending状態のまま）
-          }
-          if (isStartup) {
-            dialog.showErrorBox('ご利用停止', lic.blocked_message || 'ご利用期間が終了しました。ご契約については担当者にお問い合わせください。');
-            app.quit();
-          }
-          throw new Error('ご利用が停止されています。管理者にお問い合わせください。');
+      // トークンを確保（保存済み→claim移行→register新規）。名前ゆれ対策で contact_company と name の両方を候補に。
+      // 取れなければローカルで続行
+      const token = await ensureLicenseToken(tenant?.contact_company || '', tenant?.name || '');
+      if (!token) return;
+
+      // トークンで契約状況を確認（remote_licensesへの直アクセスはしない）
+      const lic = await licenseVerify(token);
+      if (!lic || lic.error) {
+        // 保存トークンが無効になっていたら破棄して次回再取得
+        if (lic && lic.error === 'invalid_token') {
+          currentLicenseToken = '';
+          try { const cfg = loadApiConfig(); delete cfg.licenseToken; saveApiConfig(cfg); } catch (_) {}
         }
-        // リモートのプラン・クレジットをローカルに同期
-        const remotePlan = lic.plan || 'standard';
-        const remoteLimit = lic.max_credits || lic.credits || 50;
-        runSql('UPDATE tenants SET credits = ?, plan_limit = ?, plan = ? WHERE id = ?', [lic.credits, remoteLimit, remotePlan, getCurrentTenant()]);
-      } else if (Array.isArray(licenseCheck) && licenseCheck.length === 0) {
-        // 未登録 → 自動でremote_licensesに追加
-        const tenant = queryOne('SELECT name, credits, plan_limit, contact_company FROM tenants WHERE id = ?', [getCurrentTenant()]);
-        const newId = 'auto_' + Date.now().toString(36);
-        const regBody = JSON.stringify({
-          id: newId,
-          company_name: tenant?.contact_company || tenant?.name || '不明',
-          plan: 'trial',
-          credits: tenant?.credits || 50,
-          max_credits: tenant?.plan_limit || 50,
-          active: true,
-        });
-        await new Promise<void>((resolve) => {
-          const postReq = https.request({
-            hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/remote_licenses', method: 'POST',
-            headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-            timeout: 5000,
-          }, () => resolve());
-          postReq.on('error', () => resolve());
-          postReq.write(regBody);
-          postReq.end();
-        });
+        return; // ネット不通/一時エラーはローカルのクレジットで続行
       }
+
+      if (!lic.active) {
+        if (lic.plan === 'pending') {
+          // 承認待ち → アプリは閉じない
+          if (isStartup) {
+            dialog.showMessageBox({ type: 'info', title: '承認待ち', message: '管理者の承認をお待ちください。\n承認後にアプリを再起動するとご利用いただけます。', buttons: ['OK'] });
+          }
+          return;
+        }
+        if (isStartup) {
+          dialog.showErrorBox('ご利用停止', lic.blocked_message || 'ご利用期間が終了しました。ご契約については担当者にお問い合わせください。');
+          app.quit();
+        }
+        throw new Error('ご利用が停止されています。管理者にお問い合わせください。');
+      }
+
+      // サーバーが真実 → プラン・クレジットをローカルに同期
+      const remotePlan = lic.plan || 'standard';
+      const remoteLimit = lic.max_credits || lic.credits || 50;
+      runSql('UPDATE tenants SET credits = ?, plan_limit = ?, plan = ? WHERE id = ?', [lic.credits, remoteLimit, remotePlan, getCurrentTenant()]);
     } catch (e: any) {
       // 利用停止エラーは上に伝播させる
       if (e?.message?.includes('停止')) throw e;
@@ -3361,7 +3359,7 @@ ${pages}</body></html>`;
   ipcMain.handle('ai:ocrInvoice', async (_e, imageBase64: string) => {
     // クレジットチェック（OCR = 1ストック）
     await syncRemoteLicense(false);
-    const ocrCreditResult = useCredits(1, 'OCR取込');
+    const ocrCreditResult = useCreditsSynced(1, 'OCR取込');
     if (!ocrCreditResult.success) {
       if (ocrCreditResult.limitReached) await sendLimitNotification('OCR取込');
       throw new Error('ERROR: 今月のAIストックの上限に達しました。管理者に連絡済みです。追加ストックについてはご連絡をお待ちください。');
@@ -3845,7 +3843,7 @@ ${pages}</body></html>`;
     const opName = isBeforeAfter ? 'ビフォーアフター見積' : hasImageInput && hasCommentInput ? '写真+コメント見積' : hasImageInput ? 'AI見積' : 'テキスト見積';
     // クレジットチェック
     await syncRemoteLicense(false);
-    const creditResult = useCredits(creditCost, opName);
+    const creditResult = useCreditsSynced(creditCost, opName);
     if (!creditResult.success) {
       if (creditResult.limitReached) {
         await sendLimitNotification(opName);
@@ -4347,7 +4345,7 @@ manDaysBreakdownの書き方例:
   // ── AIチャット見積（対話型）──
   ipcMain.handle('ai:chat', async (_e, data: { messages: any[], imageBase64?: string }) => {
     await syncRemoteLicense(false);
-    const creditResult = useCredits(1, 'チャット見積');
+    const creditResult = useCreditsSynced(1, 'チャット見積');
     if (!creditResult.success) {
       throw new Error('ERROR: 今月のクレジット上限に達しました。');
     }
@@ -4522,7 +4520,7 @@ ${pastWork || 'まだ実績なし'}`;
   ipcMain.handle('ai:generateImage', async (_e, data: any) => {
     // クレジットチェック（画像生成 = 3ストック）
     await syncRemoteLicense(false);
-    const imgCreditResult = useCredits(3, '画像生成');
+    const imgCreditResult = useCreditsSynced(3, '画像生成');
     if (!imgCreditResult.success) {
       if (imgCreditResult.limitReached) await sendLimitNotification('画像生成');
       throw new Error('ERROR: 今月のAIストックの上限に達しました。管理者に連絡済みです。追加ストックについてはご連絡をお待ちください。');

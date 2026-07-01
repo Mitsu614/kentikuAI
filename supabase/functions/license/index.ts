@@ -1,0 +1,185 @@
+// Supabase Edge Function: license
+// 役割: ライセンスの発行・確認・クレジット消費・移行(claim)・管理を、すべてサーバー側(service_role)で行う。
+//       公開キーは remote_licenses に一切触れない。本人確認は「秘密トークン」で行う。
+//
+// 呼び出し: POST JSON { action: "verify"|"register"|"consume"|"claim"|"admin", ... }
+//
+// シークレット:
+//   - SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY … 自動
+//   - ADMIN_SECRET … admin アクション用（未設定なら admin は無効）
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const ADMIN_SECRET = Deno.env.get("ADMIN_SECRET") || "";
+
+const H = {
+  apikey: SERVICE_ROLE,
+  Authorization: `Bearer ${SERVICE_ROLE}`,
+  "Content-Type": "application/json",
+};
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...CORS },
+  });
+}
+
+async function sbGet(path: string): Promise<any[]> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: H });
+  if (!res.ok) throw new Error(`get ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+async function sbPatch(path: string, body: unknown): Promise<any[]> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: "PATCH",
+    headers: { ...H, Prefer: "return=representation" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`patch ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+async function sbInsert(body: unknown): Promise<any[]> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/remote_licenses`, {
+    method: "POST",
+    headers: { ...H, Prefer: "return=representation" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`insert ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+// トークン生成（推測不可能・64桁hex）
+function newToken(): string {
+  const b = new Uint8Array(32);
+  crypto.getRandomValues(b);
+  return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+// 外向けにトークンを含めない安全な表現
+function publicView(lic: any) {
+  return {
+    active: !!lic.active,
+    plan: lic.plan,
+    credits: lic.credits,
+    max_credits: lic.max_credits,
+    blocked_message: lic.blocked_message ?? null,
+  };
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  try {
+    const body = await req.json().catch(() => ({}));
+    const action = body.action;
+
+    // ---- verify: トークンで契約状況を返す ----
+    if (action === "verify") {
+      const token = String(body.token || "");
+      if (!token) return json({ error: "token required" }, 400);
+      const rows = await sbGet(
+        `remote_licenses?license_token=eq.${encodeURIComponent(token)}&select=active,plan,credits,max_credits,blocked_message`,
+      );
+      if (!rows.length) return json({ error: "invalid_token" }, 404);
+      return json(publicView(rows[0]));
+    }
+
+    // ---- consume: サーバー側でクレジットを減算 ----
+    if (action === "consume") {
+      const token = String(body.token || "");
+      const amount = Math.max(0, Math.floor(Number(body.amount) || 0));
+      if (!token) return json({ error: "token required" }, 400);
+      const rows = await sbGet(
+        `remote_licenses?license_token=eq.${encodeURIComponent(token)}&select=id,active,credits`,
+      );
+      if (!rows.length) return json({ error: "invalid_token" }, 404);
+      const lic = rows[0];
+      if (!lic.active) return json({ error: "inactive" }, 403);
+      if ((lic.credits ?? 0) < amount) return json({ error: "insufficient", credits: lic.credits ?? 0 }, 402);
+      const updated = await sbPatch(
+        `remote_licenses?id=eq.${encodeURIComponent(lic.id)}`,
+        { credits: (lic.credits ?? 0) - amount, updated_at: new Date().toISOString() },
+      );
+      return json({ ok: true, credits: updated[0]?.credits ?? (lic.credits - amount) });
+    }
+
+    // ---- register: 新規会社を「activeトライアル」で登録し、トークンを返す ----
+    // クレジット等の値はサーバーが固定（呼び出し側が指定できない）＝偽造で高額プランは作れない。
+    // 有料プランへの引き上げは admin approve（要シークレット）でのみ可能。
+    if (action === "register") {
+      const company = String(body.company_name || "").trim();
+      if (!company) return json({ error: "company_name required" }, 400);
+      const existing = await sbGet(
+        `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=id`,
+      );
+      if (existing.length) return json({ error: "already_exists" }, 409);
+      const token = newToken();
+      const TRIAL_CREDITS = 50;
+      await sbInsert({
+        id: "reg_" + newToken().slice(0, 12),
+        company_name: company,
+        plan: "trial",
+        credits: TRIAL_CREDITS,
+        max_credits: TRIAL_CREDITS,
+        active: true,
+        license_token: token,
+        claimed_at: new Date().toISOString(), // register応答で本人に渡すのでclaim済み扱い
+      });
+      return json({ token, status: "trial", plan: "trial", credits: TRIAL_CREDITS });
+    }
+
+    // ---- claim: 既存ライセンス(会社名)のトークンを1回だけ受け取る（移行用） ----
+    if (action === "claim") {
+      const company = String(body.company_name || "").trim();
+      if (!company) return json({ error: "company_name required" }, 400);
+      const rows = await sbGet(
+        `remote_licenses?company_name=eq.${encodeURIComponent(company)}&claimed_at=is.null&select=id,license_token,plan,active,credits,max_credits`,
+      );
+      if (!rows.length) return json({ error: "not_found_or_already_claimed" }, 404);
+      const lic = rows[0];
+      await sbPatch(`remote_licenses?id=eq.${encodeURIComponent(lic.id)}`, {
+        claimed_at: new Date().toISOString(),
+      });
+      return json({ token: lic.license_token, ...publicView(lic) });
+    }
+
+    // ---- admin: 承認/却下/クレジット設定（管理者シークレット必須） ----
+    if (action === "admin") {
+      if (!ADMIN_SECRET || body.admin_secret !== ADMIN_SECRET) return json({ error: "forbidden" }, 403);
+      const sub = body.sub;
+      const company = String(body.company_name || "").trim();
+      if (!company) return json({ error: "company_name required" }, 400);
+      if (sub === "approve") {
+        const plan = String(body.plan || "standard");
+        const credits = Number(body.credits ?? (plan === "demo" ? 30 : plan === "pro" ? 200 : 50));
+        await sbPatch(`remote_licenses?company_name=eq.${encodeURIComponent(company)}`, {
+          plan, credits, max_credits: credits, active: true, blocked_message: null, updated_at: new Date().toISOString(),
+        });
+        return json({ ok: true });
+      }
+      if (sub === "reject") {
+        await sbPatch(`remote_licenses?company_name=eq.${encodeURIComponent(company)}`, {
+          active: false, blocked_message: String(body.message || "申請が却下されました"), updated_at: new Date().toISOString(),
+        });
+        return json({ ok: true });
+      }
+      if (sub === "set_credits") {
+        const credits = Number(body.credits ?? 0);
+        await sbPatch(`remote_licenses?company_name=eq.${encodeURIComponent(company)}`, {
+          credits, updated_at: new Date().toISOString(),
+        });
+        return json({ ok: true });
+      }
+      return json({ error: "unknown sub" }, 400);
+    }
+
+    return json({ error: "unknown action" }, 400);
+  } catch (e) {
+    return json({ error: String(e) }, 500);
+  }
+});
