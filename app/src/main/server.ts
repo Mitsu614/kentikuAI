@@ -103,6 +103,9 @@ export function startServer(distPath: string) {
     }
     // 認証不要のパス
     if (req.path === '/api/auth' || req.path === '/api/version' || req.path === '/admin') return next();
+    // 静的アセット（JS/CSS/画像/フォント等）は認証不要 = アプリの土台。
+    // これを弾くとスマホで真っ白になる。データAPI(/api/*)は下で保護されたまま。
+    if (/\.(js|mjs|css|map|png|jpe?g|svg|gif|webp|ico|woff2?|ttf|eot|json|txt|wasm)$/i.test(req.path)) return next();
     if (req.path === '/login') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>ログイン - 建築ブースト</title>
