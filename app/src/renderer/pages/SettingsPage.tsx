@@ -73,6 +73,34 @@ export default function SettingsPage() {
       {/* 管理者用: プラン申請管理 */}
       <PlanAdmin />
 
+      {/* 文字サイズ */}
+      <div className="card">
+        <h3 style={{ marginBottom: 12 }}>🔤 文字サイズ</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <span style={{ fontSize: 13, color: '#666', whiteSpace: 'nowrap' }}>小</span>
+          <input
+            type="range" min="80" max="150" step="5"
+            value={Math.round((config.fontScale || 1) * 100)}
+            onChange={e => {
+              const scale = parseInt(e.target.value) / 100;
+              setConfig({ ...config, fontScale: scale });
+              (window as any).api.setZoom(scale);
+            }}
+            style={{ flex: 1 }}
+          />
+          <span style={{ fontSize: 13, color: '#666', whiteSpace: 'nowrap' }}>大</span>
+          <span style={{ fontSize: 14, fontWeight: 'bold', color: '#2c3e50', minWidth: 50, textAlign: 'center' }}>
+            {Math.round((config.fontScale || 1) * 100)}%
+          </span>
+          <button className="btn btn-secondary btn-sm" onClick={() => {
+            setConfig({ ...config, fontScale: 1 });
+            (window as any).api.setZoom(1);
+          }} style={{ fontSize: 11 }}>リセット</button>
+        </div>
+        <button className="btn btn-primary" onClick={save} style={{ marginTop: 12 }}>保存</button>
+        {saved && <span style={{ color: '#27ae60', fontSize: 13, marginLeft: 8 }}>✓ 保存しました</span>}
+      </div>
+
       {/* 業種選択 */}
       <div className="card" style={{ border: '2px solid #e67e22' }}>
         <h3 style={{ marginBottom: 12 }}>🏗️ 業種設定</h3>
@@ -310,7 +338,15 @@ export default function SettingsPage() {
           <button className="btn btn-secondary" onClick={() => (window as any).api.exportConstructions()}>施工データ CSV</button>
           <button className="btn btn-secondary" onClick={() => (window as any).api.exportInvoices()}>請求書データ CSV</button>
           <button className="btn btn-secondary" onClick={() => (window as any).api.exportMaterials()}>材料マスタ CSV</button>
-          <button className="btn btn-primary" onClick={() => (window as any).api.batchExportPDF()}>請求書PDF一括出力</button>
+          <button className="btn btn-primary" onClick={async () => {
+            try {
+              const r = await (window as any).api.batchExportPDF();
+              if (!r) return;
+              if (r.canceled) return;
+              if (r.success) alert(`請求書PDFを${r.count}件出力しました（保存先を開きます）`);
+              else alert(r.message || '出力する請求書がありませんでした');
+            } catch (e: any) { alert('一括出力に失敗しました: ' + (e?.message || e)); }
+          }}>請求書PDF一括出力</button>
         </div>
       </div>
 
@@ -363,22 +399,17 @@ function PlanManagement() {
   };
 
   const requestPlan = async (planKey: string) => {
+    try {
+      // プラン申請を記録 + メール通知を送信
+      await (window as any).api.requestPlan(planKey);
+    } catch (_) { /* 通知失敗しても続行 */ }
+
     const link = STRIPE_LINKS[planKey];
     if (link) {
       window.open(link, '_blank');
     } else {
-      // 法人カスタム等: メール通知を送信
-      try {
-        await (window as any).api.createFeedback({
-          category: '料金・プラン',
-          title: `${plans[planKey]?.name || planKey}プランへの変更希望`,
-          description: `現在のプラン: ${planInfo?.planName || '不明'}\n希望プラン: ${plans[planKey]?.name || planKey}`,
-          priority: '高',
-        });
-        alert('お問い合わせを送信しました。担当者からご連絡いたします。');
-      } catch (_) {
-        window.open('mailto:mitsuakinakano0215@gmail.com?subject=建築ブースト 法人カスタムプラン問い合わせ');
-      }
+      // 法人カスタム等: 申請送信済み
+      alert('お問い合わせを送信しました。担当者からご連絡いたします。');
     }
   };
 
@@ -669,7 +700,16 @@ function PlanAdmin() {
 }
 
 function DataTransfer() {
+  const [isOwner, setIsOwner] = useState(false);
   const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    (window as any).api.currentTenant?.().then((tid: number) => {
+      if (tid === 1) setIsOwner(true);
+    }).catch(() => {});
+  }, []);
+
+  if (!isOwner) return null;
 
   const exportData = async () => {
     setMsg('');
@@ -706,12 +746,34 @@ function DataTransfer() {
 }
 
 function UserManagement() {
+  const [isOwner, setIsOwner] = useState(false);
   const [users, setUsers] = useState<any[]>([]);
+  const [tenants, setTenants] = useState<any[]>([]);
   const [form, setForm] = useState({ username: '', password: '', role: 'user' });
   const [msg, setMsg] = useState('');
+  const [showAddTenant, setShowAddTenant] = useState(false);
+  const [tenantForm, setTenantForm] = useState({ companyName: '', plan: 'demo', credits: 30, username: '', password: '' });
+  const [tenantMsg, setTenantMsg] = useState('');
+  const [tenantLoading, setTenantLoading] = useState(false);
 
-  useEffect(() => { load(); }, []);
-  const load = async () => { setUsers(await (window as any).api.listUsers()); };
+  const plans: Record<string, { name: string; credits: number }> = {
+    demo: { name: 'デモ', credits: 30 },
+    standard: { name: 'スタンダード', credits: 50 },
+    pro: { name: 'プロ', credits: 300 },
+    enterprise: { name: '法人カスタム', credits: 9999 },
+  };
+
+  useEffect(() => {
+    (window as any).api.currentTenant?.().then((tid: number) => {
+      if (tid === 1) { setIsOwner(true); load(); }
+    }).catch(() => {});
+  }, []);
+  const load = async () => {
+    setUsers(await (window as any).api.listUsers());
+    setTenants(await (window as any).api.listTenants());
+  };
+
+  if (!isOwner) return null;
 
   const create = async () => {
     if (!form.username || !form.password) { setMsg('ユーザー名とパスワードを入力'); return; }
@@ -727,9 +789,109 @@ function UserManagement() {
     if (confirm('削除しますか？')) { await (window as any).api.deleteUser(id); load(); }
   };
 
+  const addTenant = async () => {
+    if (!tenantForm.companyName.trim()) { setTenantMsg('会社名を入力してください'); return; }
+    if (!tenantForm.username.trim() || !tenantForm.password) { setTenantMsg('ユーザー名とパスワードを入力してください'); return; }
+    setTenantLoading(true);
+    setTenantMsg('');
+    try {
+      // 1. テナント作成
+      const tenantId = await (window as any).api.createTenant(tenantForm.companyName.trim());
+      // 2. プラン・クレジット設定
+      await (window as any).api.setPlan(tenantForm.plan, tenantId);
+      await (window as any).api.setTenantCredits(tenantId, tenantForm.credits);
+      // 3. ユーザー作成（テナントに紐づけ）
+      await (window as any).api.createUser({
+        username: tenantForm.username.trim(),
+        password: tenantForm.password,
+        role: 'admin',
+        tenantId,
+      });
+      setTenantMsg(`「${tenantForm.companyName}」を追加しました（${plans[tenantForm.plan]?.name}プラン / ${tenantForm.credits}単位）`);
+      setTenantForm({ companyName: '', plan: 'demo', credits: 30, username: '', password: '' });
+      load();
+    } catch (e: any) { setTenantMsg('エラー: ' + (e.message || '作成に失敗しました')); }
+    setTenantLoading(false);
+  };
+
   return (
     <div className="card" style={{ marginTop: 16 }}>
-      <h3 style={{ marginBottom: 12 }}>👥 ユーザー管理</h3>
+      <h3 style={{ marginBottom: 12 }}>👥 ユーザー・テナント管理</h3>
+
+      {/* テナント一覧 */}
+      {tenants.length > 1 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 'bold', marginBottom: 6 }}>登録テナント</div>
+          <table className="data-table" style={{ marginBottom: 8 }}>
+            <thead><tr><th>会社名</th><th>プラン</th><th>クレジット</th><th>ステータス</th></tr></thead>
+            <tbody>
+              {tenants.filter((t: any) => t.id > 1).map((t: any) => (
+                <tr key={t.id}>
+                  <td><strong>{t.contact_company || t.name}</strong></td>
+                  <td><span className="badge badge-draft">{plans[t.plan]?.name || t.plan}</span></td>
+                  <td>{t.credits ?? '-'} / {t.plan_limit ?? '-'}</td>
+                  <td>
+                    <span className={`badge ${t.plan === 'suspended' ? 'badge-overdue' : 'badge-paid'}`}>
+                      {t.plan === 'suspended' ? '停止中' : '有効'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* テナント追加 */}
+      <div style={{ marginBottom: 16 }}>
+        <button className="btn btn-sm btn-primary" onClick={() => setShowAddTenant(!showAddTenant)} style={{ marginBottom: 8 }}>
+          {showAddTenant ? '▲ 閉じる' : '＋ 新規テナント（顧客）を追加'}
+        </button>
+        {showAddTenant && (
+          <div style={{ background: '#f8f9fa', border: '1px solid #e0e0e0', borderRadius: 8, padding: 16 }}>
+            <div className="form-group" style={{ marginBottom: 8 }}>
+              <label>会社名</label>
+              <input value={tenantForm.companyName} onChange={e => setTenantForm({ ...tenantForm, companyName: e.target.value })} placeholder="株式会社○○" style={{ width: '100%' }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>プラン</label>
+                <select value={tenantForm.plan} onChange={e => {
+                  const p = e.target.value;
+                  setTenantForm({ ...tenantForm, plan: p, credits: plans[p]?.credits || 20 });
+                }}>
+                  <option value="demo">デモ（30単位）</option>
+                  <option value="standard">スタンダード（50単位/月）</option>
+                  <option value="pro">プロ（200単位/月）</option>
+                  <option value="enterprise">法人カスタム</option>
+                </select>
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>クレジット数</label>
+                <input type="number" value={tenantForm.credits} onChange={e => setTenantForm({ ...tenantForm, credits: parseInt(e.target.value) || 0 })} />
+              </div>
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 'bold', color: '#555', marginBottom: 6, borderTop: '1px solid #ddd', paddingTop: 8 }}>初期管理者アカウント</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>ユーザー名</label>
+                <input value={tenantForm.username} onChange={e => setTenantForm({ ...tenantForm, username: e.target.value })} placeholder="ログイン用" />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label>パスワード</label>
+                <input type="password" value={tenantForm.password} onChange={e => setTenantForm({ ...tenantForm, password: e.target.value })} />
+              </div>
+            </div>
+            <button className="btn btn-primary" onClick={addTenant} disabled={tenantLoading} style={{ marginTop: 4 }}>
+              {tenantLoading ? '作成中...' : 'テナントを作成'}
+            </button>
+            {tenantMsg && <div style={{ marginTop: 6, fontSize: 12, color: tenantMsg.startsWith('エラー') ? '#c0392b' : '#27ae60' }}>{tenantMsg}</div>}
+          </div>
+        )}
+      </div>
+
+      {/* 既存ユーザー一覧 */}
+      <div style={{ fontSize: 13, fontWeight: 'bold', marginBottom: 6 }}>ユーザー一覧</div>
       {users.length > 0 && (
         <table className="data-table" style={{ marginBottom: 12 }}>
           <thead><tr><th>ユーザー名</th><th>権限</th><th>作成日</th><th></th></tr></thead>
@@ -769,8 +931,17 @@ function UserManagement() {
 }
 
 function AuditLog() {
+  const [isOwner, setIsOwner] = useState(false);
   const [logs, setLogs] = useState<any[]>([]);
   const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    (window as any).api.currentTenant?.().then((tid: number) => {
+      if (tid === 1) setIsOwner(true);
+    }).catch(() => {});
+  }, []);
+
+  if (!isOwner) return null;
 
   const load = async () => {
     setLogs(await (window as any).api.listAuditLog());

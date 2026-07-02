@@ -535,7 +535,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.2.7';
+const CURRENT_VERSION = '3.2.8';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -1600,7 +1600,8 @@ app.whenReady().then(async () => {
   });
 
   // ── 請求書PDF生成（HTML→printToPDF）──
-  ipcMain.handle('invoices:generatePDF', async (_e, data: any) => {
+  // 単発・一括の両方から使えるよう、PDFバッファを返す関数として実装
+  const generateInvoicePdfBuffer = async (data: any): Promise<Buffer> => {
     const { invoice, materials } = data;
     const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
     const cfg_pre = loadApiConfig();
@@ -1875,17 +1876,48 @@ app.whenReady().then(async () => {
 
     // 一時ファイル削除
     try { fs.unlinkSync(tmpHtml); } catch(_) {}
+    return pdfData;
+  };
 
+  ipcMain.handle('invoices:generatePDF', async (_e, data: any) => {
+    const { invoice } = data;
+    const pdfData = await generateInvoicePdfBuffer(data);
     const fileName = `請求書_${invoice.client_name}_${invoice.issue_date}.pdf`;
     const savePath = await dialog.showSaveDialog({
       defaultPath: fileName,
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     });
-
     if (!savePath.canceled && savePath.filePath) {
       fs.writeFileSync(savePath.filePath, pdfData);
       shell.openPath(savePath.filePath);
     }
+  });
+
+  // 請求書PDF一括出力：フォルダを選んで、全請求書を1件ずつPDF保存
+  ipcMain.handle('invoices:batchPDF', async () => {
+    const tid = getCurrentTenant();
+    const invoices = queryAll('SELECT * FROM invoices WHERE tenant_id = ? ORDER BY id DESC', [tid]);
+    if (!invoices || invoices.length === 0) return { success: false, message: '出力する請求書がありません' };
+    const dirPick = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], title: '請求書PDFの保存先フォルダを選択' });
+    if (dirPick.canceled || !dirPick.filePaths[0]) return { success: false, canceled: true };
+    const outDir = dirPick.filePaths[0];
+    let ok = 0;
+    for (const inv of invoices) {
+      try {
+        const materials = inv.construction_id ? queryAll(`
+          SELECT cm.*, m.name as material_name, m.unit, m.category
+          FROM construction_materials cm
+          LEFT JOIN materials m ON cm.material_id = m.id
+          WHERE cm.construction_id = ?
+          ORDER BY m.category, m.name`, [inv.construction_id]) : [];
+        const pdf = await generateInvoicePdfBuffer({ invoice: inv, materials });
+        const safe = `請求書_${inv.client_name || '宛先未定'}_${inv.issue_date || ''}_${inv.id}.pdf`.replace(/[\\/:*?"<>|]/g, '_');
+        fs.writeFileSync(path.join(outDir, safe), pdf);
+        ok++;
+      } catch (e) { console.error('請求書一括PDF 1件失敗 id=' + inv.id + ':', e); }
+    }
+    try { shell.openPath(outDir); } catch (_) {}
+    return { success: true, count: ok, total: invoices.length, dir: outDir };
   });
 
   // ── ダッシュボード集計 ──
@@ -5065,15 +5097,22 @@ ${pastWork || 'まだ実績なし'}`;
   });
 
   // ── 受注/失注トラッキング ──
-  ipcMain.handle('outcomes:list', () => listEstimateOutcomes());
+  // ※画面側は `result`、DB側は `outcome` という別名のため、ここ（IPC境界）で相互変換する。
+  //   これをしないと受注/失注が null で保存され、勝率が壊れる（過去の不具合の修正）。
+  const withResultAlias = (rows: any) => Array.isArray(rows)
+    ? rows.map((r: any) => ({ ...r, result: r.result ?? r.outcome }))
+    : rows;
+  ipcMain.handle('outcomes:list', () => withResultAlias(listEstimateOutcomes()));
   ipcMain.handle('outcomes:create', (_e, data: any) => {
-    const id = createEstimateOutcome(data);
-    logAudit('create', 'outcome', id, `${data.outcome}: ${data.feedback_notes || ''}`);
+    const d = { ...data, outcome: data.outcome ?? data.result };
+    const id = createEstimateOutcome(d);
+    logAudit('create', 'outcome', id, `${d.outcome}: ${d.feedback_notes || ''}`);
     return id;
   });
   ipcMain.handle('outcomes:update', (_e, data: any) => {
-    updateEstimateOutcome(data);
-    logAudit('update', 'outcome', data.id, `${data.outcome}`);
+    const d = { ...data, outcome: data.outcome ?? data.result };
+    updateEstimateOutcome(d);
+    logAudit('update', 'outcome', d.id, `${d.outcome}`);
     return true;
   });
   ipcMain.handle('outcomes:delete', (_e, id: number) => {
@@ -5081,7 +5120,7 @@ ${pastWork || 'まだ実績なし'}`;
     return true;
   });
   ipcMain.handle('outcomes:stats', () => getOutcomeStats());
-  ipcMain.handle('outcomes:similar', (_e, workType: string) => getSimilarEstimates(workType));
+  ipcMain.handle('outcomes:similar', (_e, workType: string) => withResultAlias(getSimilarEstimates(workType)));
 
   // ── 見積共有URL生成 ──
   ipcMain.handle('estimates:shareUrl', (_e, logId: number) => {

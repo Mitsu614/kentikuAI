@@ -1,28 +1,31 @@
-import React, { useState, useEffect } from 'react';
-import PropertiesPage from './pages/PropertiesPage';
-import MaterialsPage from './pages/MaterialsPage';
-import ConstructionsPage from './pages/ConstructionsPage';
-import InvoicesPage from './pages/InvoicesPage';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import DashboardPage from './pages/DashboardPage';
-import AIEstimatePage from './pages/AIEstimatePage';
-import SettingsPage from './pages/SettingsPage';
-import ImageSearchPage from './pages/ImageSearchPage';
-import OcrPage from './pages/OcrPage';
-import CalendarPage from './pages/CalendarPage';
-import ReportsPage from './pages/ReportsPage';
-import CustomersPage from './pages/CustomersPage';
-import AttendancePage from './pages/AttendancePage';
-import PurchaseOrdersPage from './pages/PurchaseOrdersPage';
-import BudgetPage from './pages/BudgetPage';
-import DailyReportPage from './pages/DailyReportPage';
-import GanttPage from './pages/GanttPage';
-import SafetyDocsPage from './pages/SafetyDocsPage';
-import QuoteComparisonPage from './pages/QuoteComparisonPage';
-import PhotoLedgerPage from './pages/PhotoLedgerPage';
-import FeedbackPage from './pages/FeedbackPage';
-import AdminPage from './pages/AdminPage';
 
-type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'daily-report' | 'gantt' | 'safety-docs' | 'quote-comparison' | 'photo-ledger' | 'feedback' | 'admin' | 'settings';
+const PropertiesPage = lazy(() => import('./pages/PropertiesPage'));
+const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
+const ConstructionsPage = lazy(() => import('./pages/ConstructionsPage'));
+const InvoicesPage = lazy(() => import('./pages/InvoicesPage'));
+const AIEstimatePage = lazy(() => import('./pages/AIEstimatePage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const ImageSearchPage = lazy(() => import('./pages/ImageSearchPage'));
+const OcrPage = lazy(() => import('./pages/OcrPage'));
+const CalendarPage = lazy(() => import('./pages/CalendarPage'));
+const ReportsPage = lazy(() => import('./pages/ReportsPage'));
+const CustomersPage = lazy(() => import('./pages/CustomersPage'));
+const AttendancePage = lazy(() => import('./pages/AttendancePage'));
+const PurchaseOrdersPage = lazy(() => import('./pages/PurchaseOrdersPage'));
+const BudgetPage = lazy(() => import('./pages/BudgetPage'));
+const DailyReportPage = lazy(() => import('./pages/DailyReportPage'));
+const GanttPage = lazy(() => import('./pages/GanttPage'));
+const SafetyDocsPage = lazy(() => import('./pages/SafetyDocsPage'));
+const QuoteComparisonPage = lazy(() => import('./pages/QuoteComparisonPage'));
+const PhotoLedgerPage = lazy(() => import('./pages/PhotoLedgerPage'));
+const FeedbackPage = lazy(() => import('./pages/FeedbackPage'));
+const AdminPage = lazy(() => import('./pages/AdminPage'));
+const TermsPage = lazy(() => import('./pages/TermsPage'));
+const GuidePage = lazy(() => import('./pages/GuidePage'));
+
+type Page = 'dashboard' | 'properties' | 'materials' | 'constructions' | 'invoices' | 'ai-estimate' | 'ocr' | 'image-search' | 'customers' | 'calendar' | 'reports' | 'attendance' | 'purchase-orders' | 'budget' | 'daily-report' | 'gantt' | 'safety-docs' | 'quote-comparison' | 'photo-ledger' | 'feedback' | 'admin' | 'settings' | 'terms' | 'guide';
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -39,6 +42,12 @@ export default function App() {
   const [regTel, setRegTel] = useState('');
   const [regMessage, setRegMessage] = useState('');
   const [regError, setRegError] = useState('');
+  const [showPassReset, setShowPassReset] = useState(false);
+  const [resetUser, setResetUser] = useState('');
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetNewPass, setResetNewPass] = useState('');
+  const [resetMsg, setResetMsg] = useState('');
+  const [resetErr, setResetErr] = useState('');
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
   const [highlightConstructionId, setHighlightConstructionId] = useState<number | null>(null);
   const [tenants, setTenants] = useState<any[]>([]);
@@ -84,6 +93,13 @@ export default function App() {
         }
       } catch (_) {}
       setLoginLoading(false);
+      // 保存された文字サイズを反映
+      try {
+        const cfg = await (window as any).api.loadConfig?.();
+        if (cfg?.fontScale && cfg.fontScale !== 1) {
+          (window as any).api.setZoom?.(cfg.fontScale);
+        }
+      } catch (_) {}
     })();
   }, []);
 
@@ -216,8 +232,16 @@ export default function App() {
     { key: 'budget', label: '予実管理', icon: '💰' },
     { key: 'feedback', label: '改善要望', icon: '💡' },
     ...(!sessionInfo || sessionInfo.tenantId === 1 ? [{ key: 'admin' as Page, label: '管理画面', icon: '🔧' }] : []),
+    { key: 'guide', label: '操作説明書', icon: '📖' },
+    { key: 'terms', label: '利用規約', icon: '📜' },
     { key: 'settings', label: '設定', icon: '⚙️' },
   ];
+
+  // スマホ(ブラウザ)版はサーバーAPIが未対応のページを隠す（開いてもエラーになるのを防ぐ）。
+  // 対応済み＝写真見積・物件・施工・請求など、現場で使う中心機能に絞る。
+  const isWeb = !!(window as any).__isWeb;
+  const WEB_SUPPORTED = new Set<Page>(['dashboard', 'ai-estimate', 'properties', 'materials', 'constructions', 'invoices', 'guide', 'terms', 'settings']);
+  const visiblePages = isWeb ? pages.filter(p => WEB_SUPPORTED.has(p.key)) : pages;
 
   const navigateToConstruction = (constructionId: number) => {
     setHighlightConstructionId(constructionId);
@@ -247,6 +271,8 @@ export default function App() {
       case 'photo-ledger': return <PhotoLedgerPage key={tenantKey} />;
       case 'feedback': return <FeedbackPage key={tenantKey} />;
       case 'admin': return <AdminPage key={tenantKey} />;
+      case 'terms': return <TermsPage />;
+      case 'guide': return <GuidePage />;
       case 'settings': return <SettingsPage />;
     }
   };
@@ -274,7 +300,8 @@ export default function App() {
           boxShadow: '0 20px 60px rgba(0,0,0,0.3)', width: 380, textAlign: 'center',
         }}>
           <div style={{ fontSize: 28, fontWeight: 'bold', color: '#1a2332', marginBottom: 8 }}>建築ブースト</div>
-          <div style={{ color: '#888', fontSize: 14, marginBottom: 24 }}>AI建築見積管理システム</div>
+          <div style={{ color: '#888', fontSize: 14, marginBottom: 4 }}>AI建築見積管理システム</div>
+          <div style={{ fontSize: 11, color: '#3a7bd5', marginBottom: 20 }}>特許出願済（特願2026-100479）</div>
           {loginError && <div style={{ color: '#e74c3c', fontSize: 14, marginBottom: 12 }}>{loginError}</div>}
           <input
             value={loginUser}
@@ -309,12 +336,48 @@ export default function App() {
               cursor: 'pointer', minHeight: 52,
             }}
           >ログイン</button>
-          <div style={{ marginTop: 16 }}>
-            <span onClick={() => { setShowRegister(!showRegister); setRegMessage(''); setRegError(''); }}
+          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center', gap: 16 }}>
+            <span onClick={() => { setShowRegister(!showRegister); setShowPassReset(false); setRegMessage(''); setRegError(''); }}
               style={{ fontSize: 14, color: '#3a7bd5', cursor: 'pointer' }}>
               {showRegister ? '← ログインに戻る' : '新規登録はこちら'}
             </span>
+            {!showRegister && (
+              <span onClick={() => { setShowPassReset(!showPassReset); setShowRegister(false); setResetMsg(''); setResetErr(''); }}
+                style={{ fontSize: 14, color: '#888', cursor: 'pointer' }}>
+                {showPassReset ? '← ログインに戻る' : 'パスワードをお忘れ・変更の方'}
+              </span>
+            )}
           </div>
+          {showPassReset && (
+            <div style={{ marginTop: 16, textAlign: 'left', borderTop: '1px solid #eee', paddingTop: 16 }}>
+              <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 12, textAlign: 'center', color: '#1a2332' }}>パスワード変更</div>
+              {resetMsg && <div style={{ color: '#27ae60', fontSize: 14, marginBottom: 12, textAlign: 'center' }}>{resetMsg}</div>}
+              {resetErr && <div style={{ color: '#e74c3c', fontSize: 14, marginBottom: 12, textAlign: 'center' }}>{resetErr}</div>}
+              <input value={resetUser} onChange={e => setResetUser(e.target.value)} placeholder="ユーザー名"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <input value={resetEmail} onChange={e => setResetEmail(e.target.value)} placeholder="登録メールアドレス"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <input type="password" value={resetNewPass} onChange={e => setResetNewPass(e.target.value)} placeholder="新しいパスワード"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <button onClick={async () => {
+                if (!resetUser.trim() || !resetEmail.trim() || !resetNewPass) { setResetErr('全項目を入力してください'); return; }
+                try {
+                  const res = await (window as any).api.resetPassword(resetUser.trim(), resetEmail.trim(), resetNewPass);
+                  if (res.ok) { setResetMsg('パスワードを変更しました。新しいパスワードでログインしてください。'); setResetErr(''); setResetUser(''); setResetEmail(''); setResetNewPass(''); }
+                  else { setResetErr(res.error || 'パスワード変更に失敗しました'); }
+                } catch (e: any) { setResetErr(e.message || 'エラーが発生しました'); }
+              }}
+                style={{ width: '100%', padding: '14px', background: '#e67e22', color: '#fff', border: 'none', borderRadius: 10, fontSize: 16, fontWeight: 'bold', cursor: 'pointer', minHeight: 52 }}>
+                パスワードを変更する
+              </button>
+              <div style={{ fontSize: 12, color: '#888', marginTop: 8, textAlign: 'center' }}>
+                ※ ユーザー名と登録メールアドレスが一致する場合のみ変更できます
+              </div>
+            </div>
+          )}
           {showRegister && (
             <div style={{ marginTop: 16, textAlign: 'left', borderTop: '1px solid #eee', paddingTop: 16 }}>
               <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 12, textAlign: 'center', color: '#1a2332' }}>新規登録（承認制）</div>
@@ -405,7 +468,7 @@ export default function App() {
           <li onClick={() => setDarkMode(!darkMode)} style={{ borderBottom: '1px solid #2a3a4a', fontSize: 12 }}>
             <span>{darkMode ? '☀️' : '🌙'}</span><span>{darkMode ? 'ライトモード' : 'ダークモード'}</span>
           </li>
-          {pages.map(p => (
+          {visiblePages.map(p => (
             <li
               key={p.key}
               className={currentPage === p.key ? 'active' : ''}
@@ -479,7 +542,9 @@ export default function App() {
         </div>
       )}
       <main className="main-content">
-        {renderPage()}
+        <Suspense fallback={<div style={{ padding: 40, textAlign: 'center', color: '#888' }}>読み込み中...</div>}>
+          {renderPage()}
+        </Suspense>
       </main>
     </div>
   );

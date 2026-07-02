@@ -7,6 +7,7 @@ import { webApi } from './api-web';
 // Electron なら window.api (preload) を使う。ブラウザなら fetch ベースの webApi を使う
 if (!(window as any).api) {
   (window as any).api = webApi;
+  (window as any).__isWeb = true; // ブラウザ(スマホ)モード → 未対応ページを隠すため
 }
 
 // グローバルエラーハンドラ
