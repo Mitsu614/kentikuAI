@@ -535,7 +535,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.2.8';
+const CURRENT_VERSION = '3.2.9';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -4438,7 +4438,7 @@ ${categories}
     {"item": "項目名", "cost": 金額, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
   ],
   "recommendations": "画像から判断した追加提案（依頼内容以外で必要そうな工事や注意点。例:『外壁のひび割れも確認されます。外壁補修も検討をおすすめします（別途約○万円）』）",
-  "imagePrompt": "この工事で施工した箇所の完成後の写真を生成するための英語プロンプト。内装工事の場合は室内インテリア写真風（自然光・暖かい木の質感・モダンジャパニーズ）、外構工事の場合はexterior/landscaping写真風（青空・ゴールデンアワー・植栽・コンクリート質感）で記述。施工した部分にフォーカスし、美しい仕上がりを表現。80語程度の英語で。"
+  "imagePrompt": "この工事で施工した箇所の完成後の写真を生成するための英語プロンプト。80〜100語の英語で、工種に応じて以下の写真スタイルで記述する（フォトリアル・広告品質・photorealistic, professional real estate photography, natural lighting, high detail）。\n- 内装: 室内インテリア写真風（自然光・暖かい木の質感・モダンジャパニーズ・clean interior, warm wood floor, fresh wallpaper, soft daylight from window）\n- 塗装（外壁/屋根）: 塗り替え後の外壁・屋根がツヤと均一な発色で美しく仕上がった住宅外観（freshly painted exterior wall, even smooth finish, clean facade, blue sky, no scaffolding, crisp edges）\n- 外構: exterior/landscaping写真風（青空・ゴールデンアワー・植栽・コンクリート/タイルの質感・neat driveway, fence, greenery, paved approach）\n- 足場: 建物を覆って安全・整然と組まれた足場（well-erected wedge scaffolding around a house, mesh sheet, neat and safe, professional site, blue sky）。※足場は"撤去後"ではなく"綺麗に設置された状態"を描く。\n施工した部分にフォーカスし、美しい仕上がり・プロの現場感を表現。必ず英語で。"
 }
 \`\`\`
 

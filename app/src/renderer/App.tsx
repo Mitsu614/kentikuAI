@@ -303,7 +303,10 @@ export default function App() {
           <div style={{ color: '#888', fontSize: 14, marginBottom: 4 }}>AI建築見積管理システム</div>
           <div style={{ fontSize: 11, color: '#3a7bd5', marginBottom: 20 }}>特許出願済（特願2026-100479）</div>
           {loginError && <div style={{ color: '#e74c3c', fontSize: 14, marginBottom: 12 }}>{loginError}</div>}
+          <form onSubmit={e => { e.preventDefault(); handleLogin(); }}>
           <input
+            name="username"
+            autoComplete="username"
             value={loginUser}
             onChange={e => setLoginUser(e.target.value)}
             placeholder="ユーザー名"
@@ -317,9 +320,10 @@ export default function App() {
           />
           <input
             type="password"
+            name="password"
+            autoComplete="current-password"
             value={loginPass}
             onChange={e => setLoginPass(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleLogin()}
             placeholder="パスワード"
             style={{
               width: '100%', padding: '14px 16px', border: '2px solid #e0e0e0', borderRadius: 10,
@@ -329,13 +333,14 @@ export default function App() {
             onBlur={e => e.target.style.borderColor = '#e0e0e0'}
           />
           <button
-            onClick={handleLogin}
+            type="submit"
             style={{
               width: '100%', padding: '14px', background: '#3a7bd5', color: '#fff',
               border: 'none', borderRadius: 10, fontSize: 16, fontWeight: 'bold',
               cursor: 'pointer', minHeight: 52,
             }}
           >ログイン</button>
+          </form>
           <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center', gap: 16 }}>
             <span onClick={() => { setShowRegister(!showRegister); setShowPassReset(false); setRegMessage(''); setRegError(''); }}
               style={{ fontSize: 14, color: '#3a7bd5', cursor: 'pointer' }}>
