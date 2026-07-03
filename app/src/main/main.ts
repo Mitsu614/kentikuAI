@@ -569,7 +569,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.3.0';
+const CURRENT_VERSION = '3.3.1';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -4124,19 +4124,23 @@ ${pages}</body></html>`;
         for (const r of ocrRows) {
           const bits: string[] = [`[${r.document_type || '書類'}] ${r.title || '（件名なし）'}`];
           if (r.total > 0) bits.push(`合計¥${Math.round(r.total).toLocaleString()}`);
-          // 明細から単価付き項目を最大6件抽出（遮熱/特許/シートを優先）
+          // 明細から単価付き項目を抽出。遮熱/特許/シート（＝この会社の唯一の正解データ）は
+          // 打ち切らず必ず全項目残し、その他項目のみ上限を設ける（過去PDFの実単価を厚く学習）。
           try {
             const oj = JSON.parse(r.ocr_json || '{}');
             const items = Array.isArray(oj.items) ? oj.items : [];
-            const scored = items
-              .filter((it: any) => it && it.name && (it.unitPrice > 0 || it.amount > 0))
-              .sort((a: any, b: any) => (/(遮熱|特許|シート)/.test(b.name) ? 1 : 0) - (/(遮熱|特許|シート)/.test(a.name) ? 1 : 0));
-            const detail = scored.slice(0, 6).map((it: any) => {
+            const priced = items.filter((it: any) => it && it.name && (it.unitPrice > 0 || it.amount > 0));
+            const isCore = (it: any) => /(遮熱|特許|シート|工法|カバー|葺|内張|外張|吹付)/.test(it.name || '');
+            const fmt = (it: any) => {
               const u = it.unitPrice > 0 ? `¥${Math.round(it.unitPrice).toLocaleString()}${it.unit ? '/' + it.unit : ''}` : '';
+              const qty = it.quantity > 0 ? `×${it.quantity}${it.unit || ''}` : '';
               const amt = it.amount > 0 ? `（金額¥${Math.round(it.amount).toLocaleString()}）` : '';
-              return `${it.name}${u ? ' ' + u : ''}${amt}`;
-            });
-            if (detail.length > 0) bits.push(`明細: ${detail.join(' / ')}`);
+              return `${it.name}${u ? ' ' + u : ''}${!u && qty ? ' ' + qty : ''}${amt}`;
+            };
+            const core = priced.filter(isCore);          // 遮熱シート本体系は全部残す（打ち切らない）
+            const others = priced.filter((it: any) => !isCore(it)).slice(0, 12); // その他は最大12件
+            const detail = [...core.map(fmt), ...others.map(fmt)];
+            if (detail.length > 0) bits.push(`明細(${core.length}件が遮熱系/計${priced.length}件): ${detail.join(' / ')}`);
           } catch (_) {}
           if (r.comment) bits.push(`メモ: ${r.comment}`);
           ocrAnchors.push(`- ${bits.join(' | ')}`);
