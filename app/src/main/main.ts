@@ -121,13 +121,50 @@ async function ensureLicenseToken(...candidateNames: string[]): Promise<string> 
   if (reg && reg.token) { storeLicenseToken(reg.token); return reg.token; }
   return '';
 }
+// ── クレジット消費の"未確定キュー"（STEP3 ハイブリッド精算）──
+// サーバー減算に失敗した消費を貯め、オンライン時に再送する。
+// これが無いと、失敗した消費が syncRemoteLicense の verify 値上書きで"払い戻される"（＝タダ乗り）。
+// 数値1個の合計で持つ（consume は amount をまとめて1回送れば足りる）。
+function getPendingConsume(): number {
+  try { return Math.max(0, Number(loadApiConfig().pendingConsume || 0)); } catch { return 0; }
+}
+function addPendingConsume(amount: number) {
+  try { const cfg = loadApiConfig(); cfg.pendingConsume = getPendingConsume() + Math.max(0, Math.floor(amount)); saveApiConfig(cfg); } catch (_) {}
+}
+function subPendingConsume(amount: number) {
+  try { const cfg = loadApiConfig(); cfg.pendingConsume = Math.max(0, getPendingConsume() - Math.max(0, Math.floor(amount))); saveApiConfig(cfg); } catch (_) {}
+}
+let flushingConsumes = false;
+// 未確定の消費をサーバーへ再送。成功/恒久エラーのみキューから減らす（ネット不通は保持し次回再送）。
+async function flushPendingConsumes(): Promise<void> {
+  if (flushingConsumes) return;
+  if (!currentLicenseToken) currentLicenseToken = getStoredLicenseToken();
+  if (!currentLicenseToken) return;
+  const pending = getPendingConsume();
+  if (pending <= 0) return;
+  flushingConsumes = true;
+  try {
+    const res = await licenseConsume(currentLicenseToken, pending);
+    if (res && res.ok) {
+      subPendingConsume(pending);                 // 確定：サーバーが減算済み
+    } else if (res && (res.error === 'inactive' || res.error === 'invalid_token' || res.error === 'insufficient')) {
+      subPendingConsume(pending);                 // 再送しても無駄 → 諦めてサーバー値でreconcile
+    }
+    // res===null（ネット不通/timeout）はキュー保持 → 次回再送
+  } catch (_) {
+    // 保持
+  } finally {
+    flushingConsumes = false;
+  }
+}
+
 // クレジット消費をローカル＋サーバー(トークン)へ反映する。
-// ローカルは即時（オフライン対応）、サーバーはベストエフォートで減算（真実はサーバー）。
+// ローカルは即時（オフライン対応）。サーバー減算は未確定キュー経由で"確実に"届ける（失敗は再送）。
 function useCreditsSynced(amount: number, operation: string): { success: boolean; limitReached?: boolean } {
   const r = useCredits(amount, operation);
-  if (r.success && amount > 0 && currentLicenseToken) {
-    // fire-and-forget（ネット不通でもローカルは消費済み。次回verifyでサーバー値に整合）
-    licenseConsume(currentLicenseToken, amount).catch(() => {});
+  if (r.success && amount > 0) {
+    addPendingConsume(amount);                    // まず未確定として記録（消費を取りこぼさない）
+    flushPendingConsumes().catch(() => {});       // すぐ送れれば送る（best-effort）
   }
   return r;
 }
@@ -569,7 +606,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.3.1';
+const CURRENT_VERSION = '3.3.2';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -797,6 +834,9 @@ app.whenReady().then(async () => {
       const token = await ensureLicenseToken(tenant?.contact_company || '', tenant?.name || '');
       if (!token) return;
 
+      // 先に未確定の消費を精算（verifyが最新のサーバー残数を返すように）
+      await flushPendingConsumes();
+
       // トークンで契約状況を確認（remote_licensesへの直アクセスはしない）
       const lic = await licenseVerify(token);
       if (!lic || lic.error) {
@@ -823,10 +863,18 @@ app.whenReady().then(async () => {
         throw new Error('ご利用が停止されています。管理者にお問い合わせください。');
       }
 
-      // サーバーが真実 → プラン・クレジットをローカルに同期
+      // サーバーが真実 → プラン/上限は常に同期。
       const remotePlan = lic.plan || 'standard';
       const remoteLimit = lic.max_credits || lic.credits || 50;
-      runSql('UPDATE tenants SET credits = ?, plan_limit = ?, plan = ? WHERE id = ?', [lic.credits, remoteLimit, remotePlan, getCurrentTenant()]);
+      // 未確定の消費が残っている間はサーバーのcredits上書きを避ける（払い戻し防止）。
+      // 送れるだけ送ってから判定する。
+      await flushPendingConsumes();
+      if (getPendingConsume() <= 0) {
+        runSql('UPDATE tenants SET credits = ?, plan_limit = ?, plan = ? WHERE id = ?', [lic.credits, remoteLimit, remotePlan, getCurrentTenant()]);
+      } else {
+        // クレジットは上書きせず、プラン/上限のみ同期（未送信の消費を守る）
+        runSql('UPDATE tenants SET plan_limit = ?, plan = ? WHERE id = ?', [remoteLimit, remotePlan, getCurrentTenant()]);
+      }
     } catch (e: any) {
       // 利用停止エラーは上に伝播させる
       if (e?.message?.includes('停止')) throw e;

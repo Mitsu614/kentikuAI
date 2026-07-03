@@ -54,11 +54,26 @@ async function sbInsert(body: unknown): Promise<any[]> {
   return res.json();
 }
 
+async function sbRpc(fn: string, args: unknown): Promise<any> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method: "POST",
+    headers: { ...H },
+    body: JSON.stringify(args),
+  });
+  if (!res.ok) throw new Error(`rpc ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
 // トークン生成（推測不可能・64桁hex）
 function newToken(): string {
   const b = new Uint8Array(32);
   crypto.getRandomValues(b);
   return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+// 会社名の正規化（前後空白除去＋連続空白を1つに）。重複行・表記ゆれの汚染を減らす。
+function normalizeName(s: string): string {
+  return String(s || "").replace(/\s+/g, " ").trim();
 }
 
 // 外向けにトークンを含めない安全な表現
@@ -89,31 +104,50 @@ Deno.serve(async (req) => {
       return json(publicView(rows[0]));
     }
 
-    // ---- consume: サーバー側でクレジットを減算 ----
+    // ---- consume: サーバー側でクレジットを減算（原子更新）----
+    // read-modify-write ではなく Postgres 関数(consume_credits)で行ロックしつつ減算する。
+    // → 同一トークンの並行 consume でも二重消費(ロストアップデート)が起きない。
     if (action === "consume") {
       const token = String(body.token || "");
       const amount = Math.max(0, Math.floor(Number(body.amount) || 0));
       if (!token) return json({ error: "token required" }, 400);
-      const rows = await sbGet(
-        `remote_licenses?license_token=eq.${encodeURIComponent(token)}&select=id,active,credits`,
-      );
-      if (!rows.length) return json({ error: "invalid_token" }, 404);
-      const lic = rows[0];
-      if (!lic.active) return json({ error: "inactive" }, 403);
-      if ((lic.credits ?? 0) < amount) return json({ error: "insufficient", credits: lic.credits ?? 0 }, 402);
-      const updated = await sbPatch(
-        `remote_licenses?id=eq.${encodeURIComponent(lic.id)}`,
-        { credits: (lic.credits ?? 0) - amount, updated_at: new Date().toISOString() },
-      );
-      return json({ ok: true, credits: updated[0]?.credits ?? (lic.credits - amount) });
+      try {
+        const rows = await sbRpc("consume_credits", { p_token: token, p_amount: amount });
+        const row = Array.isArray(rows) ? rows[0] : rows;
+        if (!row || row.status === "invalid_token") return json({ error: "invalid_token" }, 404);
+        if (row.status === "inactive") return json({ error: "inactive" }, 403);
+        if (row.status === "insufficient") return json({ error: "insufficient", credits: row.credits ?? 0 }, 402);
+        return json({ ok: true, credits: row.credits ?? 0 });
+      } catch (_e) {
+        // RPC未適用（step3c SQL 未実行）の移行フォールバック：非原子だが動作は維持する。
+        // SQL を流せば自動で原子更新パスに切り替わる（デプロイ順を問わないための安全網）。
+        const rows = await sbGet(
+          `remote_licenses?license_token=eq.${encodeURIComponent(token)}&select=id,active,credits`,
+        );
+        if (!rows.length) return json({ error: "invalid_token" }, 404);
+        const lic = rows[0];
+        if (!lic.active) return json({ error: "inactive" }, 403);
+        if ((lic.credits ?? 0) < amount) return json({ error: "insufficient", credits: lic.credits ?? 0 }, 402);
+        const updated = await sbPatch(
+          `remote_licenses?id=eq.${encodeURIComponent(lic.id)}`,
+          { credits: (lic.credits ?? 0) - amount, updated_at: new Date().toISOString() },
+        );
+        return json({ ok: true, credits: updated[0]?.credits ?? (lic.credits - amount) });
+      }
     }
 
     // ---- register: 新規会社を「activeトライアル」で登録し、トークンを返す ----
     // クレジット等の値はサーバーが固定（呼び出し側が指定できない）＝偽造で高額プランは作れない。
     // 有料プランへの引き上げは admin approve（要シークレット）でのみ可能。
     if (action === "register") {
-      const company = String(body.company_name || "").trim();
+      const company = normalizeName(body.company_name);
       if (!company) return json({ error: "company_name required" }, 400);
+      // レート制限：直近1分の新規作成が多すぎたら拒否（大量発行・行汚染の抑止）
+      const since = new Date(Date.now() - 60_000).toISOString();
+      const recent = await sbGet(
+        `remote_licenses?created_at=gte.${encodeURIComponent(since)}&select=id`,
+      );
+      if (recent.length >= 5) return json({ error: "rate_limited" }, 429);
       const existing = await sbGet(
         `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=id`,
       );
@@ -129,18 +163,24 @@ Deno.serve(async (req) => {
         active: true,
         license_token: token,
         claimed_at: new Date().toISOString(), // register応答で本人に渡すのでclaim済み扱い
+        created_at: new Date().toISOString(),  // レート制限の基準に必要（DB既定に依存しない）
       });
       return json({ token, status: "trial", plan: "trial", credits: TRIAL_CREDITS });
     }
 
     // ---- claim: 既存ライセンス(会社名)のトークンを1回だけ受け取る（移行用） ----
+    // 注意：これは移行期間限定の経路。会社名だけで本人確認できないため、
+    //  ・移行完了後は CLAIM_ENABLED=false で恒久的に閉じる（横取り窓を消す）
+    //  ・同名が複数ある場合は自動移行せず管理者対応にまわす（誤対象の防止）
     if (action === "claim") {
+      if (Deno.env.get("CLAIM_ENABLED") === "false") return json({ error: "claim_disabled" }, 403);
       const company = String(body.company_name || "").trim();
       if (!company) return json({ error: "company_name required" }, 400);
       const rows = await sbGet(
         `remote_licenses?company_name=eq.${encodeURIComponent(company)}&claimed_at=is.null&select=id,license_token,plan,active,credits,max_credits`,
       );
       if (!rows.length) return json({ error: "not_found_or_already_claimed" }, 404);
+      if (rows.length > 1) return json({ error: "ambiguous_contact_support" }, 409);
       const lic = rows[0];
       await sbPatch(`remote_licenses?id=eq.${encodeURIComponent(lic.id)}`, {
         claimed_at: new Date().toISOString(),
@@ -154,23 +194,30 @@ Deno.serve(async (req) => {
       const sub = body.sub;
       const company = String(body.company_name || "").trim();
       if (!company) return json({ error: "company_name required" }, 400);
+      // 対象を一意に特定（同名複数は誤爆を避けてエラーに）。以降の更新はすべて id 指定で行う。
+      const targets = await sbGet(
+        `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=id`,
+      );
+      if (!targets.length) return json({ error: "not_found" }, 404);
+      if (targets.length > 1) return json({ error: "ambiguous", count: targets.length }, 409);
+      const tid = encodeURIComponent(targets[0].id);
       if (sub === "approve") {
         const plan = String(body.plan || "standard");
         const credits = Number(body.credits ?? (plan === "demo" ? 30 : plan === "pro" ? 200 : 50));
-        await sbPatch(`remote_licenses?company_name=eq.${encodeURIComponent(company)}`, {
+        await sbPatch(`remote_licenses?id=eq.${tid}`, {
           plan, credits, max_credits: credits, active: true, blocked_message: null, updated_at: new Date().toISOString(),
         });
         return json({ ok: true });
       }
       if (sub === "reject") {
-        await sbPatch(`remote_licenses?company_name=eq.${encodeURIComponent(company)}`, {
+        await sbPatch(`remote_licenses?id=eq.${tid}`, {
           active: false, blocked_message: String(body.message || "申請が却下されました"), updated_at: new Date().toISOString(),
         });
         return json({ ok: true });
       }
       if (sub === "set_credits") {
         const credits = Number(body.credits ?? 0);
-        await sbPatch(`remote_licenses?company_name=eq.${encodeURIComponent(company)}`, {
+        await sbPatch(`remote_licenses?id=eq.${tid}`, {
           credits, updated_at: new Date().toISOString(),
         });
         return json({ ok: true });
