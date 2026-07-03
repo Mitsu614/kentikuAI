@@ -55,7 +55,7 @@ module.exports = [
       rules: [
         {
           test: /\.tsx?$/,
-          use: 'ts-loader',
+          use: { loader: 'ts-loader', options: { configFile: 'tsconfig.renderer.json' } },
           exclude: /node_modules/,
         },
         {
@@ -68,6 +68,14 @@ module.exports = [
     output: {
       path: path.resolve(__dirname, 'dist'),
       filename: 'renderer.js',
+      chunkFilename: '[name].chunk.js',
+      publicPath: './',
+    },
+    optimization: {
+      splitChunks: {
+        chunks: 'async',
+        minSize: 10000,
+      },
     },
     plugins: [
       new HtmlWebpackPlugin({

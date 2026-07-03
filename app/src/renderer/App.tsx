@@ -177,9 +177,9 @@ export default function App() {
   const loadTenants = async () => {
     try {
       const t = await (window as any).api.listTenants();
-      setTenants(t);
+      if (Array.isArray(t)) setTenants(t);   // スマホ(webApi)ではnullが返るため、配列の時だけ反映（null→tenants.findで白画面になるのを防ぐ）
       const cur = await (window as any).api.currentTenant();
-      setCurrentTenant(cur);
+      if (typeof cur === 'number') setCurrentTenant(cur);
     } catch (_) {}
   };
 

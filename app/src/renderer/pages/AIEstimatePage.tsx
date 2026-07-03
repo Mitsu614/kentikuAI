@@ -681,7 +681,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           <div style={{ fontSize: 24, fontWeight: 'bold', color: '#3a7bd5' }}>
             {elapsed}秒
             <span style={{ fontSize: 13, fontWeight: 'normal', color: '#aaa', marginLeft: 8 }}>
-              / 目安 {elapsed < 15 ? '約25秒' : '残り約' + Math.max(1, 28 - elapsed) + '秒'}
+              / 目安 {elapsed < 15 ? '約25秒' : elapsed < 28 ? '残り約' + (28 - elapsed) + '秒' : 'もうすぐ完了します…'}
             </span>
           </div>
         </div>

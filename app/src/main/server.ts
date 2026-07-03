@@ -7,6 +7,13 @@ let serverUrl = '';
 let getConfigFn: (() => any) | null = null;
 let analyzeFn: ((data: any) => Promise<any>) | null = null;
 let autoCreateFn: ((data: any) => any) | null = null;
+let generateFn: ((data: any) => Promise<any>) | null = null;
+
+// AI解析ジョブ置き場。トンネル(loca.lt)は ~20〜30秒でリクエストを502で切るため、
+// 長時間のClaude解析は同期で返さず、即 jobId を返してクライアントが状態をポーリングする。
+type AnalyzeJob = { status: 'pending' | 'done' | 'error'; result?: any; error?: string; createdAt: number };
+const analyzeJobs = new Map<string, AnalyzeJob>();
+let analyzeJobSeq = 0;
 
 export function getServerUrl() { return serverUrl; }
 // 同一WiFiでスマホから届く実LANのIPを選ぶ。
@@ -33,6 +40,8 @@ export function setConfigLoader(fn: () => any) { getConfigFn = fn; }
 // AI見積もりのコア処理（main.ts側で実装）をスマホAPIから呼べるように登録する
 export function setAnalyzeHandler(fn: (data: any) => Promise<any>) { analyzeFn = fn; }
 export function setAutoCreateHandler(fn: (data: any) => any) { autoCreateFn = fn; }
+// AI完成イメージ画像生成（main.ts側で実装）をスマホAPIから呼べるように登録する
+export function setGenerateImageHandler(fn: (data: any) => Promise<any>) { generateFn = fn; }
 
 export function startServer(distPath: string) {
   const express = require('express');
@@ -135,6 +144,13 @@ export function startServer(distPath: string) {
     // 静的アセット（JS/CSS/画像/フォント等）は認証不要 = アプリの土台。
     // これを弾くとスマホで真っ白になる。データAPI(/api/*)は下で保護されたまま。
     if (/\.(js|mjs|css|map|png|jpe?g|svg|gif|webp|ico|woff2?|ttf|eot|json|txt|wasm)$/i.test(req.path)) return next();
+    // データAPI(/api/*)の未認証は必ず JSON 401 を返す。
+    // ここでログインHTMLへリダイレクトすると、スマホの fetch が JSON を期待して壊れ、
+    // 見積り・画像生成が「400」等の不可解なエラーになる（トークン失効時＝サーバー再起動後に多発）。
+    // 401 を返せばアプリ側が検知してトークン破棄＆ログイン画面へ誘導できる。
+    if (req.path.startsWith('/api/')) {
+      return res.status(401).json({ error: '認証の有効期限が切れました。もう一度ログインしてください。' });
+    }
     if (req.path === '/login') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>ログイン - 建築ブースト</title>
@@ -361,16 +377,51 @@ async function login(){
     });
   });
 
-  // AI見積もり（スマホ）：PC側のClaude解析を呼び出して結果を返す
-  app.post('/api/analyze-image', async (req: any, res: any) => {
+  // AI見積もり（スマホ）：解析は20〜30秒かかり、トンネル(loca.lt)が長時間リクエストを502で切るため、
+  // ここでは即 jobId を返し、実際の解析はバックグラウンドで実行。クライアントは /api/analyze-status を叩く。
+  app.post('/api/analyze-image', (req: any, res: any) => {
     if (!analyzeFn) return res.status(503).json({ error: 'AI見積もりは現在利用できません（PC側の準備中）' });
-    try {
-      const result = await analyzeFn(req.body || {});
-      res.json(result);
-    } catch (e: any) {
-      const msg = (e && e.message) ? String(e.message) : 'AI解析に失敗しました';
-      res.status(400).json({ error: msg.replace(/^ERROR:\s*/, '') });
-    }
+    const now = Date.now();
+    // 5分以上前の古いジョブを掃除
+    for (const [k, v] of analyzeJobs) { if (now - v.createdAt > 300000) analyzeJobs.delete(k); }
+    const jobId = (++analyzeJobSeq) + '-' + now.toString(36);
+    analyzeJobs.set(jobId, { status: 'pending', createdAt: now });
+    const body = req.body || {};
+    // レスポンスは待たずにバックグラウンド実行
+    Promise.resolve().then(() => analyzeFn!(body))
+      .then((result) => { analyzeJobs.set(jobId, { status: 'done', result, createdAt: now }); })
+      .catch((e: any) => {
+        const msg = (e && e.message) ? String(e.message) : 'AI解析に失敗しました';
+        analyzeJobs.set(jobId, { status: 'error', error: msg.replace(/^ERROR:\s*/, ''), createdAt: now });
+      });
+    res.json({ jobId });
+  });
+
+  // AI完成イメージ画像生成（スマホ）：画像生成も時間がかかりトンネルが502で切るため、
+  // 解析と同じくジョブ化して即 jobId を返し、状態は /api/analyze-status を共用してポーリングする。
+  app.post('/api/generate-image', (req: any, res: any) => {
+    if (!generateFn) return res.status(503).json({ error: '完成イメージ生成は現在利用できません（PC側の準備中）' });
+    const now = Date.now();
+    for (const [k, v] of analyzeJobs) { if (now - v.createdAt > 300000) analyzeJobs.delete(k); }
+    const jobId = 'img' + (++analyzeJobSeq) + '-' + now.toString(36);
+    analyzeJobs.set(jobId, { status: 'pending', createdAt: now });
+    const body = req.body || {};
+    Promise.resolve().then(() => generateFn!(body))
+      .then((result) => { analyzeJobs.set(jobId, { status: 'done', result, createdAt: now }); })
+      .catch((e: any) => {
+        const msg = (e && e.message) ? String(e.message) : '完成イメージの生成に失敗しました';
+        analyzeJobs.set(jobId, { status: 'error', error: msg.replace(/^ERROR:\s*/, ''), createdAt: now });
+      });
+    res.json({ jobId });
+  });
+
+  // AI解析／画像生成ジョブの状態取得（スマホ）。done/error を返したらジョブは破棄。
+  app.get('/api/analyze-status/:jobId', (req: any, res: any) => {
+    const job = analyzeJobs.get(req.params.jobId);
+    if (!job) return res.status(404).json({ status: 'error', error: '解析ジョブが見つかりません（時間切れの可能性）' });
+    if (job.status === 'done') { const r = job.result; analyzeJobs.delete(req.params.jobId); return res.json({ status: 'done', result: r }); }
+    if (job.status === 'error') { const err = job.error; analyzeJobs.delete(req.params.jobId); return res.json({ status: 'error', error: err }); }
+    res.json({ status: 'pending' });
   });
 
   // 見積もり結果から物件・施工・請求書を自動作成（スマホ）

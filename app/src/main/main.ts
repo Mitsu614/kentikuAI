@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
-import { startServer, getServerUrl, setConfigLoader, setAnalyzeHandler, setAutoCreateHandler, pickLanIp } from './server';
+import { startServer, getServerUrl, setConfigLoader, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData } from './external-data';
@@ -146,6 +146,40 @@ function detectMediaType(b64: string): 'image/png' | 'image/jpeg' | 'image/webp'
   if (raw.startsWith('UklGR')) return 'image/webp';      // WebP
   if (raw.startsWith('R0lGO')) return 'image/gif';       // GIF
   return 'image/jpeg'; // デフォルト
+}
+
+// ── AI送信用に画像を縮小（スマホ写真は数MBあり、Anthropicの1画像5MB上限で400になるため）──
+// Electron内蔵の nativeImage でデコード→長辺1568pxに縮小→JPEG再エンコードして5MB未満に収める。
+// デコード不可(HEIC等)やPDF・非画像はそのまま返す（改変しない）。
+function shrinkImageForAI(dataUrl: any, maxDim = 1568, maxBytes = 4_500_000): any {
+  try {
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return dataUrl;
+    const approxBytes = dataUrl.length * 0.75;
+    const { nativeImage } = require('electron');
+    let img = nativeImage.createFromDataURL(dataUrl);
+    if (img.isEmpty()) return dataUrl; // デコード不可 → そのまま
+    const size = img.getSize();
+    const maxSide = Math.max(size.width, size.height);
+    if (maxSide <= maxDim && approxBytes <= maxBytes) return dataUrl; // 十分小さい
+    if (maxSide > maxDim) {
+      img = size.width >= size.height ? img.resize({ width: maxDim }) : img.resize({ height: maxDim });
+    }
+    let quality = 82;
+    let out = img.toJPEG(quality);
+    while (out.length > maxBytes && quality > 40) { quality -= 12; out = img.toJPEG(quality); }
+    return 'data:image/jpeg;base64,' + out.toString('base64');
+  } catch (_) {
+    return dataUrl; // 失敗時は原本のまま（安全側）
+  }
+}
+
+// ── AI関連エラーをファイルに記録（スマホ経由の不具合を後から確認するため）──
+function logAiError(where: string, err: any, extra?: any) {
+  try {
+    const p = require('path').join(require('electron').app.getPath('userData'), 'ai-debug.log');
+    const line = `[${new Date().toISOString()}] ${where}: ${err?.message || err}${extra ? ' | ' + JSON.stringify(extra) : ''}\n`;
+    require('fs').appendFileSync(p, line);
+  } catch (_) {}
 }
 
 // ── HTMLエスケープ（XSS対策）──
@@ -535,7 +569,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.2.9';
+const CURRENT_VERSION = '3.3.0';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -3923,7 +3957,11 @@ ${pages}</body></html>`;
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
   // AI見積もりのコア処理。デスクトップ(IPC)とスマホ(内蔵Webサーバー)の両方から呼ぶ
   const analyzeImageCore = async (data: any) => {
-    const { imageBase64, beforeImage, afterImage, comment, location } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '' } : data;
+    let { imageBase64, beforeImage, afterImage, comment, location } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '' } : data;
+    // スマホ写真は数MBあり、Anthropicの5MB上限で400になるため送信前に縮小する
+    imageBase64 = shrinkImageForAI(imageBase64);
+    beforeImage = shrinkImageForAI(beforeImage);
+    afterImage = shrinkImageForAI(afterImage);
     const isBeforeAfter = beforeImage && afterImage;
 
     // クレジット消費量
@@ -4464,7 +4502,7 @@ manDaysBreakdownの書き方例:
     const text = response.content[0].type === 'text' ? response.content[0].text : '';
     console.log('AI response text:', text.substring(0, 500));
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('AI応答の解析に失敗しました: ' + text.substring(0, 200));
+    if (!jsonMatch) { logAiError('analyze:no-json', 'AI応答にJSONなし', { head: text.substring(0, 300) }); throw new Error('AI応答の解析に失敗しました: ' + text.substring(0, 200)); }
     const jsonStr = jsonMatch[1] || jsonMatch[0];
     try {
       const estimateResult = JSON.parse(jsonStr);
@@ -4493,7 +4531,8 @@ manDaysBreakdownの書き方例:
     }
   };
   ipcMain.handle('ai:analyzeImage', (_e, data: any) => analyzeImageCore(data));
-  setAnalyzeHandler(analyzeImageCore);
+  // スマホ経路のエラーはファイルに記録（原因追跡用）
+  setAnalyzeHandler(async (d: any) => { try { return await analyzeImageCore(d); } catch (e: any) { logAiError('analyze', e, { hasImg: !!(d && (d.imageBase64 || d.beforeImage)) }); throw e; } });
 
   // ── チャットセッション管理 ──
   ipcMain.handle('chatSessions:list', (_e) => {
@@ -4723,7 +4762,7 @@ ${pastWork || 'まだ実績なし'}`;
     } catch (_) {}
   }
 
-  ipcMain.handle('ai:generateImage', async (_e, data: any) => {
+  const generateImageCore = async (data: any) => {
     // クレジットチェック（画像生成 = 3ストック）
     await syncRemoteLicense(false);
     const imgCreditResult = useCreditsSynced(3, '画像生成');
@@ -4740,7 +4779,7 @@ ${pastWork || 'まだ実績なし'}`;
 
     // data が文字列の場合は旧API互換（プロンプトのみ）
     const prompt = typeof data === 'string' ? data : data.prompt;
-    const sourceImage = typeof data === 'string' ? null : data.sourceImage;
+    const sourceImage = shrinkImageForAI(typeof data === 'string' ? null : data.sourceImage);
     const targetLogId = typeof data === 'string' ? null : data.targetLogId;
     const targetConstructionId = typeof data === 'string' ? null : data.targetConstructionId;
 
@@ -4813,7 +4852,9 @@ ${pastWork || 'まだ実績なし'}`;
       saveGeneratedImageToLog(imageResult, targetLogId, targetConstructionId);
     }
     return imageResult;
-  });
+  };
+  ipcMain.handle('ai:generateImage', (_e, data: any) => generateImageCore(data));
+  setGenerateImageHandler(async (d: any) => { try { return await generateImageCore(d); } catch (e: any) { logAiError('generate', e, { hasSrc: !!(d && d.sourceImage) }); throw e; } });
 
   // ── AI解析結果から物件・施工・材料明細・請求書を一括自動作成 ──
   const autoCreateFromEstimateCore = (data: any) => {

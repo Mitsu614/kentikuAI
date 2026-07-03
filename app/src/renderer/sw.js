@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kenchiku-boost-v1';
+const CACHE_NAME = 'kenchiku-boost-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',

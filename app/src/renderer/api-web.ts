@@ -22,7 +22,7 @@ async function post(url: string, body: any) { const r = await fetch(BASE + url, 
 async function put(url: string, body: any) { const r = await fetch(BASE + url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(body) }); return handleResponse(r); }
 async function del(url: string) { const r = await fetch(BASE + url, { method: 'DELETE', headers: getAuthHeaders() }); return handleResponse(r); }
 
-export const webApi = {
+const webApiImpl: any = {
   // 認証（ブラウザ）。401でも handleResponse のリダイレクトを通さず、そのまま結果を返す
   login: async (username: string, password: string) => {
     try {
@@ -99,7 +99,9 @@ export const webApi = {
   getDashboardSummary: () => get('/api/dashboard'),
   loadConfig: async () => ({}),
   saveConfig: async () => {},
-  // AI見積もり：PC(サーバー)側でClaude解析を実行し、結果だけ受け取る
+  // AI見積もり：PC(サーバー)側でClaude解析を実行し、結果だけ受け取る。
+  // 解析は20〜30秒かかり、トンネル(loca.lt)が長時間リクエストを502で切るため、
+  // 「即 jobId を受け取り→状態をポーリング」方式にして各リクエストを短く保つ。
   analyzeImage: async (payload: any) => {
     const r = await fetch(BASE + '/api/analyze-image', {
       method: 'POST',
@@ -109,7 +111,24 @@ export const webApi = {
     if (r.status === 401) { localStorage.removeItem('auth_token'); window.location.href = '/login'; throw new Error('認証エラー'); }
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || 'AI解析に失敗しました');
-    return j;
+    // 旧サーバー互換：jobId が無ければ結果そのものが返っている
+    if (!j.jobId) return j;
+    // ポーリング（最大3分）。各リクエストは1秒未満なのでトンネルの502に当たらない。
+    const jobId = j.jobId as string;
+    const deadline = Date.now() + 180000;
+    while (Date.now() < deadline) {
+      await new Promise(res => setTimeout(res, 2000));
+      let sr: Response;
+      try {
+        sr = await fetch(BASE + '/api/analyze-status/' + encodeURIComponent(jobId), { headers: getAuthHeaders() });
+      } catch (_) { continue; } // ネットワーク瞬断・トンネル瞬断は次のポーリングで再試行
+      if (sr.status === 404) throw new Error('解析がタイムアウトしました。もう一度お試しください。');
+      const sj = await sr.json().catch(() => ({}));
+      if (sj.status === 'done') return sj.result;
+      if (sj.status === 'error') throw new Error(sj.error || 'AI解析に失敗しました');
+      // pending → 継続
+    }
+    throw new Error('解析に時間がかかっています。電波の良い場所でもう一度お試しください。');
   },
   autoCreateFromEstimate: async (payload: any) => {
     const r = await fetch(BASE + '/api/auto-create-from-estimate', {
@@ -122,6 +141,66 @@ export const webApi = {
     if (!r.ok) throw new Error(j.error || '自動作成に失敗しました');
     return j;
   },
-  // 画像生成はPC専用（スマホでは非表示扱い）
-  generateImage: async () => null,
+  // AI完成イメージ画像生成：解析と同じく即 jobId を受け取り→状態をポーリング。
+  // 画像生成は時間がかかるため、各リクエストを短く保ってトンネルの502を避ける。
+  generateImage: async (payload: any) => {
+    const r = await fetch(BASE + '/api/generate-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify(payload || {}),
+    });
+    if (r.status === 401) { localStorage.removeItem('auth_token'); window.location.href = '/login'; throw new Error('認証エラー'); }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || '完成イメージの生成に失敗しました');
+    if (!j.jobId) return j.result ?? j;
+    const jobId = j.jobId as string;
+    const deadline = Date.now() + 180000;
+    while (Date.now() < deadline) {
+      await new Promise(res => setTimeout(res, 2500));
+      let sr: Response;
+      try {
+        sr = await fetch(BASE + '/api/analyze-status/' + encodeURIComponent(jobId), { headers: getAuthHeaders() });
+      } catch (_) { continue; }
+      if (sr.status === 404) throw new Error('生成がタイムアウトしました。もう一度お試しください。');
+      const sj = await sr.json().catch(() => ({}));
+      if (sj.status === 'done') return sj.result;
+      if (sj.status === 'error') throw new Error(sj.error || '完成イメージの生成に失敗しました');
+    }
+    throw new Error('生成に時間がかかっています。電波の良い場所でもう一度お試しください。');
+  },
+
+  // ── AI見積ページがマウント時/操作時に呼ぶメソッド群 ──
+  // 対応するサーバーAPIが無いものは安全な既定値を返す（未定義だと undefined.then() で白画面になるため）。
+  getEstimateLog: async () => [],        // スマホでは過去ログ一覧は非対応（空配列）
+  listChatSessions: async () => [],
+  // テナント系（スマホは単一テナント運用。配列/数値を返して .find/.map で落ちないようにする）
+  listTenants: async () => [],
+  currentTenant: async () => 1,
+  switchTenant: async () => null,
+  createTenant: async () => null,
+  deleteTenant: async () => null,
+  listUsers: async () => [],
+  isOwnerPC: async () => false,
+  saveChatSession: async () => null,
+  getChatSession: async () => null,
+  aiChat: async () => ({ text: 'チャット見積はデスクトップアプリでご利用ください。写真からのAI見積はこの画面で使えます。', estimate: null }),
+  getPOByConstruction: async () => null,
+  getInvoiceByConstruction: async () => null,
+  createPOFromConstruction: async () => null,
+  addConstructionPhoto: async () => null,
+  saveEstimateImage: async () => null,
+  updateConstructionMaterial: async () => null,
+  generatePurchaseOrderPDF: async () => { alert('発注書PDFの出力はデスクトップアプリからご利用ください。'); return null; },
 };
+
+// 未実装APIを呼んでも undefined にならないようProxyでラップ（白画面クラッシュの根絶）。
+// 定義済みメソッドはそのまま、未定義の文字列プロパティは「安全に null を返す非同期関数」を返す。
+export const webApi: any = new Proxy(webApiImpl, {
+  get(target, prop) {
+    if (prop in target) return (target as any)[prop];
+    if (typeof prop === 'string' && prop !== 'then') {
+      return async () => null;
+    }
+    return undefined;
+  },
+});

@@ -224,7 +224,7 @@ const styles = {
 
 const fmtDate = (s: string) => {
   if (!s) return '-';
-  try { return new Date(s).toLocaleDateString('ja-JP'); } catch { return s; }
+  try { return new Date(s).toLocaleString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch { return s; }
 };
 
 /* ────────── コンポーネント ────────── */
@@ -235,6 +235,10 @@ export default function AdminPage() {
   /* --- テナント --- */
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [planChanges, setPlanChanges] = useState<Record<number, string>>({});
+
+  /* --- リモート登録申請（Supabase） --- */
+  const [remoteRegs, setRemoteRegs] = useState<any[]>([]);
+  const [regPlanChoices, setRegPlanChoices] = useState<Record<string, string>>({});
 
   /* --- 改善要望 --- */
   const [feedbackList, setFeedbackList] = useState<FeedbackItem[]>([]);
@@ -263,12 +267,14 @@ export default function AdminPage() {
 
   const loadTenants = async () => {
     try {
-      const [list, userList] = await Promise.all([
+      const [list, userList, regs] = await Promise.all([
         (window as any).api.listTenants(),
         (window as any).api.listUsers(),
+        (window as any).api.listRemoteRegistrations?.() || [],
       ]);
       setTenants(list || []);
       setUsers(userList || []);
+      setRemoteRegs(Array.isArray(regs) ? regs : []);
       // 各テナントの使用状況を取得
       const usages: Record<number, any> = {};
       for (const t of (list || [])) {
@@ -418,6 +424,108 @@ export default function AdminPage() {
       {/* ====== Tab 1: テナント管理 ====== */}
       {tab === 'tenants' && (
         <div>
+          {/* リモート登録申請（Supabase） */}
+          {remoteRegs.length > 0 && (
+            <div style={{ ...styles.card, border: '2px solid #e67e22', marginBottom: 20 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, color: '#e67e22' }}>リモート登録申請（全顧客）</h3>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>会社名</th>
+                    <th style={styles.th}>ユーザー名</th>
+                    <th style={styles.th}>連絡先</th>
+                    <th style={styles.th}>プラン</th>
+                    <th style={styles.th}>クレジット</th>
+                    <th style={styles.th}>状態</th>
+                    <th style={styles.th}>登録日</th>
+                    <th style={styles.th}>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {remoteRegs.map((r: any) => {
+                    const isPending = r.plan === 'pending';
+                    return (
+                      <tr key={r.id} style={isPending ? { background: '#fff9c4' } : undefined}>
+                        <td style={styles.td}><strong>{r.company_name}</strong></td>
+                        <td style={styles.td}>{(r.blocked_message || '').match(/ユーザー: ([^,]+)/)?.[1] || '-'}</td>
+                        <td style={{ ...styles.td, fontSize: 11 }}>
+                          {(r.blocked_message || '').match(/メール: ([^,]+)/)?.[1] || '-'}<br/>
+                          {(r.blocked_message || '').match(/電話: ([^,]+)/)?.[1] || ''}
+                        </td>
+                        <td style={styles.td}>
+                          <span style={{ ...styles.badge(isPending ? '#fff3e0' : '#e8f5e9', isPending ? '#e65100' : '#2e7d32') }}>
+                            {r.plan === 'pending' ? '承認待ち' : r.plan === 'demo' ? 'デモ' : r.plan === 'standard' ? 'スタンダード' : r.plan === 'pro' ? 'プロ' : r.plan}
+                          </span>
+                        </td>
+                        <td style={styles.td}>{r.credits} / {r.max_credits}</td>
+                        <td style={styles.td}>
+                          <span style={{ ...styles.badge(r.active ? '#e8f5e9' : '#fce4ec', r.active ? '#2e7d32' : '#c62828') }}>
+                            {r.active ? '有効' : '無効'}
+                          </span>
+                        </td>
+                        <td style={{ ...styles.td, fontSize: 12 }}>{r.created_at?.split('T')[0]}</td>
+                        <td style={styles.td}>
+                          {isPending ? (
+                            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                              <select
+                                value={regPlanChoices[r.company_name] || 'demo'}
+                                onChange={e => setRegPlanChoices(prev => ({ ...prev, [r.company_name]: e.target.value }))}
+                                style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ddd', fontSize: 12 }}
+                              >
+                                <option value="demo">デモ</option>
+                                <option value="standard">スタンダード</option>
+                                <option value="pro">プロ</option>
+                              </select>
+                              <button
+                                style={{ ...styles.btnSm(COLOR.success), fontSize: 12 }}
+                                onClick={async () => {
+                                  const plan = regPlanChoices[r.company_name] || 'demo';
+                                  await (window as any).api.approveRemoteRegistration(r.company_name, plan);
+                                  showToast(`${r.company_name} を承認しました（${plan}）`);
+                                  await loadTenants();
+                                }}
+                              >承認</button>
+                              <button
+                                style={{ ...styles.btnSm(COLOR.danger), fontSize: 12 }}
+                                onClick={async () => {
+                                  if (!confirm(`${r.company_name} の申請を却下しますか？`)) return;
+                                  await (window as any).api.rejectRemoteRegistration(r.company_name);
+                                  showToast(`${r.company_name} を却下しました`);
+                                  await loadTenants();
+                                }}
+                              >却下</button>
+                            </div>
+                          ) : (
+                            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                              <select
+                                value={regPlanChoices[r.company_name] || r.plan}
+                                onChange={e => setRegPlanChoices(prev => ({ ...prev, [r.company_name]: e.target.value }))}
+                                style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ddd', fontSize: 12 }}
+                              >
+                                <option value="demo">デモ</option>
+                                <option value="standard">スタンダード</option>
+                                <option value="pro">プロ</option>
+                              </select>
+                              <button
+                                style={{ ...styles.btnSm(COLOR.primary), fontSize: 12 }}
+                                onClick={async () => {
+                                  const plan = regPlanChoices[r.company_name] || r.plan;
+                                  await (window as any).api.approveRemoteRegistration(r.company_name, plan);
+                                  showToast(`${r.company_name} のプランを ${plan} に変更しました`);
+                                  await loadTenants();
+                                }}
+                              >変更</button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {/* 集計カード */}
           <div style={{ marginBottom: 20 }}>
             <div style={styles.statBox}>
