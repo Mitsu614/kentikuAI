@@ -12,6 +12,8 @@ on:
 jobs:
   build-mac:
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -88,9 +90,18 @@ jobs:
           cd ..
           ls -lh "kenchiku-boost-mac-v${{ steps.ver.outputs.version }}.zip"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: kenchiku-boost-mac-v${{ steps.ver.outputs.version }}
-          path: kenchiku-boost-mac-v${{ steps.ver.outputs.version }}.zip
-          retention-days: 30
+      # ランナー側から直接リリース公開（自PCへの往復をなくす）。プレリリース＝Windows自動更新に影響しない。
+      - name: Publish to GitHub Release (prerelease)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="mac-v${{ steps.ver.outputs.version }}"
+          ZIP="kenchiku-boost-mac-v${{ steps.ver.outputs.version }}.zip"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" --prerelease --target master \
+              --title "建築ブースト Mac版（お客様用）v${{ steps.ver.outputs.version }}" \
+              --notes "AI見積は写真・図面のドラッグ&ドロップに対応。未署名のため初回はアプリを右クリック→「開く」で起動してください。"
+          fi
+          echo "公開: https://github.com/${{ github.repository }}/releases/tag/$TAG"
