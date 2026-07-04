@@ -1,6 +1,10 @@
 const path = require('path');
+const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
+
+// 従業員向けビルド（EMPLOYEE_BUILD=1）では管理画面を無効化する
+const EMPLOYEE_BUILD = process.env.EMPLOYEE_BUILD === '1';
 module.exports = [
   // Main process
   {
@@ -19,6 +23,11 @@ module.exports = [
       path: path.resolve(__dirname, 'dist'),
       filename: 'main.js',
     },
+    plugins: [
+      new webpack.DefinePlugin({
+        __EMPLOYEE_BUILD__: JSON.stringify(EMPLOYEE_BUILD),
+      }),
+    ],
     externals: {
       'sql.js': 'commonjs sql.js',
       '@anthropic-ai/sdk': 'commonjs @anthropic-ai/sdk',
@@ -78,6 +87,9 @@ module.exports = [
       },
     },
     plugins: [
+      new webpack.DefinePlugin({
+        __EMPLOYEE_BUILD__: JSON.stringify(EMPLOYEE_BUILD),
+      }),
       new HtmlWebpackPlugin({
         template: './src/renderer/index.html',
       }),

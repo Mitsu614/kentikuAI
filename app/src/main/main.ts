@@ -8,6 +8,11 @@ import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData } from './external-data';
 
+// ── 従業員向けビルド（webpack DefinePluginで注入）──
+// 有効時: 管理画面・テナント削除・承認/却下などの管理操作を無効化する
+declare const __EMPLOYEE_BUILD__: boolean;
+const EMPLOYEE_BUILD = typeof __EMPLOYEE_BUILD__ !== 'undefined' && __EMPLOYEE_BUILD__;
+
 // ── トライアル用埋め込みキー ──
 const TRIAL_KEYS = {
   anthropic: '1XxV7iNDIgb3faeGwY+dxGeJZULfY9TzgkR2MAiM6QnhZeMJlk8u3cUVgeWXYxb87AvRBNqjghfgJdNEuhPWFdtDWhNPeCWVUf1mHO45Gi1xUfFOAZtI9GJ111Dl5QQXvhL9RhRaVydvlF8Jv8ZdbQ//YKz+AS9YDDicsw==',
@@ -695,6 +700,7 @@ function setupAutoUpdater() {
   });
 
   ipcMain.handle('remote:approve', async (_e, companyName: string, plan: string) => {
+    if (EMPLOYEE_BUILD) return { ok: false, error: 'この操作は許可されていません（従業員用）' };
     // STEP3: 承認は管理Edge Function経由（service_role）。要 adminSecret。
     const adminSecret = loadApiConfig().adminSecret || '';
     if (!adminSecret) return { ok: false, error: 'adminSecret未設定（設定画面で管理者シークレットを入力してください）' };
@@ -703,6 +709,7 @@ function setupAutoUpdater() {
   });
 
   ipcMain.handle('remote:reject', async (_e, companyName: string) => {
+    if (EMPLOYEE_BUILD) return { ok: false, error: 'この操作は許可されていません（従業員用）' };
     const adminSecret = loadApiConfig().adminSecret || '';
     if (!adminSecret) return { ok: false, error: 'adminSecret未設定（設定画面で管理者シークレットを入力してください）' };
     const res = await licenseAdmin(adminSecret, 'reject', companyName, { message: '申請が却下されました' });
@@ -2058,6 +2065,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('tenants:switch', (_e, id: number) => { setCurrentTenant(id); });
   ipcMain.handle('tenants:current', () => getCurrentTenant());
   ipcMain.handle('tenants:delete', (_e, id: number) => {
+    if (EMPLOYEE_BUILD) throw new Error('この操作は許可されていません（従業員用）');
     // テナントに紐づく全データを削除
     const constructions = queryAll('SELECT id FROM constructions WHERE tenant_id=?', [id]);
     for (const c of constructions) {
@@ -2571,12 +2579,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('plan:allRequests', () => listAllPlanRequests());
 
   ipcMain.handle('plan:approve', (_e, requestId: number) => {
+    if (EMPLOYEE_BUILD) throw new Error('この操作は許可されていません（従業員用）');
     const result = approvePlanRequest(requestId);
     if (!result) throw new Error('承認できません');
     return { success: true };
   });
 
   ipcMain.handle('plan:reject', (_e, requestId: number) => {
+    if (EMPLOYEE_BUILD) throw new Error('この操作は許可されていません（従業員用）');
     rejectPlanRequest(requestId);
     return { success: true };
   });

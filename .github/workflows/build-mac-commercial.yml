@@ -1,0 +1,112 @@
+name: Build Mac (従業員用・商用)
+
+# 従業員向けMac版ビルド:
+#   - EMPLOYEE_BUILD=1 で管理画面を完全無効化
+#   - トライアルDB初期化なし（Windows勢と同じ共有DBに接続して使う）
+#   - 未署名（社内の管理下Macで初回のみGatekeeper回避）
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm install
+
+      - name: Build (管理画面を無効化)
+        working-directory: app
+        env:
+          EMPLOYEE_BUILD: '1'
+        run: npm run build
+
+      - name: Read version
+        id: ver
+        working-directory: app
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Package for macOS (universal, 未署名)
+        working-directory: app
+        run: npx @electron/packager . 建築ブースト --platform=darwin --arch=universal --overwrite --out=release --ignore="src|\.zip$|seed-|launch\.vbs|\.db$|無料トライアル|建築見積管理_v|ファイル|特許|商談"
+
+      - name: Create distribution folder
+        run: |
+          mkdir -p mac-dist
+          cp -r "app/release/建築ブースト-darwin-universal/建築ブースト.app" mac-dist/
+          cp "app/説明書_建築ブースト_導入ガイド.pdf" mac-dist/ 2>/dev/null || true
+          cp "app/説明書_建築ブースト_導入ガイド.html" mac-dist/ 2>/dev/null || true
+
+      - name: Create お読みください
+        run: |
+          cat > mac-dist/お読みください.txt << 'README'
+          ========================================
+           建築ブースト（従業員用・Mac版）
+           v${{ steps.ver.outputs.version }}
+          ========================================
+
+          【導入手順】
+
+          1. 「建築ブースト.app」を「アプリケーション」フォルダにドラッグ
+
+          2. 初回起動（未署名アプリのため、各Mac 1回だけ必要）
+             ▼ 方法A（かんたん）
+               ・「建築ブースト.app」を右クリック →「開く」
+               ・確認ダイアログで もう一度「開く」
+             ▼ 方法B（方法Aで開けない場合）
+               ・一度ダブルクリックして弾かれる
+               ・システム設定 →「プライバシーとセキュリティ」
+               ・下の方の「このまま開く」をクリック
+             ▼ 方法C（上記でダメな場合・確実）
+               ・「ターミナル」を開き、下記を貼り付けて実行:
+                 xattr -dr com.apple.quarantine "/Applications/建築ブースト.app"
+               ・その後アプリをダブルクリック
+
+          3. 共有データベースへの接続（重要）
+             ・事前に、会社の共有フォルダ（NAS/ファイルサーバ）を
+               Finderの「移動」→「サーバへ接続」でマウント
+               （例: /Volumes/共有）
+             ・アプリ起動後 →「設定」画面 →「📂 データ共有設定」
+             ・「データベース保存先」の【フォルダを選択】を押し、
+               上でマウントした共有フォルダを選ぶ
+             ・「アプリを再起動すると反映されます」と出たら再起動
+             ・これでWindowsの担当者と同じ kentiku.db を共有できます
+             ・※Windows側で既に使っている共有フォルダと
+               同じ場所を選んでください
+
+          【ご注意】
+            ・このMac版は従業員用のため「管理画面」は表示されません
+            ・アプリの更新は手動です（新しいzipが配られたら入れ替え）
+            ・共有DBは同時に複数人が書き込むと競合する場合があるため、
+              できるだけ同じ案件を同時編集しない運用を推奨します
+
+          【動作環境】
+            macOS 14 (Sonoma) 以降
+            Apple Silicon (M1/M2/M3/M4) + Intel 対応
+
+          【サポート】
+            有限会社中野工務店
+            大阪府大阪市都島区都島本通5-8-18
+          README
+
+      - name: Create ZIP
+        run: |
+          cd mac-dist
+          zip -r -y "../建築ブースト_Mac_従業員用_v${{ steps.ver.outputs.version }}.zip" .
+          cd ..
+          ls -lh "建築ブースト_Mac_従業員用_v${{ steps.ver.outputs.version }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 建築ブースト_Mac_従業員用_v${{ steps.ver.outputs.version }}
+          path: 建築ブースト_Mac_従業員用_v${{ steps.ver.outputs.version }}.zip
+          retention-days: 30

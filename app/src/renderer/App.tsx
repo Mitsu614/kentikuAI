@@ -1,6 +1,10 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import DashboardPage from './pages/DashboardPage';
 
+// 従業員向けビルドでは管理画面を完全に無効化する（webpack DefinePluginで注入）
+declare const __EMPLOYEE_BUILD__: boolean;
+const EMPLOYEE_BUILD = typeof __EMPLOYEE_BUILD__ !== 'undefined' && __EMPLOYEE_BUILD__;
+
 const PropertiesPage = lazy(() => import('./pages/PropertiesPage'));
 const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
 const ConstructionsPage = lazy(() => import('./pages/ConstructionsPage'));
@@ -231,7 +235,7 @@ export default function App() {
     { key: 'reports', label: '利益レポート', icon: '📈' },
     { key: 'budget', label: '予実管理', icon: '💰' },
     { key: 'feedback', label: '改善要望', icon: '💡' },
-    ...(!sessionInfo || sessionInfo.tenantId === 1 ? [{ key: 'admin' as Page, label: '管理画面', icon: '🔧' }] : []),
+    ...(!EMPLOYEE_BUILD && (!sessionInfo || sessionInfo.tenantId === 1) ? [{ key: 'admin' as Page, label: '管理画面', icon: '🔧' }] : []),
     { key: 'guide', label: '操作説明書', icon: '📖' },
     { key: 'terms', label: '利用規約', icon: '📜' },
     { key: 'settings', label: '設定', icon: '⚙️' },
@@ -270,7 +274,7 @@ export default function App() {
       case 'quote-comparison': return <QuoteComparisonPage key={tenantKey} />;
       case 'photo-ledger': return <PhotoLedgerPage key={tenantKey} />;
       case 'feedback': return <FeedbackPage key={tenantKey} />;
-      case 'admin': return <AdminPage key={tenantKey} />;
+      case 'admin': return EMPLOYEE_BUILD ? <DashboardPage key={tenantKey} onNavigate={(page: string) => setCurrentPage(page as Page)} onNavigateToInvoice={navigateToConstruction} /> : <AdminPage key={tenantKey} />;
       case 'terms': return <TermsPage />;
       case 'guide': return <GuidePage />;
       case 'settings': return <SettingsPage />;
@@ -448,7 +452,7 @@ export default function App() {
             {!showNewTenant ? (
               <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 4 }}>
                 <span onClick={() => setShowNewTenant(true)} style={{ color: '#5cacee', fontSize: 11, cursor: 'pointer' }}>+ 追加</span>
-                {tenants.length > 1 && <span onClick={() => deleteTenant(currentTenant)} style={{ color: '#e74c3c', fontSize: 11, cursor: 'pointer' }}>× 削除</span>}
+                {!EMPLOYEE_BUILD && tenants.length > 1 && <span onClick={() => deleteTenant(currentTenant)} style={{ color: '#e74c3c', fontSize: 11, cursor: 'pointer' }}>× 削除</span>}
               </div>
             ) : (
               <div style={{ marginTop: 6 }}>
