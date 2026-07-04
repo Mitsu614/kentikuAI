@@ -6,6 +6,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [beforeImage, setBeforeImage] = useState<string | null>(null);
   const [afterImage, setAfterImage] = useState<string | null>(null);
   const [mode, setMode] = useState<'single' | 'beforeafter' | 'chat'>('single');
+  const [dragTarget, setDragTarget] = useState<null | 'single' | 'before' | 'after'>(null);
   const [location, setLocation] = useState('');
   const [comment, setComment] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
@@ -89,6 +90,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     return () => clearTimeout(timer);
   }, [chatMessages]);
 
+  // Electron既定ではウィンドウにファイルをドロップすると開こうとして画面が壊れる。
+  // ドロップゾーン外に落とした場合の事故を防ぐため、既定動作を無効化する。
+  useEffect(() => {
+    const prevent = (e: DragEvent) => { e.preventDefault(); };
+    window.addEventListener('dragover', prevent);
+    window.addEventListener('drop', prevent);
+    return () => {
+      window.removeEventListener('dragover', prevent);
+      window.removeEventListener('drop', prevent);
+    };
+  }, []);
+
   const selectImage = async () => {
     const img = await window.api.selectImage();
     if (img) {
@@ -109,6 +122,44 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     const img = await window.api.selectImage();
     if (img) { setAfterImage(img); setResult(null); setError(''); setAutoCreated(null); }
   };
+
+  // ── ドラッグ&ドロップで画像を取り込む ──
+  const readFileAsDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+    reader.readAsDataURL(file);
+  });
+
+  const applyDroppedImage = (dataUrl: string, target: 'single' | 'before' | 'after') => {
+    if (target === 'single') { setImageData(dataUrl); setGeneratedImage(null); }
+    else if (target === 'before') setBeforeImage(dataUrl);
+    else setAfterImage(dataUrl);
+    setResult(null);
+    setError('');
+    setAutoCreated(null);
+  };
+
+  const handleDrop = async (e: React.DragEvent, target: 'single' | 'before' | 'after') => {
+    e.preventDefault();
+    setDragTarget(null);
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { setError('画像ファイル（JPG/PNG等）をドロップしてください'); return; }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      applyDroppedImage(dataUrl, target);
+    } catch (err: any) {
+      setError(err?.message || '画像の読み込みに失敗しました');
+    }
+  };
+
+  // ドロップゾーンに付与する共通プロップ（onDragOver/Leave/Drop）
+  const dropZoneProps = (target: 'single' | 'before' | 'after') => ({
+    onDragOver: (e: React.DragEvent) => { e.preventDefault(); if (dragTarget !== target) setDragTarget(target); },
+    onDragLeave: (e: React.DragEvent) => { e.preventDefault(); setDragTarget(t => (t === target ? null : t)); },
+    onDrop: (e: React.DragEvent) => handleDrop(e, target),
+  });
 
   const canAnalyze = mode === 'single'
     ? (!!imageData || comment.trim().length > 0)
@@ -528,23 +579,26 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           {!imageData ? (
             <div
               onClick={selectImage}
+              {...dropZoneProps('single')}
               style={{
-                border: '3px dashed #ccc', borderRadius: 12, padding: '60px 20px',
-                cursor: 'pointer', color: '#aaa', transition: 'all 0.2s',
+                border: `3px dashed ${dragTarget === 'single' ? '#3a7bd5' : '#ccc'}`, borderRadius: 12, padding: '60px 20px',
+                cursor: 'pointer', color: dragTarget === 'single' ? '#3a7bd5' : '#aaa', transition: 'all 0.2s',
+                background: dragTarget === 'single' ? '#eef4fc' : 'transparent',
               }}
-              onMouseOver={e => { (e.currentTarget as HTMLElement).style.borderColor = '#3a7bd5'; (e.currentTarget as HTMLElement).style.color = '#3a7bd5'; }}
-              onMouseOut={e => { (e.currentTarget as HTMLElement).style.borderColor = '#ccc'; (e.currentTarget as HTMLElement).style.color = '#aaa'; }}
+              onMouseOver={e => { if (dragTarget) return; (e.currentTarget as HTMLElement).style.borderColor = '#3a7bd5'; (e.currentTarget as HTMLElement).style.color = '#3a7bd5'; }}
+              onMouseOut={e => { if (dragTarget) return; (e.currentTarget as HTMLElement).style.borderColor = '#ccc'; (e.currentTarget as HTMLElement).style.color = '#aaa'; }}
             >
-              <div style={{ fontSize: 48, marginBottom: 12 }}>📷</div>
-              <div style={{ fontSize: 18, fontWeight: 'bold' }}>写真・図面をアップロード</div>
+              <div style={{ fontSize: 48, marginBottom: 12 }}>{dragTarget === 'single' ? '📥' : '📷'}</div>
+              <div style={{ fontSize: 18, fontWeight: 'bold' }}>{dragTarget === 'single' ? 'ここにドロップ' : '写真・図面をドラッグ&ドロップ'}</div>
               <div style={{ fontSize: 13, marginTop: 8, color: '#666' }}>現場写真 / 間取り図 / 平面図 / 設計図 / 立面図 OK</div>
-              <div style={{ fontSize: 12, marginTop: 4 }}>クリックして画像を選択（なくてもコメントだけで見積可能）</div>
+              <div style={{ fontSize: 12, marginTop: 4 }}>ドラッグ&ドロップ、またはクリックして選択（なくてもコメントだけで見積可能）</div>
             </div>
           ) : (
-            <div>
+            <div {...dropZoneProps('single')} style={{ borderRadius: 8, outline: dragTarget === 'single' ? '3px dashed #3a7bd5' : 'none', outlineOffset: 4 }}>
               <img src={imageData} style={{ maxWidth: '100%', maxHeight: 350, borderRadius: 8, border: '1px solid #ddd' }} alt="uploaded" />
               <div style={{ marginTop: 12 }}>
                 <button className="btn btn-secondary btn-sm" onClick={selectImage}>別の画像を選択</button>
+                <span style={{ fontSize: 11, color: '#aaa', marginLeft: 8 }}>ドロップで差し替えもOK</span>
               </div>
             </div>
           )}
@@ -559,16 +613,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               {!beforeImage ? (
                 <div
                   onClick={selectBeforeImage}
+                  {...dropZoneProps('before')}
                   style={{
                     border: '2px dashed #e74c3c', borderRadius: 8, padding: '40px 12px',
-                    cursor: 'pointer', color: '#e74c3c', transition: 'all 0.2s', background: '#fef5f5',
+                    cursor: 'pointer', color: '#e74c3c', transition: 'all 0.2s',
+                    background: dragTarget === 'before' ? '#fcdcd8' : '#fef5f5',
                   }}
                 >
-                  <div style={{ fontSize: 32 }}>📷</div>
-                  <div style={{ fontSize: 12, marginTop: 4 }}>施工前の写真を選択</div>
+                  <div style={{ fontSize: 32 }}>{dragTarget === 'before' ? '📥' : '📷'}</div>
+                  <div style={{ fontSize: 12, marginTop: 4 }}>{dragTarget === 'before' ? 'ここにドロップ' : 'ドラッグ&ドロップ / クリックで選択'}</div>
                 </div>
               ) : (
-                <div>
+                <div {...dropZoneProps('before')} style={{ borderRadius: 8, outline: dragTarget === 'before' ? '3px dashed #e74c3c' : 'none', outlineOffset: 3 }}>
                   <img src={beforeImage} style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, border: '2px solid #e74c3c' }} alt="before" />
                   <div style={{ marginTop: 8 }}>
                     <button className="btn btn-secondary btn-sm" onClick={selectBeforeImage} style={{ fontSize: 11 }}>変更</button>
@@ -582,16 +638,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               {!afterImage ? (
                 <div
                   onClick={selectAfterImage}
+                  {...dropZoneProps('after')}
                   style={{
                     border: '2px dashed #27ae60', borderRadius: 8, padding: '40px 12px',
-                    cursor: 'pointer', color: '#27ae60', transition: 'all 0.2s', background: '#f0fff4',
+                    cursor: 'pointer', color: '#27ae60', transition: 'all 0.2s',
+                    background: dragTarget === 'after' ? '#d6f5e0' : '#f0fff4',
                   }}
                 >
-                  <div style={{ fontSize: 32 }}>📷</div>
-                  <div style={{ fontSize: 12, marginTop: 4 }}>施工後の写真を選択</div>
+                  <div style={{ fontSize: 32 }}>{dragTarget === 'after' ? '📥' : '📷'}</div>
+                  <div style={{ fontSize: 12, marginTop: 4 }}>{dragTarget === 'after' ? 'ここにドロップ' : 'ドラッグ&ドロップ / クリックで選択'}</div>
                 </div>
               ) : (
-                <div>
+                <div {...dropZoneProps('after')} style={{ borderRadius: 8, outline: dragTarget === 'after' ? '3px dashed #27ae60' : 'none', outlineOffset: 3 }}>
                   <img src={afterImage} style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8, border: '2px solid #27ae60' }} alt="after" />
                   <div style={{ marginTop: 8 }}>
                     <button className="btn btn-secondary btn-sm" onClick={selectAfterImage} style={{ fontSize: 11 }}>変更</button>
