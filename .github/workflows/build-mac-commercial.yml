@@ -7,6 +7,12 @@ name: Build Mac (従業員用・商用)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/mac-employee-build
+    paths:
+      - 'app/**'
+      - '.github/workflows/build-mac-commercial.yml'
 
 jobs:
   build-mac:
