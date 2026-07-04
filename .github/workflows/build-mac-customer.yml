@@ -1,0 +1,96 @@
+name: Build Mac (顧客用)
+
+# お客様向けMac版ビルド:
+#   - EMPLOYEE_BUILD を付けない通常ビルド（管理画面は顧客テナントでは自動非表示）
+#   - v3.3.3（ドラッグ&ドロップ対応）
+#   - 未署名（初回のみ右クリック→開くでGatekeeper回避）
+#   - デモ/契約はSupabaseライセンスで管理（インストール後にログイン）
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm install
+
+      - name: Build (通常ビルド／管理機能は残す)
+        working-directory: app
+        run: npm run build
+
+      - name: Read version
+        id: ver
+        working-directory: app
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Package for macOS (universal, 未署名)
+        working-directory: app
+        run: npx @electron/packager . 建築ブースト --platform=darwin --arch=universal --overwrite --out=release --ignore="src|\.zip$|seed-|launch\.vbs|\.db$|無料トライアル|建築見積管理_v|ファイル|特許|商談"
+
+      - name: Create distribution folder
+        run: |
+          mkdir -p mac-dist
+          cp -r "app/release/建築ブースト-darwin-universal/建築ブースト.app" mac-dist/
+          cp "app/説明書_建築ブースト_導入ガイド.pdf" mac-dist/ 2>/dev/null || true
+          cp "app/説明書_建築ブースト_導入ガイド.html" mac-dist/ 2>/dev/null || true
+
+      - name: Create お読みください
+        run: |
+          cat > mac-dist/お読みください.txt << 'README'
+          ========================================
+           建築ブースト（Mac版）
+           v${{ steps.ver.outputs.version }}
+          ========================================
+
+          【導入手順】
+
+          1. 「建築ブースト.app」を「アプリケーション」フォルダにドラッグ
+
+          2. 初回起動（未署名アプリのため、各Mac 1回だけ必要）
+             ・「建築ブースト.app」を右クリック →「開く」
+             ・確認ダイアログで もう一度「開く」
+             ・開けない場合：システム設定 →「プライバシーとセキュリティ」
+               →「このまま開く」をクリック
+             ・それでもダメなら「ターミナル」で下記を実行:
+               xattr -dr com.apple.quarantine "/Applications/建築ブースト.app"
+
+          3. ログイン
+             ・ご案内したユーザー名・パスワードでログインしてください
+             ・（不明な場合は担当までご連絡ください）
+
+          【使い方のコツ】
+            ・AI見積は、現場写真や図面を画面に
+              「ドラッグ&ドロップ」するだけでOKです
+
+          【動作環境】
+            macOS 14 (Sonoma) 以降
+            Apple Silicon (M1/M2/M3/M4) + Intel 対応
+
+          【サポート】
+            有限会社中野工務店
+            大阪府大阪市都島区都島本通5-8-18
+          README
+
+      - name: Create ZIP
+        run: |
+          cd mac-dist
+          zip -r -y "../kenchiku-boost-mac-v${{ steps.ver.outputs.version }}.zip" .
+          cd ..
+          ls -lh "kenchiku-boost-mac-v${{ steps.ver.outputs.version }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kenchiku-boost-mac-v${{ steps.ver.outputs.version }}
+          path: kenchiku-boost-mac-v${{ steps.ver.outputs.version }}.zip
+          retention-days: 30
