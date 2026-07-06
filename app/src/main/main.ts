@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
-import { startServer, getServerUrl, setConfigLoader, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, pickLanIp } from './server';
+import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData } from './external-data';
@@ -606,7 +606,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.3.3';
+const CURRENT_VERSION = '3.3.7';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -707,6 +707,22 @@ function setupAutoUpdater() {
     if (!adminSecret) return { ok: false, error: 'adminSecret未設定（設定画面で管理者シークレットを入力してください）' };
     const res = await licenseAdmin(adminSecret, 'reject', companyName, { message: '申請が却下されました' });
     return res && res.ok ? { ok: true } : { ok: false, error: res?.error || '却下失敗' };
+  });
+
+  // スマホ承認の「信頼端末」状態を取得（PCの管理画面用）
+  ipcMain.handle('admin:getTrustedDevice', async () => {
+    try { const cfg = loadApiConfig(); return { trusted: !!cfg.trustedAdminDeviceId, at: cfg.trustedAdminDeviceAt || '' }; }
+    catch (_) { return { trusted: false, at: '' }; }
+  });
+  // 信頼端末をリセット（機種変更時など）。次にスマホで承認画面を開いた端末が新しい信頼端末になる。
+  ipcMain.handle('admin:resetTrustedDevice', async () => {
+    try {
+      const cfg = loadApiConfig();
+      delete cfg.trustedAdminDeviceId;
+      delete cfg.trustedAdminDeviceAt;
+      saveApiConfig(cfg);
+      return { ok: true };
+    } catch (e: any) { return { ok: false, error: e?.message || 'failed' }; }
   });
 
     // 起動後5秒で確認開始
@@ -1251,6 +1267,35 @@ app.whenReady().then(async () => {
   // スマホ用Webサーバー起動
   try {
     setConfigLoader(loadApiConfig);
+    setConfigSaver(saveApiConfig);
+    // スマホ（オーナー=テナント1のみ）からの新規登録承認。adminSecretはPC内で完結しスマホに渡さない。
+    setAdminHandler(async (action: string, payload: any) => {
+      if (action === 'list') {
+        try {
+          const https = require('https');
+          return await new Promise((resolve) => {
+            const req = https.get(
+              'https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?select=*&order=created_at.desc',
+              { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 8000 },
+              (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve([]); } }); }
+            );
+            req.on('error', () => resolve([]));
+            req.on('timeout', () => { req.destroy(); resolve([]); });
+          });
+        } catch (_) { return []; }
+      }
+      const adminSecret = loadApiConfig().adminSecret || '';
+      if (!adminSecret) return { ok: false, error: 'adminSecret未設定（PCの設定画面で管理者シークレットを入力してください）' };
+      if (action === 'approve') {
+        const res = await licenseAdmin(adminSecret, 'approve', payload?.company_name, { plan: payload?.plan });
+        return res && res.ok ? { ok: true } : { ok: false, error: res?.error || '承認失敗' };
+      }
+      if (action === 'reject') {
+        const res = await licenseAdmin(adminSecret, 'reject', payload?.company_name, { message: '申請が却下されました' });
+        return res && res.ok ? { ok: true } : { ok: false, error: res?.error || '却下失敗' };
+      }
+      return { ok: false, error: 'unknown action' };
+    });
     const distPath = path.join(__dirname);
     startServer(distPath);
     setTimeout(() => {
@@ -4005,7 +4050,7 @@ ${pages}</body></html>`;
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
   // AI見積もりのコア処理。デスクトップ(IPC)とスマホ(内蔵Webサーバー)の両方から呼ぶ
   const analyzeImageCore = async (data: any) => {
-    let { imageBase64, beforeImage, afterImage, comment, location } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '' } : data;
+    let { imageBase64, beforeImage, afterImage, comment, location, area } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '' } : data;
     // スマホ写真は数MBあり、Anthropicの5MB上限で400になるため送信前に縮小する
     imageBase64 = shrinkImageForAI(imageBase64);
     beforeImage = shrinkImageForAI(beforeImage);
@@ -4288,11 +4333,51 @@ ${pages}</body></html>`;
       droneCSVInfo = '\n' + parts.join('\n') + '\n';
     }
 
-    // 遮熱シートの工法別 基準単価メモ（★単価が分かったらここを編集してください）
-    //   遮熱シートは工事方法（工法）で単価が変わるため、工法ごとに目安を書くのが理想。
-    //   例: '\n- 参考単価の目安: 屋根カバー工法 材工込み ○○円/m²、内張り ○○円/m²（税抜）。'
-    //   空文字のままなら、上記の「同じ工法の自社実績の金額帯」だけを基準に見積もります。
-    const HEATSHIELD_PRICE_NOTE = '';
+    // 遮熱シートの工法別 基準単価メモ（★自社実績が無い/薄い工法の "安全網" として使う目安。実績が最優先）
+    //   遮熱シートは工法・屋根形状・面積・製品グレードで単価が大きく変わる。以下は複数の
+    //   施工代理店・専門業者の公開情報（2025-2026年）から集めた市場相場レンジ。ライフテック
+    //   および代理店は基本オープン価格（＝公開定価なし・都度見積）のため、これは "定価" ではなく
+    //   "この帯を大きく外れたら疑え" という補正レンジ。同じ工法の自社実績があれば必ずそちらを優先。
+    const HEATSHIELD_PRICE_NOTE = `
+- ★遮熱シート 市場相場レンジ（材工込み・税抜／自社実績が無い工法のみ参照。実績があれば実績を最優先）:
+  ・市場レンジは 3,000〜10,000円/m²、中心帯は 4,000〜6,000円/m²。
+  ・費用構成の目安: 材料費≒60% / 施工費≒30% / 諸経費(足場・洗浄・処分)≒10%。
+- ★★価格スタンスは「高めに寄せる」★★: これは特許取得の高性能商材（アルミ純度99%・輻射熱97%カット・10年保証）で、
+  安売り品ではない。自社実績が無い/工法が曖昧なときは、安い側に張り付けず必ず中心帯の上寄り〜高い側を初期値にすること。
+  具体的には ①下限(3,000〜4,000円/m²)は汎用シートの水準なので本体には使わない ②標準は最低でも中心帯上端(6,000円/m²)を目安、
+  ③高い側の条件に一つでも当てはまれば 7,000〜10,000円/m² を採用。迷ったら高い方を選ぶ（安く出す方が失注より損失が大きい商材）。
+  高めに出したぶんは recommendations に「工法・面積・下地の条件次第で調整可能」と一言添え、confidence はやや低め(0.4〜0.6)にする。
+- ★"安い側(3,000〜4,000円/m²)" に寄る条件（※ここまで下げるのは下記が複数重なる大型・屋根裏案件のみ。安易に下限へ寄せない）:
+  ・屋根下工法・内張り（屋根裏/天井裏施工で外部足場が不要、高所作業が少ない）。
+  ・大面積（目安1,000m²超）でスケールメリットが効く。工場稼働を止めて連続施工できる。
+  ・薄型・空気層なし製品（サーモバリアスリム等）で材料費が下がる。下地良好で洗浄/プライマー不要。
+- ★"高い側(6,000〜10,000円/m²)" に寄る条件（← 迷ったらこちらを既定にする）:
+  ・スカイ工法・カバー工法（屋根の上での外張り。足場・高所作業・板金役物・雨仕舞いが増える）。
+  ・小面積（目安25〜100m²）で㎡単価が上がる。高層・急勾配・折板の複雑形状・搬入/アクセス困難。
+  ・厚手多層・高性能製品（サーモバリアS等）。稼働中工場で夜間/休日・工程分割が必要。
+  ・下地劣化（既存屋根補修・換気棟設置）、既存がスレートで石綿事前調査(有資格者)が必要。
+- ★屋根形状による差: 折板屋根＝山谷の張り手間・端部役物でやや割高。スレート(大波/小波)＝踏み抜き養生・石綿調査で割高化しやすい。金属平板/平面＝標準。
+- ★別途計上する付帯費（相場）: 足場 約15〜20万円/現場、高圧洗浄 +500円/m²〜、プライマー塗装 +1,000円/m²〜。
+- ★規模感の検算用: 標準的な工場屋根 約1,000m² で総額 約200万〜500万円超に収まるのが目安。桁が外れたら数量/単価を再確認。`;
+
+    // 遮熱シート屋根工事の「公的基準・法令」リファレンス（国の情報で施工指示を厳格化する）。
+    // installInstruction はこれに準拠し、該当する基準名を必ず明記させる。
+    const HEATSHIELD_STANDARDS = `
+## ★遮熱シート屋根工事 公的基準・法令リファレンス（施工指示は必ずこれに準拠し、該当基準名を明記）★
+◆墜落・転落防止（労働安全衛生規則／厚生労働省）
+- 高さ2m以上で墜落のおそれがある箇所は墜落制止用器具を使用（安衛則518〜521条）。作業床設置が原則、困難な場合は囲い・手すり・親綱・安全ネット等。
+- 墜落制止用器具は原則フルハーネス型。高さ6.75m以下（建設現場は5m以下が目安）は胴ベルト型も可。作業床の設置が困難な2m以上でフルハーネスを用いる作業は「特別教育」修了者に限る。
+- 屋根端部・開口部・谷は要措置（安衛則519条）。折板・スレートは踏み抜き注意で歩み板を使用。強風・雨天時は作業中止。
+◆折板屋根の構成（JIS A 6514 金属製折板屋根構成材）
+- タイトフレーム呼び厚さ2.3mm以上、山部にボルトM8以上×L25以上・座金＋防水パッキン併用、留付けピッチ250mm程度。緩み・変形が生じない緊結。既存屋根の形式（重ね型／はぜ締め型）に合わせる。
+◆石綿（アスベスト）事前調査【改修・カバー工法・塗装で必須／2023年10月〜】
+- 屋根改修（カバー工法含む）前に「建築物石綿含有建材調査者」による事前調査が義務。スレート・セメント系屋根は含有の有無に関わらず調査対象。一定規模以上は労基署・自治体へ報告。稼働中の工場・倉庫は飛散防止・室内養生・湿潤化を徹底。※2026年1月〜工作物も対象。
+- 既存屋根がスレート等で石綿含有の可能性がある場合、施工指示に「着工前に石綿事前調査（有資格者）が必要」の1行を必ず入れる。
+◆通気層・結露防止（遮熱シート施工の要点）
+- 遮熱シートは輻射熱を反射するが、施工時は通気層（給気＝軒・排気＝棟の入口/出口の両方）を確保し、熱・湿気をこもらせないこと。密着張りで小屋裏に湿気が滞留するとカビ・下地腐食・金属の錆の原因。スカイ工法はスペーサーで通気層確保、屋根下工法は小屋裏換気とセットで検討。
+◆雨仕舞い・納まり（金属屋根一般）
+- 水下→水上（軒→棟）方向へ張り上げ、重ね代を確保。端部/棟/軒/ケラバ/谷は立上げ・板金役物で止水。ビス・タッカー貫通部はシール／気密テープ。既存防水層を傷めないこと。
+`;
 
     // 業種別のAI指示
     const industryPrompt = industryType === 'lease'
@@ -4320,12 +4405,33 @@ ${pages}</body></html>`;
       ? `\n## ★業種: 設備工事業★
 この会社は設備工事業（水道・電気・空調）です。設備機器の型番・施工費・配管配線工事を重視して見積もってください。\n`
       : industryType === 'heatshield'
-      ? `\n## ★業種: 特許取得 遮熱シート専門★
-この会社（テナント）は特許を取得した高機能遮熱シートを扱います。見積もりは以下を厳守してください:
-- 【工事方法（工法）で単価が変わる — 最重要】遮熱シートは施工方法によって㎡単価が大きく変わります（例: 屋根葺き替え／屋根カバー工法／内張り／外張り／天井裏／吹付け 等）。まず依頼内容・画像・工事名から施工方法を特定し、必ず「同じ施工方法の過去実績の金額帯」に合わせること。施工方法が判別できない場合は、推測で安く見積もらず、recommendationsに「施工方法（工法）をご指定いただくと正確になります」と明記し、confidenceを下げること。
-- 【遮熱シート本体（特許商材）の価格は自社実績優先】ホームセンター等で売られている汎用の遮熱シート・断熱材・アルミ保温材の安い相場（数百円〜千円/m²程度）を遮熱シート本体に絶対に当てはめないこと。遮熱シート部分は必ず「この会社の過去実績（上記★修正履歴・自社の金額帯）」、特に同じ工法の実績を最優先の基準にすること。実績がまだ無ければ特許プレミアム商材として高めの専門単価で見積もり、confidenceは低め（0.3〜0.5）にし、recommendationsに「実績を入力いただくほど御社の工法別の金額帯に合った精度になります」と記載すること。
-- 【それ以外（足場・人件費・運搬・撤去・その他材料など）は通常どおり】上記の全国相場データ・補正係数・公的データを参照し、一般的な市場価格で見積もること。ここには特許プレミアムを上乗せしないこと。
-- breakdownでは「遮熱シート本体（特許商材・工法を明記）」と「足場・人件費などのその他項目」を必ず別項目に分けて記載すること。${HEATSHIELD_PRICE_NOTE}\n`
+      ? `\n## ★業種: 特許取得 遮熱シート専門（ライフテック「サーモバリア」代理店・施工店）★
+この会社（テナント）はライフテック社の特許遮熱シート「サーモバリア」の正規代理店・施工店です。見積もりは以下のSTEP1〜4を厳守してください:
+
+【STEP1: まず“シート”と“工法”を読み取る】
+画像・図面・工事名・コメントから、①遮熱シート（サーモバリア）を使う工事か、②どの工法かを最初に判別すること。主な工法は次の3つ:
+- 「スカイ工法」＝ 屋根の上（外側）に遮熱シートを張る外張り工法（折板屋根の上張り等）。葺き師・建築板金職人が屋根面にシートを敷設・固定し、必要に応じてスペーサーで通気層を確保する。足場・高所作業を伴うことが多い。
+- 「屋根下工法」＝ 屋根の裏側（野地板下・小屋裏・天井裏）に遮熱シートを施工する工法。内部からの施工で外部足場が不要な場合が多い。
+- 「カバー工法」＝ 既存屋根を撤去せず、その上に遮熱シート＋新規屋根材を重ね葺きする工法。既存撤去費は不要だが、下地・防水・板金納まり・雨仕舞いの手間が増える。
+※上記以外（内張り／外張り／天井／壁内／吹付け等）が該当する場合はその工法名で扱う。
+
+【STEP2: 工法別に単価を合わせる — 最重要】
+遮熱シートは工法で㎡単価が大きく変わる。判別した工法と「同じ工法の自社過去実績の金額帯」に必ず合わせること。工法が判別できない場合は、推測で安く見積もらず、recommendationsに「工法（スカイ工法／屋根下工法／カバー工法 等）をご指定いただくと正確になります」と明記し、confidenceを下げること。
+
+【STEP3: 遮熱シート本体（特許商材）は自社実績を最優先】
+ホームセンター等の汎用遮熱シート・断熱材・アルミ保温材の安い相場（数百〜千円/m²程度）を本体に絶対に当てはめないこと。本体は「この会社の過去実績（上記★修正履歴・自社の金額帯）」、特に同じ工法の実績を最優先の基準にする。実績がまだ無ければ特許プレミアム商材として高めの専門単価で見積もり、confidenceは低め（0.3〜0.5）にし、recommendationsに「実績を入力いただくほど御社の工法別の金額帯に合った精度になります」と記載すること。
+
+【STEP4: 施工（葺き師・建築板金職人）へ連携する — 出力要件】
+遮熱シートは材料を渡すだけでなく、工法どおりに屋根職人（葺き師・建築板金）が施工して初めて性能が出る。だから必ず:
+- breakdownに、判別した工法に対応する「屋根施工費（葺き師・板金職人によるシート敷設／固定／端部・棟・軒の納まり）」の人工を計上する（人工数×日額）。スカイ工法・カバー工法は足場・高所作業も見込む。
+- 「遮熱シート本体（特許商材・工法を明記）」と「屋根施工人件費・足場・運搬・撤去・その他材料」を必ず別項目に分ける。
+- **installInstructionフィールド**に【葺き師への施工指示】を出力すること。現場の職人がそのまま動ける粒度で、**判別した工法に該当する項目だけ**を箇条書き5〜8行で具体的に書く（工法に無関係な項目は書かない。例＝屋根下工法で雨仕舞いは書かない）。冒頭に必ず工法名を明記。必要シート量など数量の目安も一言添えること。
+  ▼**工法別に必ず出し分ける**（該当工法の観点を主役にする。3工法で指示は別物になる）：
+  ・【スカイ工法】主役＝安全・屋根上の通気層・雨仕舞い。①屋根上作業の墜落防止と折板の踏み抜き防止（歩み板・谷を踏まない） ②高圧洗浄・下地（錆/穴/雨漏り痕）確認 ③スペーサーで通気層確保（給気＝軒／排気＝棟の両方を塞がない） ④軒→棟へ張り上げ・重ね代100mm以上・反射面を外気側・重ねは気密テープ ⑤ビス貫通部の止水 ⑥端部/棟/軒/ケラバの板金納まり・雨仕舞い。
+  ・【屋根下工法】主役＝反射面の向きと小屋裏の排湿。①反射面を室内側（屋根側）に向けて野地板下・小屋裏・天井裏に施工 ②垂木/母屋間に隙間なく張り断熱欠損を作らない ③小屋裏の給排気・換気を塞がない（密閉すると結露・カビ・下地腐食） ④**外部足場・屋根上の雨仕舞いの記述は不要**（既存屋根が防水を担う）。安全は屋根裏作業の脚立・粉塵・照明・踏み抜き注意。
+  ・【カバー工法】主役＝石綿調査・既存屋根の健全性・二重屋根間の結露。①**着工前の石綿事前調査（既存スレート/セメント系は含有問わず必須）** ②既存屋根の錆/穴/固定・下地の健全性と荷重増の確認 ③既存屋根の上に通気層を取り、遮熱シート→新規屋根材で重ね葺き ④**新規屋根の雨仕舞い・板金納まりを一式やり直す**（最も手間が重い） ⑤屋根上作業の墜落・踏み抜き防止。
+- 【それ以外（足場・人件費・運搬・撤去・その他材料）】は全国相場データ・補正係数・公的データで通常どおり見積もり、特許プレミアムを上乗せしないこと。
+- 【施工指示は公的基準に準拠し厳格化】installInstructionは下記の【公的基準・法令リファレンス】に必ず準拠し、該当する基準名（例: 安衛則518〜521条／フルハーネス／JIS A 6514／建築物石綿含有建材調査者による事前調査／通気層確保 等）を施工指示の各行に明記すること。工法に応じて、①墜落防止（屋根上作業を伴うスカイ工法・カバー工法では必須。2m以上・フルハーネス・親綱・折板の踏み抜き注意）、②石綿事前調査（既存屋根がスレート等の改修・とくにカバー工法では必須）、③通気層の確保（全工法共通。屋根下工法は小屋裏換気とセット）、を必ず含めること。${HEATSHIELD_PRICE_NOTE}${HEATSHIELD_STANDARDS}\n`
       : '';
 
     const userContent: any[] = [];
@@ -4398,6 +4504,7 @@ ${COST_REFERENCE}
 
 ${hasLocation ? `## 現場場所\n${location}\n\n★重要: 上記の場所に基づいて「全国 地域別 工事費係数」テーブルから該当する都道府県の係数を適用し、金額を補正すること。大阪以外の場合は必ず地域係数を掛けて算出すること。\n` : ''}
 ${comment ? `## ユーザーが依頼した工事内容（★最重要★）\n${comment}\n` : ''}
+${(area && String(area).trim()) ? `## ★実測値（面積・数量）— 最優先で使用★\n${String(area).trim()}\n★重要: これはユーザーが現場で測った/把握している確定値です。写真・図面・航空写真からの推定より必ずこの実測値を優先し、この数量で材料費・施工費を算出すること。推定でずらさないこと。実測値が与えられた項目は信頼度(confidence)を高めに扱い、recommendationsに「面積は推定です」等の断り書きを書かないこと。\n` : ''}
 ${droneInfo}${droneCSVInfo}${industryPrompt}
 ## ★★★ 最重要ルール（絶対に守れ）★★★
 1. breakdownには「ユーザーが依頼した工事内容」に直接関係する項目だけを入れろ
@@ -4512,6 +4619,7 @@ ${categories}
   "workType": "工事の種類（例: 耐震補強工事、新築工事、リフォーム工事、解体工事、外構工事、エクステリア工事）",
   "description": "ユーザーが依頼した工事内容の要約（100文字程度）",
   "estimatedScale": "推定規模（例: 木造2階建て 30坪、施工面積13.3m²等）",
+  "assumedArea": "この見積もりで前提とした主要な面積・数量を、編集しやすい短い形で記載（ユーザーが実測値を入力していればその値、無ければ画像・図面・航空写真からの推定値）。例: '屋根 450㎡' '延床 30坪' '外壁 320㎡'。面積・数量が金額の主要因でない工事はnull。",
   "similarWork": "過去の施工実績で最も似ている工事名（なければnull）",
   "estimatedMaterialCost": 推定材料費（数値、円。依頼された工事のみ）,
   "estimatedLaborCost": 推定人件費（数値、円。依頼された工事のみ）,
@@ -4528,6 +4636,7 @@ ${categories}
     {"item": "項目名", "cost": 金額, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
   ],
   "recommendations": "画像から判断した追加提案（依頼内容以外で必要そうな工事や注意点。例:『外壁のひび割れも確認されます。外壁補修も検討をおすすめします（別途約○万円）』）",
+  "installInstruction": "★遮熱シート（サーモバリア）工事の場合のみ記入・それ以外は必ずnull★ 現場の葺き師・建築板金職人がそのまま作業できる施工指示。工法（スカイ工法／屋根下工法／カバー工法）に合わせ、[石綿事前調査の要否(既存屋根がスレート等の場合)]→[下地確認・清掃]→[張り方向・順序・重ね代]→[固定方法(スペーサー/ビス/気密テープ)]→[通気層の確保]→[端部・棟・軒・ケラバの納まり・雨仕舞い]→[安全(墜落防止・フルハーネス・親綱・踏み抜き)] を現場目線の箇条書き6〜9行で具体的に。各行に該当する公的基準名（安衛則○条／JIS A 6514／石綿事前調査 等）を明記し、必要シート量など数量の目安も添える。",
   "imagePrompt": "この工事で施工した箇所の完成後の写真を生成するための英語プロンプト。80〜100語の英語で、工種に応じて以下の写真スタイルで記述する（フォトリアル・広告品質・photorealistic, professional real estate photography, natural lighting, high detail）。\n- 内装: 室内インテリア写真風（自然光・暖かい木の質感・モダンジャパニーズ・clean interior, warm wood floor, fresh wallpaper, soft daylight from window）\n- 塗装（外壁/屋根）: 塗り替え後の外壁・屋根がツヤと均一な発色で美しく仕上がった住宅外観（freshly painted exterior wall, even smooth finish, clean facade, blue sky, no scaffolding, crisp edges）\n- 外構: exterior/landscaping写真風（青空・ゴールデンアワー・植栽・コンクリート/タイルの質感・neat driveway, fence, greenery, paved approach）\n- 足場: 建物を覆って安全・整然と組まれた足場（well-erected wedge scaffolding around a house, mesh sheet, neat and safe, professional site, blue sky）。※足場は"撤去後"ではなく"綺麗に設置された状態"を描く。\n施工した部分にフォーカスし、美しい仕上がり・プロの現場感を表現。必ず英語で。"
 }
 \`\`\`
@@ -4910,7 +5019,7 @@ ${pastWork || 'まだ実績なし'}`;
 
   // ── AI解析結果から物件・施工・材料明細・請求書を一括自動作成 ──
   const autoCreateFromEstimateCore = (data: any) => {
-    const { result, imageBase64, comment, location } = data;
+    const { result, imageBase64, comment, location, area } = data;
     const today = new Date().toISOString().split('T')[0];
     const dueDate = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
     const tid = getCurrentTenant();
@@ -4930,7 +5039,7 @@ ${pastWork || 'まだ実績なし'}`;
     const constructionId = runSql(
       'INSERT INTO constructions (property_id, title, construction_date, labor_cost, markup_rate, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [propertyId, result.workType, today, result.estimatedLaborCost || 0, markupRate,
-       `AI自動作成\n${result.recommendations || ''}`, tid]
+       `AI自動作成\n${result.recommendations || ''}${result.installInstruction ? '\n\n【葺き師への施工指示】\n' + result.installInstruction : ''}`, tid]
     );
 
     // 3. 内訳を材料明細として登録
@@ -4983,6 +5092,7 @@ ${pastWork || 'まだ実績なし'}`;
     // 5. 請求書作成（コメント内容を備考に反映）
     const remarksLines = [];
     if (location) remarksLines.push(`現場: ${location}`);
+    if (area && String(area).trim()) remarksLines.push(`面積・数量（実測）: ${String(area).trim()}`);
     if (comment) remarksLines.push(`工事内容: ${comment}`);
     if (result.recommendations) remarksLines.push(`提案: ${result.recommendations}`);
     const invoiceNotes = remarksLines.length > 0 ? remarksLines.join('\n') : `AI見積もりから自動作成\n工事種別: ${result.workType}`;

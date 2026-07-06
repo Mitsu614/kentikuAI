@@ -1,6 +1,6 @@
 {
   "name": "kenchiku-boost",
-  "version": "3.3.3",
+  "version": "3.3.7",
   "description": "建築ブースト — AI建築見積・請求書管理デスクトップアプリ",
   "main": "dist/main.js",
   "scripts": {
