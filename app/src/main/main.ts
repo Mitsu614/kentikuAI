@@ -606,7 +606,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.3.8';
+const CURRENT_VERSION = '3.3.9';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -785,7 +785,7 @@ app.whenReady().then(async () => {
   if (!isOwner) {
     const tenant = queryOne('SELECT name FROM tenants WHERE id = ?', [getCurrentTenant()]);
     if (tenant && (tenant.name === '無料トライアル' || !tenant.name)) {
-      const { response, checkboxChecked } = await dialog.showMessageBox({
+      await dialog.showMessageBox({
         type: 'question',
         title: '初回セットアップ',
         message: '建築ブーストをご利用いただきありがとうございます。\n\n御社名を登録してください。',
@@ -794,7 +794,7 @@ app.whenReady().then(async () => {
       });
       let companyName = '';
       while (!companyName.trim()) {
-        const input = await dialog.showMessageBox({
+        await dialog.showMessageBox({
           type: 'question',
           title: '会社名の登録',
           message: '会社名を入力してください',
@@ -1532,7 +1532,6 @@ app.whenReady().then(async () => {
     try {
       const mat = queryOne('SELECT name, category FROM materials WHERE id = ?', [data.materialId]);
       if (mat) {
-        const con = queryOne('SELECT title FROM constructions WHERE id = ?', [data.constructionId]);
         runSql(
           'INSERT INTO chat_learnings (tenant_id, category, key, value, source) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, category, key) DO UPDATE SET value=value||? , confidence=confidence+0.1',
           [getCurrentTenant(), '材料', `${mat.category}で追加されやすい材料`, `${mat.name}`, 'edit', `、${mat.name}`]
@@ -4077,11 +4076,6 @@ ${pages}</body></html>`;
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。サポートにお問い合わせください。設定画面から入力してください。');
 
     // DBの既存施工・材料データを取得
-    const constructions = queryAll(`
-      SELECT c.id, c.title, c.labor_cost, c.markup_rate, c.notes, p.name as property_name,
-        (SELECT SUM(cm.quantity * cm.unit_price) FROM construction_materials cm WHERE cm.construction_id = c.id) as material_cost
-      FROM constructions c LEFT JOIN properties p ON c.property_id = p.id
-    `);
     const materialCategories = queryAll('SELECT DISTINCT category FROM materials ORDER BY category');
 
     // 1万件の実績を工事タイプ別に統計集約してAIに渡す
