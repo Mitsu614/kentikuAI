@@ -608,9 +608,33 @@ function createTables() {
     FOREIGN KEY (construction_id) REFERENCES constructions(id) ON DELETE SET NULL,
     FOREIGN KEY (estimate_log_id) REFERENCES estimate_log(id) ON DELETE SET NULL
   )`);
+
+  // 顧客プロフィール（職業・趣味など。見積提案のパーソナライズに使う）
+  // ※既存コードがエクスポート/インポートで参照していた customers テーブルの正式な定義。
+  db.run(`CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    company TEXT, phone TEXT, email TEXT, address TEXT, notes TEXT,
+    job TEXT, hobby TEXT,
+    tenant_id INTEGER DEFAULT 1,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+  // 同一テナント内で顧客名は一意（upsert のキー）
+  db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_tenant_name ON customers(tenant_id, name)');
 }
 
 function migrate() {
+  // 旧バージョンで customers テーブルが job/hobby 列なしで作られていた場合に追加
+  try {
+    const custCols = queryAll('PRAGMA table_info(customers)');
+    if (custCols.length > 0) {
+      if (!custCols.find((c: any) => c.name === 'job')) db.run('ALTER TABLE customers ADD COLUMN job TEXT');
+      if (!custCols.find((c: any) => c.name === 'hobby')) db.run('ALTER TABLE customers ADD COLUMN hobby TEXT');
+      if (!custCols.find((c: any) => c.name === 'updated_at')) db.run('ALTER TABLE customers ADD COLUMN updated_at DATETIME');
+    }
+  } catch (_) {}
+  try { db.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_tenant_name ON customers(tenant_id, name)'); } catch (_) {}
+
   // tenant_id カラムを既存テーブルに追加（なければ）
   const tables = ['properties', 'materials', 'constructions', 'invoices'];
   for (const t of tables) {

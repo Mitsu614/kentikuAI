@@ -465,7 +465,7 @@ function getTenantProfile(tid: number): { industryType: string | null; isolated:
   }
 }
 
-export interface ClientAttrs { job?: string; age?: string; priorities?: string[] }
+export interface ClientAttrs { job?: string; hobby?: string; age?: string; priorities?: string[] }
 
 /**
  * 施主の属性を見積プロンプト用のセクションに変換する。
@@ -477,12 +477,14 @@ export interface ClientAttrs { job?: string; age?: string; priorities?: string[]
 function buildClientAttrsPrompt(attrs: ClientAttrs | null | undefined): string {
   if (!attrs) return '';
   const job = (attrs.job || '').trim();
+  const hobby = (attrs.hobby || '').trim();
   const age = (attrs.age || '').trim();
   const priorities = (attrs.priorities || []).filter(p => p && p.trim());
-  if (!job && !age && priorities.length === 0) return '';
+  if (!job && !hobby && !age && priorities.length === 0) return '';
 
   const lines: string[] = ['## ★ 施主の属性（提案のパーソナライズ用）★'];
   if (job) lines.push(`- 職業・立場: ${job}`);
+  if (hobby) lines.push(`- 趣味・関心: ${hobby}`);
   if (age) lines.push(`- 年代: ${age}`);
   if (priorities.length > 0) lines.push(`- 重視している点: ${priorities.join('・')}`);
 
@@ -5202,6 +5204,36 @@ ${pastWork || 'まだ実績なし'}`;
   };
   ipcMain.handle('ai:autoCreate', (_e, data: any) => autoCreateFromEstimateCore(data));
   setAutoCreateHandler(autoCreateFromEstimateCore);
+
+  // ── 顧客プロフィール（職業・趣味）— 見積提案のパーソナライズ用 ──
+  // 顧客名（テナント内で一意）をキーに職業・趣味を保存/読込する。
+  ipcMain.handle('customers:findByName', (_e, name: string) => {
+    const nm = (name || '').trim();
+    if (!nm) return null;
+    try {
+      return queryOne('SELECT name, job, hobby FROM customers WHERE tenant_id = ? AND name = ?', [getCurrentTenant(), nm]);
+    } catch (e) { console.error('customers:findByName failed:', e); return null; }
+  });
+
+  ipcMain.handle('customers:upsertProfile', (_e, data: { name?: string; job?: string; hobby?: string }) => {
+    const nm = (data?.name || '').trim();
+    if (!nm) return { ok: false, reason: 'name_required' };
+    const job = (data?.job || '').trim();
+    const hobby = (data?.hobby || '').trim();
+    // 職業も趣味も空なら保存しない（空レコードを作らない）
+    if (!job && !hobby) return { ok: false, reason: 'empty' };
+    const tid = getCurrentTenant();
+    const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+    try {
+      const existing = queryOne('SELECT id FROM customers WHERE tenant_id = ? AND name = ?', [tid, nm]);
+      if (existing) {
+        runSql('UPDATE customers SET job = ?, hobby = ?, updated_at = ? WHERE id = ?', [job, hobby, now, existing.id]);
+      } else {
+        runSql('INSERT INTO customers (name, job, hobby, tenant_id, updated_at) VALUES (?, ?, ?, ?, ?)', [nm, job, hobby, tid, now]);
+      }
+      return { ok: true };
+    } catch (e) { console.error('customers:upsertProfile failed:', e); return { ok: false, reason: 'db_error' }; }
+  });
 
   // ── テナントデータ エクスポート（トライアル企業→本体へ渡す用）──
   ipcMain.handle('data:export', async () => {

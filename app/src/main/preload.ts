@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // 請求書
   listInvoices: () => ipcRenderer.invoke('invoices:list'),
+  findCustomerByName: (name: string) => ipcRenderer.invoke('customers:findByName', name),
+  upsertCustomerProfile: (data: { name?: string; job?: string; hobby?: string }) => ipcRenderer.invoke('customers:upsertProfile', data),
   createInvoice: (data: any) => ipcRenderer.invoke('invoices:create', data),
   updateInvoice: (data: any) => ipcRenderer.invoke('invoices:update', data),
   deleteInvoice: (id: number) => ipcRenderer.invoke('invoices:delete', id),

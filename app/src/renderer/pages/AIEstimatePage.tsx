@@ -11,9 +11,26 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [comment, setComment] = useState('');
   const [area, setArea] = useState(''); // 面積・数量の実測値（AIの推定より優先させる）
   // 施主の属性 — 提案(recommendations)のパーソナライズにのみ使う。金額には影響させない。
+  const [clientName, setClientName] = useState('');
   const [clientJob, setClientJob] = useState('');
+  const [clientHobby, setClientHobby] = useState('');
   const [clientAge, setClientAge] = useState('');
   const [clientPriorities, setClientPriorities] = useState<string[]>([]);
+  const [profileLoaded, setProfileLoaded] = useState(''); // 直近に自動読込した顧客名（UI表示用）
+
+  // 顧客名を確定したら、保存済みの職業・趣味を自動で読み込む
+  const loadCustomerProfile = async () => {
+    const nm = clientName.trim();
+    if (!nm) return;
+    try {
+      const p = await (window as any).api.findCustomerByName(nm);
+      if (p && (p.job || p.hobby)) {
+        if (p.job) setClientJob(p.job);
+        if (p.hobby) setClientHobby(p.hobby);
+        setProfileLoaded(nm);
+      }
+    } catch (_) {}
+  };
   const [reArea, setReArea] = useState(''); // 結果画面での「AIが前提にした面積」修正→再計算用
   const [analyzing, setAnalyzing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -189,9 +206,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     }, 1000);
     setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     try {
-      const clientAttrs = (clientJob || clientAge || clientPriorities.length > 0)
-        ? { job: clientJob, age: clientAge, priorities: clientPriorities }
+      const clientAttrs = (clientJob || clientHobby || clientAge || clientPriorities.length > 0)
+        ? { job: clientJob, hobby: clientHobby, age: clientAge, priorities: clientPriorities }
         : null;
+      // 職業・趣味を入れてあれば顧客DBに登録（顧客名がキー。次回同じ名前で自動読込される）
+      if (clientName.trim() && (clientJob.trim() || clientHobby.trim())) {
+        try { await (window as any).api.upsertCustomerProfile({ name: clientName.trim(), job: clientJob, hobby: clientHobby }); } catch (_) {}
+      }
       const payload = mode === 'beforeafter'
         ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs }
         : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs };
@@ -715,6 +736,29 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>
               👤 施主の属性（任意 — 提案の精度が上がります）
             </label>
+            {/* 顧客名: 職業・趣味を入れて見積すると顧客DBに保存。次回同じ名前で自動読込。 */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+              <input
+                type="text"
+                value={clientName}
+                onChange={e => { setClientName(e.target.value); setProfileLoaded(''); }}
+                onBlur={loadCustomerProfile}
+                placeholder="顧客名（例: 中野工務店 様）"
+                style={{ flex: 1, padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit' }}
+              />
+              <input
+                type="text"
+                value={clientHobby}
+                onChange={e => setClientHobby(e.target.value)}
+                placeholder="趣味（例: ゴルフ・車・ガーデニング）"
+                style={{ flex: 1, padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit' }}
+              />
+            </div>
+            {profileLoaded && (
+              <div style={{ fontSize: 11, color: '#2563eb', marginBottom: 8 }}>
+                ✓「{profileLoaded}」様の登録済みプロフィールを読み込みました
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
               <select
                 value={clientJob}
@@ -757,7 +801,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               })}
             </div>
             <div style={{ fontSize: 11, color: '#888', marginTop: 6 }}>
-              提案（💡欄）のパーソナライズにのみ使います。<strong>見積金額には一切影響しません。</strong>
+              提案（💡欄）のパーソナライズにのみ使います。<strong>見積金額には一切影響しません。</strong><br />
+              顧客名＋職業/趣味を入れて見積すると顧客DBに保存され、次回同じ顧客名で自動的に読み込まれます。
             </div>
           </div>
 
