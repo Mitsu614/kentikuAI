@@ -50,10 +50,10 @@ where company_name in ('tesuto','テストです２９','クレジット確認')
 -- 確認:
 select id, company_name, plan, active, claimed_at, created_at
 from public.remote_licenses where company_name = '中野工務店' order by created_at;
--- (A) 2行とも削除:
--- delete from public.remote_licenses where company_name = '中野工務店';
+-- ★決定(2026-07-04): オーナー自身の会社のため 2行とも削除する（オプションA）:
+delete from public.remote_licenses where company_name = '中野工務店';
 --
---   (B) 1行だけ残す場合（残す id を KEEP、他を消す）:
+--   (参考) 1行だけ残す場合（残す id を KEEP、他を消す）:
 -- delete from public.remote_licenses
 --   where company_name = '中野工務店' and id <> '<残すid>';
 
