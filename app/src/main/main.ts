@@ -210,6 +210,21 @@ function shrinkImageForAI(dataUrl: any, maxDim = 1568, maxBytes = 4_500_000): an
   }
 }
 
+// ── 元画像の縦横比から gpt-image-1 の出力サイズを選ぶ（横長の屋根が正方形に潰れるバグ対策）──
+function pickImageSize(dataUrl: any): '1536x1024' | '1024x1536' | '1024x1024' {
+  try {
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return '1536x1024';
+    const { nativeImage } = require('electron');
+    const img = nativeImage.createFromDataURL(dataUrl);
+    if (img.isEmpty()) return '1536x1024';
+    const { width, height } = img.getSize();
+    if (!width || !height) return '1536x1024';
+    if (width >= height * 1.15) return '1536x1024'; // 横長
+    if (height >= width * 1.15) return '1024x1536'; // 縦長
+    return '1024x1024';                              // ほぼ正方形
+  } catch (_) { return '1536x1024'; }
+}
+
 // ── AI関連エラーをファイルに記録（スマホ経由の不具合を後から確認するため）──
 function logAiError(where: string, err: any, extra?: any) {
   try {
@@ -606,7 +621,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.3.10';
+const CURRENT_VERSION = '3.3.11';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -4970,6 +4985,7 @@ ${pastWork || 'まだ実績なし'}`;
           model: 'gpt-image-1',
           image: fileObj,
           prompt: editPrompt,
+          size: pickImageSize(sourceImage), // 元画像の縦横比に合わせる（横長屋根の正方形潰れ対策）
         });
 
         const b64 = response.data?.[0]?.b64_json;
