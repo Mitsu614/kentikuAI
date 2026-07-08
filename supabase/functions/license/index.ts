@@ -182,10 +182,13 @@ Deno.serve(async (req) => {
       if (!rows.length) return json({ error: "not_found_or_already_claimed" }, 404);
       if (rows.length > 1) return json({ error: "ambiguous_contact_support" }, 409);
       const lic = rows[0];
-      await sbPatch(`remote_licenses?id=eq.${encodeURIComponent(lic.id)}`, {
-        claimed_at: new Date().toISOString(),
-      });
-      return json({ token: lic.license_token, ...publicView(lic) });
+      // トークンが未発行の行（pendingで作られたなど）は、claim時に必ず発行する。
+      // これを怠ると顧客アプリが空トークンを受け取り、以後 consume が該当行に届かない（クレジットが減らない）。
+      let token = lic.license_token;
+      const patch: any = { claimed_at: new Date().toISOString() };
+      if (!token) { token = newToken(); patch.license_token = token; }
+      await sbPatch(`remote_licenses?id=eq.${encodeURIComponent(lic.id)}`, patch);
+      return json({ token, ...publicView(lic) });
     }
 
     // ---- admin: 承認/却下/クレジット設定（管理者シークレット必須） ----
@@ -196,7 +199,7 @@ Deno.serve(async (req) => {
       if (!company) return json({ error: "company_name required" }, 400);
       // 対象を一意に特定（同名複数は誤爆を避けてエラーに）。以降の更新はすべて id 指定で行う。
       const targets = await sbGet(
-        `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=id`,
+        `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=id,license_token`,
       );
       if (!targets.length) return json({ error: "not_found" }, 404);
       if (targets.length > 1) return json({ error: "ambiguous", count: targets.length }, 409);
@@ -204,9 +207,17 @@ Deno.serve(async (req) => {
       if (sub === "approve") {
         const plan = String(body.plan || "standard");
         const credits = Number(body.credits ?? (plan === "demo" ? 30 : plan === "pro" ? 200 : 50));
-        await sbPatch(`remote_licenses?id=eq.${tid}`, {
+        const patch: any = {
           plan, credits, max_credits: credits, active: true, blocked_message: null, updated_at: new Date().toISOString(),
-        });
+        };
+        // トークン欠落の行（pendingで作られてトークン未発行、または過去のバグで消えた行）は、
+        // 承認/変更のタイミングで必ずトークンを発行し、claimed_atをリセットして顧客アプリが再取得できるようにする。
+        // → これで「承認したのにクレジットが減らない」状態を復旧できる（正常な行のトークンには触れない）。
+        if (!targets[0].license_token) {
+          patch.license_token = newToken();
+          patch.claimed_at = null;
+        }
+        await sbPatch(`remote_licenses?id=eq.${tid}`, patch);
         return json({ ok: true });
       }
       if (sub === "reject") {
