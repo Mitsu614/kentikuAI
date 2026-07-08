@@ -1098,7 +1098,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div className="card" style={{ marginTop: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <h3 style={{ margin: 0 }}>工数内訳</h3>
-                <span style={{ fontSize: 11, color: '#888' }}>項目をクリック → 発注書PDF出力</span>
+                <span style={{ fontSize: 11, color: '#888' }}>人数・日数・日額は直接修正できます（人工と小計は自動計算）</span>
               </div>
               <table className="data-table">
                 <thead>
@@ -1107,6 +1107,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     <th style={{ textAlign: 'center' }}>人数</th>
                     <th style={{ textAlign: 'center' }}>日数</th>
                     <th style={{ textAlign: 'center' }}>人工</th>
+                    <th style={{ textAlign: 'right' }}>日額</th>
                     <th style={{ textAlign: 'right' }}>小計</th>
                     <th style={{ textAlign: 'center', width: 80 }}>発注書</th>
                   </tr>
@@ -1114,41 +1115,73 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 <tbody>
                   {result.manDaysBreakdown.map((m: any, i: number) => {
                     const tradeName = (m.trade || '').replace(/[（(].*?レベル.*?[）)]/g, '').trim();
-                    const subtotal = m.manDays * m.dailyRate;
+                    const subtotal = (Number(m.manDays) || 0) * (Number(m.dailyRate) || 0);
+                    // 人数・日数を直すと人工(manDays)を再計算し、合計人工も揃える
+                    const patchRow = (patch: any) => {
+                      const next = [...result.manDaysBreakdown];
+                      const row = { ...next[i], ...patch };
+                      if ('workers' in patch || 'days' in patch) {
+                        row.manDays = (Number(row.workers) || 0) * (Number(row.days) || 0);
+                      }
+                      next[i] = row;
+                      const totalManDays = next.reduce((s: number, r: any) => s + (Number(r.manDays) || 0), 0);
+                      setResult({ ...result, manDaysBreakdown: next, totalManDays });
+                    };
+                    const numStyle = {
+                      width: 70, padding: '5px 6px', textAlign: 'center' as const,
+                      border: '1px solid #ddd', borderRadius: 6, fontSize: 13, fontFamily: 'inherit',
+                    };
                     return (
-                    <tr key={i} style={{ cursor: 'pointer' }}
-                      onMouseEnter={e => e.currentTarget.style.background = '#f0f7ff'}
-                      onMouseLeave={e => e.currentTarget.style.background = ''}
-                      onClick={async () => {
-                        const today = new Date().toISOString().split('T')[0];
-                        const po = {
-                          id: 0,
-                          vendor_name: '',
-                          vendor_address: '',
-                          issue_date: today,
-                          delivery_date: '',
-                          tax_rate: 0.1,
-                          notes: '',
-                          construction_title: result.workType || '',
-                        };
-                        const items = [{ name: `${tradeName} ${m.workers}人×${m.days}日`, quantity: m.manDays, unit: '人工', unit_price: m.dailyRate || 0 }];
-                        try {
-                          await (window as any).api.generatePurchaseOrderPDF({ po, items });
-                        } catch (e: any) {
-                          alert('PDF生成に失敗: ' + (e.message || e));
-                        }
-                      }}
-                    >
+                    <tr key={i}>
                       <td>
                         {tradeName}
                         {m.basis && <div style={{ fontSize: 11, color: '#888', fontWeight: 'normal', marginTop: 3, lineHeight: 1.5 }}>根拠: {m.basis}</div>}
                       </td>
-                      <td style={{ textAlign: 'center' }}>{m.workers}人</td>
-                      <td style={{ textAlign: 'center' }}>{m.days}日</td>
-                      <td style={{ textAlign: 'center', fontWeight: 'bold' }}>{m.manDays}</td>
+                      <td style={{ textAlign: 'center' }}>
+                        <input type="number" min={0} value={Number(m.workers) || 0}
+                          onChange={e => patchRow({ workers: Number(e.target.value) || 0 })}
+                          style={numStyle} />
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
+                        <input type="number" min={0} value={Number(m.days) || 0}
+                          onChange={e => patchRow({ days: Number(e.target.value) || 0 })}
+                          style={numStyle} />
+                      </td>
+                      <td style={{ textAlign: 'center', fontWeight: 'bold' }}>{Number(m.manDays) || 0}</td>
+                      <td style={{ textAlign: 'right' }}>
+                        <input type="number" min={0} value={Number(m.dailyRate) || 0}
+                          onChange={e => patchRow({ dailyRate: Number(e.target.value) || 0 })}
+                          style={{ ...numStyle, width: 100, textAlign: 'right' }} />
+                      </td>
                       <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{fmt(subtotal)}</td>
                       <td style={{ textAlign: 'center' }}>
-                        <span style={{ fontSize: 11, color: '#3498db', fontWeight: 'bold' }}>📄 出力</span>
+                        <button
+                          type="button"
+                          title="この職種で発注書PDFを出力"
+                          onClick={async () => {
+                            const today = new Date().toISOString().split('T')[0];
+                            const po = {
+                              id: 0,
+                              vendor_name: '',
+                              vendor_address: '',
+                              issue_date: today,
+                              delivery_date: '',
+                              tax_rate: 0.1,
+                              notes: '',
+                              construction_title: result.workType || '',
+                            };
+                            const items = [{ name: `${tradeName} ${m.workers}人×${m.days}日`, quantity: m.manDays, unit: '人工', unit_price: m.dailyRate || 0 }];
+                            try {
+                              await (window as any).api.generatePurchaseOrderPDF({ po, items });
+                            } catch (e: any) {
+                              alert('PDF生成に失敗: ' + (e.message || e));
+                            }
+                          }}
+                          style={{
+                            fontSize: 11, color: '#3498db', fontWeight: 'bold', cursor: 'pointer',
+                            background: 'none', border: 'none', padding: '4px 6px',
+                          }}
+                        >📄 出力</button>
                       </td>
                     </tr>
                     );
@@ -1157,8 +1190,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     <td>合計</td>
                     <td></td>
                     <td></td>
-                    <td style={{ textAlign: 'center' }}>{result.totalManDays}人工</td>
-                    <td style={{ textAlign: 'right' }}>{fmt(result.manDaysBreakdown.reduce((s: number, m: any) => s + m.manDays * m.dailyRate, 0))}</td>
+                    <td style={{ textAlign: 'center' }}>
+                      {result.manDaysBreakdown.reduce((s: number, m: any) => s + (Number(m.manDays) || 0), 0)}人工
+                    </td>
+                    <td></td>
+                    <td style={{ textAlign: 'right' }}>
+                      {fmt(result.manDaysBreakdown.reduce((s: number, m: any) => s + (Number(m.manDays) || 0) * (Number(m.dailyRate) || 0), 0))}
+                    </td>
                     <td></td>
                   </tr>
                 </tbody>
