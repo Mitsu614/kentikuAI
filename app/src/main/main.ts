@@ -7,7 +7,7 @@ import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeH
 import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData } from './external-data';
-import { fetchMarketInsight, buildMarketPrompt } from './market-insight';
+import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 
 // ── トライアル用埋め込みキー ──
 const TRIAL_KEYS = {
@@ -4357,13 +4357,18 @@ ${pages}</body></html>`;
     // テナント個別の業種設定を最優先（山下さん=遮熱シート専門）。無ければインストール共通設定。
     const industryType = estProfile.industryType || config.industryType || 'general';
 
-    // 地域×工事種別の市場情報をWeb検索（30日キャッシュ）。
+    // 地域×工事種別の市場情報（30日キャッシュ）。
     // 外に出るのは市区町村までの地域名と工事種別ラベルだけ（market-insight.ts のコメント参照）。
-    // 失敗しても null が返るだけで、見積本体は必ず続行する。
+    // ★Web検索は数分かかるので絶対に await しない。キャッシュがあれば使い、
+    //   無ければ待たずに背景で温めて今回はスキップ（次回の見積から市場情報が乗る）。
     let marketPrompt = '';
     try {
-      const insight = await fetchMarketInsight(config.anthropicKey, { location, comment, industryType });
-      marketPrompt = buildMarketPrompt(insight);
+      const cachedInsight = readMarketInsightCache({ location, comment, industryType });
+      if (cachedInsight) {
+        marketPrompt = buildMarketPrompt(cachedInsight);
+      } else {
+        warmMarketInsight(config.anthropicKey, { location, comment, industryType });
+      }
     } catch (e) { console.error('Market insight fetch failed:', e); }
 
     // 施主の属性（職業・年代・重視点）から提案をパーソナライズする。

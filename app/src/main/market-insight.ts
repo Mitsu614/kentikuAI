@@ -100,8 +100,49 @@ function extractResult(content: any[]): { summary: string; sources: MarketSource
 const MAX_CONTINUATIONS = 3;
 
 /**
+ * キャッシュにある市場情報だけを即座に返す（API呼び出し・待ち時間なし）。
+ * 見積フローはこれを使い、ミス時は待たずに warmMarketInsight で背景取得する。
+ */
+export function readMarketInsightCache(
+  opts: { location?: string; comment?: string; industryType?: string },
+): MarketInsight | null {
+  const area = sanitizeArea(opts.location || '');
+  const workType = deriveWorkType(opts.comment || '', opts.industryType);
+  if (!area && !workType) return null;
+  const cached = readCache(cacheKey(area, workType), 30);
+  if (cached?.summary) {
+    return { summary: cached.summary, sources: cached.sources || [], area, workType };
+  }
+  return null;
+}
+
+/**
+ * 背景でWeb検索を走らせ、キャッシュを温めるだけ（戻り値は使わない）。
+ * Web検索は数分かかるので見積フローを待たせない。次回の見積で命中する。
+ * 二重起動を防ぐため、実行中のキーは inflight で抑止する。
+ */
+const inflightWarm = new Set<string>();
+export function warmMarketInsight(
+  apiKey: string,
+  opts: { location?: string; comment?: string; industryType?: string },
+): void {
+  const area = sanitizeArea(opts.location || '');
+  const workType = deriveWorkType(opts.comment || '', opts.industryType);
+  if (!area && !workType) return;
+  const key = cacheKey(area, workType);
+  if (readCache(key, 30)?.summary) return; // 既に温まっている
+  if (inflightWarm.has(key)) return;
+  inflightWarm.add(key);
+  fetchMarketInsight(apiKey, opts)
+    .then(() => console.log(`[market] 背景取得完了: ${area || '全国'} / ${workType || '建築工事'}`))
+    .catch(e => console.error('[market] 背景取得失敗:', e))
+    .finally(() => inflightWarm.delete(key));
+}
+
+/**
  * 地域×工事種別の市場情報をWeb検索で集める。30日キャッシュ。
  * 失敗時は null を返し、見積本体は必ず続行させる（Web検索は補助情報でしかない）。
+ * ※Web検索は数分かかるため、見積フローからは直接 await せず warmMarketInsight 経由で使う。
  */
 export async function fetchMarketInsight(
   apiKey: string,
