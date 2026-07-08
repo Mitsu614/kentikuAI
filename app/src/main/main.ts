@@ -3210,15 +3210,23 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
           [actMat, actLabor, actSelling, markupRate, now, log.id]);
 
         // Supabase送信 → 係数更新
+        // ★隔離学習: 特許の遮熱シートが絡む工事は全国共有プールに送らない。
+        //   他の送信箇所（estimate_log 経由・実績入力画面）と同じゲートをここにも掛ける。
         const config = loadApiConfig();
-        sendFeedbackToSupabase([{
-          work_type: log.work_type || '不明',
-          ai_material_cost: log.ai_material_cost, ai_labor_cost: log.ai_labor_cost, ai_total: log.ai_total,
-          actual_material_cost: actMat, actual_labor_cost: actLabor, actual_selling_price: actSelling,
-          actual_markup_rate: markupRate, accuracy_ratio: log.ai_total > 0 ? actSelling / log.ai_total : null,
-        }]).then(() => analyzeAndUpdateCoefficients(config.anthropicKey))
-          .then(() => console.log('学習ループ（予実管理）: 係数更新完了'))
-          .catch((e: any) => console.error('学習ループ（予実管理）エラー:', e));
+        const budgetWorkType = log.work_type || '不明';
+        const budgetProfile = getTenantProfile(tid);
+        if (budgetProfile.isolated && isHeatshieldWork(budgetWorkType)) {
+          console.log('学習ループ（予実管理）: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
+        } else {
+          sendFeedbackToSupabase([{
+            work_type: budgetWorkType,
+            ai_material_cost: log.ai_material_cost, ai_labor_cost: log.ai_labor_cost, ai_total: log.ai_total,
+            actual_material_cost: actMat, actual_labor_cost: actLabor, actual_selling_price: actSelling,
+            actual_markup_rate: markupRate, accuracy_ratio: log.ai_total > 0 ? actSelling / log.ai_total : null,
+          }]).then(() => analyzeAndUpdateCoefficients(config.anthropicKey))
+            .then(() => console.log('学習ループ（予実管理）: 係数更新完了'))
+            .catch((e: any) => console.error('学習ループ（予実管理）エラー:', e));
+        }
       }
     } catch (e) { console.error('Learning loop (budget) trigger failed:', e); }
   });
