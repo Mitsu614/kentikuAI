@@ -30,6 +30,9 @@ function decryptTrialKey(encoded: string): string {
 
 // ── API キー暗号化 ──
 const SENSITIVE_FIELDS = ['anthropicKey', 'openaiKey', 'serverPassword', 'licenseToken', 'adminSecret'];
+// オブジェクトのまま持つ機密（JSON化してから暗号化する）。
+// webSessions は30日有効なスマホ用セッショントークンなので平文で置かない。
+const SENSITIVE_JSON_FIELDS = ['webSessions'];
 function getEncKey() {
   const os = require('os');
   return crypto.createHash('sha256').update(os.hostname() + os.userInfo().username + 'kentiku-salt').digest();
@@ -64,6 +67,11 @@ function loadApiConfig(): any {
     if (fs.existsSync(getConfigPath())) {
       const raw = JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8'));
       for (const f of SENSITIVE_FIELDS) { if (raw[f]) raw[f] = decryptField(raw[f]); }
+      for (const f of SENSITIVE_JSON_FIELDS) {
+        if (typeof raw[f] !== 'string') continue; // 未設定 or 旧形式(平文オブジェクト)はそのまま
+        const plain = decryptField(raw[f]);
+        try { raw[f] = plain ? JSON.parse(plain) : {}; } catch (_) { raw[f] = {}; }
+      }
       config = raw;
     }
   } catch (e) { console.error('loadApiConfig failed:', e); }
@@ -82,6 +90,9 @@ function saveApiConfig(config: any) {
   const toSave = { ...config };
   // 暗号化
   for (const f of SENSITIVE_FIELDS) { if (toSave[f]) toSave[f] = encryptField(toSave[f]); }
+  for (const f of SENSITIVE_JSON_FIELDS) {
+    if (toSave[f] && typeof toSave[f] === 'object') toSave[f] = encryptField(JSON.stringify(toSave[f]));
+  }
   fs.writeFileSync(getConfigPath(), JSON.stringify(toSave, null, 2), 'utf-8');
 }
 
