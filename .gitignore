@@ -7,3 +7,25 @@ api-config.json
 *.lock
 .claude/
 .mcp.json
+
+# ── 配布ビルド（electron-packager / electron-builder の出力）──
+# app.asar だけで数百MB。リポジトリに入れない。
+kenchiku-boost-*-win64/
+kenchiku-boost-win32-x64/
+建築見積管理-win32-x64/
+建築見積管理_v*/
+無料トライアル_v*/
+*.asar
+*.pak
+*.zip
+
+# ── 顧客データ・ローカルDB（絶対にコミットしない）──
+# 一度履歴に入ると取り除くのが困難。
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ── 作業用の一時ファイル ──
+supabase/.temp/
+test_insert.json
