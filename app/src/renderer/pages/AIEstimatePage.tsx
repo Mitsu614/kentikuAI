@@ -9,6 +9,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [dragTarget, setDragTarget] = useState<null | 'single' | 'before' | 'after'>(null);
   const [location, setLocation] = useState('');
   const [comment, setComment] = useState('');
+  const [area, setArea] = useState(''); // 面積・数量の実測値（AIの推定より優先させる）
+  const [reArea, setReArea] = useState(''); // 結果画面での「AIが前提にした面積」修正→再計算用
   const [analyzing, setAnalyzing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<any>(null);
@@ -165,8 +167,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     ? (!!imageData || comment.trim().length > 0)
     : (!!beforeImage && !!afterImage) || comment.trim().length > 0;
 
-  const analyze = async () => {
+  const analyze = async (areaOverride?: string) => {
     if (!canAnalyze) return;
+    // 結果画面から「この面積で再計算」した場合は上書き値を使い、入力欄にも反映
+    const areaVal = areaOverride !== undefined ? areaOverride : area;
+    if (areaOverride !== undefined) setArea(areaOverride);
     setAnalyzing(true);
     setError('');
     setResult(null);
@@ -181,10 +186,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     try {
       const payload = mode === 'beforeafter'
-        ? { imageBase64: null, beforeImage, afterImage, comment, location }
-        : { imageBase64: imageData || null, comment, location };
+        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal }
+        : { imageBase64: imageData || null, comment, location, area: areaVal };
       const res = await (window as any).api.analyzeImage(payload);
       setResult(res);
+      setReArea(res?.assumedArea || ''); // 「AIが前提にした面積」を修正欄の初期値に
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
 
       // 確認後、物件・施工・請求書・発注書を自動作成
@@ -192,7 +198,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         setCreating(true);
         try {
           const mainImage = mode === 'beforeafter' ? (afterImage || beforeImage) : imageData;
-          const created = await (window as any).api.autoCreateFromEstimate({ result: res, imageBase64: mainImage, comment, location });
+          const created = await (window as any).api.autoCreateFromEstimate({ result: res, imageBase64: mainImage, comment, location, area: areaVal });
           setAutoCreated(created);
           if (created.sellingPrice) {
             res.estimatedTotal = created.sellingPrice;
@@ -316,6 +322,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     // ログの金額（実際の売価）で上書き
     if (r && logItem.total) r.estimatedTotal = logItem.total;
     setResult(r);
+    setReArea(r?.assumedArea || '');
     setGeneratedImage(logItem.image || null);
     if (logItem.uploadedImage) setImageData(logItem.uploadedImage);
     setSelectedLog(logItem.id);
@@ -681,6 +688,20 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               }}
             />
           </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>📐 面積・数量（実測値／わかる範囲でOK）</label>
+            <input
+              type="text"
+              value={area}
+              onChange={e => setArea(e.target.value)}
+              placeholder="例: 屋根 450㎡（実測） / 外壁 320㎡ / 床 80㎡ ・ 20坪"
+              style={{
+                width: '100%', padding: '10px 12px', border: '1px solid #ddd',
+                borderRadius: 8, fontSize: 14, fontFamily: 'inherit',
+              }}
+            />
+            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>実測値を入れると、写真・航空写真からの推定を使わず正確に計算します（信頼度アップ）。</div>
+          </div>
           <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>🔨 工事内容</label>
           <textarea
             value={comment}
@@ -694,7 +715,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             }}
           />
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button className="btn btn-primary" onClick={analyze} disabled={analyzing || !canAnalyze} style={{ fontSize: 16, padding: '12px 32px' }}>
+            <button className="btn btn-primary" onClick={() => analyze()} disabled={analyzing || !canAnalyze} style={{ fontSize: 16, padding: '12px 32px' }}>
               {analyzing ? '🔄 AI が解析中...' : '🤖 AI で見積もりを解析'}
             </button>
             <span style={{ fontSize: 12, color: '#888' }}>
@@ -830,6 +851,28 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </div>
           </div>
 
+          {/* AIが前提にした面積 → その場で直して再計算（全自動が基本、気になる時だけ1箇所直す） */}
+          {result.assumedArea && (
+            <div className="card" style={{ marginTop: 12, background: '#fffbea', border: '1px solid #f0d98a', padding: '12px 16px' }}>
+              <div style={{ fontSize: 13, fontWeight: 'bold', color: '#8a6d00', marginBottom: 6 }}>
+                📐 AIが前提にした面積・数量{result.confidence === '低' ? '（写真からの推定です。実測と違えば直して再計算してください）' : ''}
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={reArea}
+                  onChange={e => setReArea(e.target.value)}
+                  placeholder="例: 屋根 450㎡"
+                  style={{ flex: '1 1 220px', minWidth: 180, padding: '8px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit' }}
+                />
+                <button className="btn btn-primary" disabled={analyzing || !reArea.trim()} onClick={() => analyze(reArea)} style={{ whiteSpace: 'nowrap' }}>
+                  {analyzing ? '🔄 再計算中...' : '🔄 この面積で再計算'}
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: '#999', marginTop: 6 }}>実測値を入れて再計算すると、信頼度が上がり金額が正確になります。合っていればそのままでOKです。</div>
+            </div>
+          )}
+
           {/* お見積金額（編集可能） */}
           <div style={{ marginTop: 16 }}>
             <div className="card" style={{ background: '#f0fff4', border: '3px solid #27ae60', padding: '20px 24px' }}>
@@ -839,7 +882,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
-                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>材料費</div>
+                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>材料費（目安）</div>
                   <input
                     type="number"
                     value={Math.round(result.estimatedMaterialCost || 0)}
@@ -854,7 +897,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   />
                 </div>
                 <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
-                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>人件費</div>
+                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>人件費（目安）</div>
                   <input
                     type="number"
                     value={Math.round(result.estimatedLaborCost || 0)}
@@ -879,10 +922,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 <button className="btn btn-primary btn-sm" style={{ marginTop: 10, width: '100%' }} onClick={async () => {
                   try {
                     if (autoCreated.constructionId) {
+                      // 各明細=粗利込みの最終価格。総額=内訳合計（掛率1・値引き行なし）。
+                      // お見積金額を編集した場合は、各明細を比例配分して総額に合わせる。
                       const mats = await (window as any).api.listConstructionMaterials(autoCreated.constructionId);
                       const currentTotal = mats.reduce((s: number, m: any) => s + m.quantity * m.unit_price, 0);
-                      if (currentTotal > 0 && result.estimatedMaterialCost) {
-                        const ratio = result.estimatedMaterialCost / currentTotal;
+                      const newTotal = result.estimatedTotal || currentTotal;
+                      if (currentTotal > 0 && newTotal > 0 && Math.abs(newTotal - currentTotal) >= 1) {
+                        const ratio = newTotal / currentTotal;
                         for (const m of mats) {
                           await (window as any).api.updateConstructionMaterial({
                             id: m.id, materialId: m.material_id, name: m.material_name,
@@ -891,15 +937,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                           });
                         }
                       }
-                      const totalCost = (result.estimatedMaterialCost || 0) + (result.estimatedLaborCost || 0);
-                      const markupRate = totalCost > 0 ? (result.estimatedTotal || 0) / totalCost : 1.3;
                       await (window as any).api.updateConstruction({
                         id: autoCreated.constructionId,
                         propertyId: autoCreated.propertyId,
                         title: result.workType || '工事',
                         constructionDate: new Date().toISOString().split('T')[0],
-                        laborCost: result.estimatedLaborCost || 0,
-                        markupRate: Math.round(markupRate * 100) / 100,
+                        laborCost: 0,
+                        markupRate: 1,
                         notes: '',
                         status: '見積中',
                       });
@@ -1016,7 +1060,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         }
                       }}
                     >
-                      <td>{tradeName}</td>
+                      <td>
+                        {tradeName}
+                        {m.basis && <div style={{ fontSize: 11, color: '#888', fontWeight: 'normal', marginTop: 3, lineHeight: 1.5 }}>根拠: {m.basis}</div>}
+                      </td>
                       <td style={{ textAlign: 'center' }}>{m.workers}人</td>
                       <td style={{ textAlign: 'center' }}>{m.days}日</td>
                       <td style={{ textAlign: 'center', fontWeight: 'bold' }}>{m.manDays}</td>
@@ -1037,6 +1084,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   </tr>
                 </tbody>
               </table>
+              <div style={{ fontSize: 11, color: '#888', marginTop: 8, lineHeight: 1.6 }}>
+                施工費 ＝ 各職種の（人工 × 日額）の合計。各行の「根拠」は 数量 ÷ 歩掛（1人が1日にこなす標準作業量）で日数を算出しています。数字の妥当性はここで検算できます。
+              </div>
             </div>
           )}
 
@@ -1045,6 +1095,24 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div className="card" style={{ marginTop: 16, background: '#f0f4ff', border: '1px solid #b8d0ff' }}>
               <h3 style={{ marginBottom: 8 }}>📝 入力した工事内容</h3>
               <p style={{ fontSize: 14, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{comment}</p>
+            </div>
+          )}
+
+          {/* 葺き師への施工指示（遮熱シート工事のみ・現場用の指令ブロック） */}
+          {result.installInstruction && (
+            <div className="card" style={{ marginTop: 16, background: '#eef6ff', border: '2px solid #3a7bd5' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+                <h3 style={{ margin: 0 }}>🧰 葺き師への施工指示（現場用）</h3>
+                <button
+                  className="btn"
+                  style={{ fontSize: 12, padding: '4px 12px' }}
+                  onClick={() => { try { navigator.clipboard?.writeText(String(result.installInstruction || '')); } catch (_) {} }}
+                >📋 コピー</button>
+              </div>
+              <div style={{ fontSize: 14, lineHeight: 1.8, whiteSpace: 'pre-wrap', background: '#fff', borderRadius: 8, padding: '12px 14px', border: '1px solid #cfe0ef', color: '#1e293b' }}>
+                {result.installInstruction}
+              </div>
+              <div style={{ fontSize: 11, color: '#888', marginTop: 6 }}>そのまま現場の職人へ共有できます（施工案件の備考にも自動で入ります）。</div>
             </div>
           )}
 
@@ -1075,7 +1143,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 placeholder="追加の工事内容や修正点を入力..."
                 style={{ flex: 1, minHeight: 60, padding: 10, border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 13, resize: 'vertical', color: '#1e293b', background: '#fff', WebkitUserSelect: 'text', userSelect: 'text' }}
               />
-              <button className="btn btn-primary" onClick={analyze} disabled={analyzing} style={{ height: 60 }}>
+              <button className="btn btn-primary" onClick={() => analyze()} disabled={analyzing} style={{ height: 60 }}>
                 {analyzing ? '解析中...' : '🔄 再解析'}
               </button>
               <button className="btn" onClick={() => {
