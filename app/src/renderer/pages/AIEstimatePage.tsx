@@ -945,13 +945,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <input
                     type="number"
                     value={Math.round(result.estimatedMaterialCost || 0)}
-                    onChange={e => {
-                      const matCost = Number(e.target.value);
-                      const laborCost = result.estimatedLaborCost || 0;
-                      const totalCost = matCost + laborCost;
-                      const markupRate = result.estimatedTotal && totalCost > 0 ? result.estimatedTotal / totalCost : 1.3;
-                      setResult({ ...result, estimatedMaterialCost: matCost });
-                    }}
+                    onChange={e => setResult({ ...result, estimatedMaterialCost: Number(e.target.value) || 0 })}
                     style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
                   />
                 </div>
@@ -960,10 +954,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <input
                     type="number"
                     value={Math.round(result.estimatedLaborCost || 0)}
-                    onChange={e => {
-                      const laborCost = Number(e.target.value);
-                      setResult({ ...result, estimatedLaborCost: laborCost });
-                    }}
+                    onChange={e => setResult({ ...result, estimatedLaborCost: Number(e.target.value) || 0 })}
                     style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
                   />
                 </div>
@@ -972,7 +963,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <input
                     type="number"
                     value={Math.round(result.estimatedTotal || 0)}
-                    onChange={e => setResult({ ...result, estimatedTotal: Number(e.target.value) })}
+                    onChange={e => setResult({ ...result, estimatedTotal: Number(e.target.value) || 0 })}
                     style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
                   />
                 </div>
@@ -1024,7 +1015,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div className="card" style={{ marginTop: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <h3 style={{ margin: 0 }}>費用内訳</h3>
-                <span style={{ fontSize: 11, color: '#888' }}>項目をクリック → 発注書PDF出力</span>
+                <span style={{ fontSize: 11, color: '#888' }}>金額は直接修正できます（合計に自動反映）</span>
               </div>
               <table className="data-table">
                 <thead>
@@ -1037,37 +1028,66 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 </thead>
                 <tbody>
                   {result.breakdown.map((b: any, i: number) => (
-                    <tr key={i} style={{ cursor: 'pointer' }}
-                      onMouseEnter={e => e.currentTarget.style.background = '#f0f7ff'}
-                      onMouseLeave={e => e.currentTarget.style.background = ''}
-                      onClick={async () => {
-                        const today = new Date().toISOString().split('T')[0];
-                        const po = {
-                          id: 0,
-                          vendor_name: '',
-                          vendor_address: '',
-                          issue_date: today,
-                          delivery_date: '',
-                          tax_rate: 0.1,
-                          notes: '',
-                          construction_title: result.workType || '',
-                        };
-                        const items = [{ name: b.item, quantity: 1, unit: '式', unit_price: b.cost || 0 }];
-                        try {
-                          await (window as any).api.generatePurchaseOrderPDF({ po, items });
-                        } catch (e: any) {
-                          alert('PDF生成に失敗: ' + (e.message || e));
-                        }
-                      }}
-                    >
+                    <tr key={i}>
                       <td>{b.item}</td>
-                      <td style={{ textAlign: 'right' }}><strong>{fmt(b.cost)}</strong></td>
+                      <td style={{ textAlign: 'right' }}>
+                        <input
+                          type="number"
+                          value={Math.round(b.cost || 0)}
+                          onChange={e => {
+                            const next = [...result.breakdown];
+                            next[i] = { ...next[i], cost: Number(e.target.value) || 0 };
+                            // 内訳は粗利込みの最終提示額なので、合計＝内訳の総和にそろえる
+                            const sum = next.reduce((s: number, r: any) => s + (Number(r.cost) || 0), 0);
+                            setResult({ ...result, breakdown: next, estimatedTotal: sum });
+                          }}
+                          style={{
+                            width: 130, padding: '6px 8px', textAlign: 'right', fontWeight: 'bold',
+                            border: '1px solid #ddd', borderRadius: 6, fontSize: 14, fontFamily: 'inherit',
+                          }}
+                        />
+                      </td>
                       <td style={{ color: '#888', fontSize: 12 }}>{b.note}</td>
                       <td style={{ textAlign: 'center' }}>
-                        <span style={{ fontSize: 11, color: '#3498db', fontWeight: 'bold' }}>📄 出力</span>
+                        <button
+                          type="button"
+                          title="この項目で発注書PDFを出力"
+                          onClick={async () => {
+                            const today = new Date().toISOString().split('T')[0];
+                            const po = {
+                              id: 0,
+                              vendor_name: '',
+                              vendor_address: '',
+                              issue_date: today,
+                              delivery_date: '',
+                              tax_rate: 0.1,
+                              notes: '',
+                              construction_title: result.workType || '',
+                            };
+                            const items = [{ name: b.item, quantity: 1, unit: '式', unit_price: b.cost || 0 }];
+                            try {
+                              await (window as any).api.generatePurchaseOrderPDF({ po, items });
+                            } catch (e: any) {
+                              alert('PDF生成に失敗: ' + (e.message || e));
+                            }
+                          }}
+                          style={{
+                            fontSize: 11, color: '#3498db', fontWeight: 'bold', cursor: 'pointer',
+                            background: 'none', border: 'none', padding: '4px 6px',
+                          }}
+                        >📄 出力</button>
                       </td>
                     </tr>
                   ))}
+                  <tr style={{ background: '#f8f9fa' }}>
+                    <td style={{ fontWeight: 'bold' }}>合計（内訳の総和）</td>
+                    <td style={{ textAlign: 'right', fontWeight: 'bold', paddingRight: 8 }}>
+                      {fmt(result.breakdown.reduce((s: number, r: any) => s + (Number(r.cost) || 0), 0))}
+                    </td>
+                    <td colSpan={2} style={{ color: '#888', fontSize: 11 }}>
+                      上の「合計」欄と連動します
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
