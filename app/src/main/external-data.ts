@@ -21,7 +21,8 @@ function getCachePath(key: string): string {
   return path.join(ensureCacheDir(), `${key}.json`);
 }
 
-function readCache(key: string, maxAgeDays: number = 30): any | null {
+// market-insight.ts からも同じキャッシュ層を使う（userData/external-data/*.json）
+export function readCache(key: string, maxAgeDays: number = 30): any | null {
   const p = getCachePath(key);
   if (!fs.existsSync(p)) return null;
   try {
@@ -32,7 +33,7 @@ function readCache(key: string, maxAgeDays: number = 30): any | null {
   } catch { return null; }
 }
 
-function writeCache(key: string, data: any) {
+export function writeCache(key: string, data: any) {
   fs.writeFileSync(getCachePath(key), JSON.stringify({ ...data, _fetchedAt: Date.now() }, null, 2), 'utf-8');
 }
 
