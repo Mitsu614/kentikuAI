@@ -7,6 +7,7 @@ import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeH
 import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData } from './external-data';
+import { fetchMarketInsight, buildMarketPrompt } from './market-insight';
 
 // ── トライアル用埋め込みキー ──
 const TRIAL_KEYS = {
@@ -4312,6 +4313,15 @@ ${pages}</body></html>`;
     // テナント個別の業種設定を最優先（山下さん=遮熱シート専門）。無ければインストール共通設定。
     const industryType = estProfile.industryType || config.industryType || 'general';
 
+    // 地域×工事種別の市場情報をWeb検索（30日キャッシュ）。
+    // 外に出るのは市区町村までの地域名と工事種別ラベルだけ（market-insight.ts のコメント参照）。
+    // 失敗しても null が返るだけで、見積本体は必ず続行する。
+    let marketPrompt = '';
+    try {
+      const insight = await fetchMarketInsight(config.anthropicKey, { location, comment, industryType });
+      marketPrompt = buildMarketPrompt(insight);
+    } catch (e) { console.error('Market insight fetch failed:', e); }
+
     // ドローン写真のEXIF情報を抽出（GPS・高度・撮影面積）
     let droneInfo = '';
     if (hasImage && !isBeforeAfter) {
@@ -4567,6 +4577,7 @@ ${feedbackSummary}
 ${ocrCommentSummary}
 ${globalStats}
 ${externalData}
+${marketPrompt}
 ${(() => {
   // ── テナント別「クセ・好み」フィット（先方の値付け・好みにめっちゃ合わせる）──
   const lines: string[] = [];
