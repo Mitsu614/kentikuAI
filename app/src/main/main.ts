@@ -621,7 +621,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.3.11';
+const CURRENT_VERSION = '3.3.12';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -4433,7 +4433,7 @@ ${pages}</body></html>`;
 遮熱シートは工法で㎡単価が大きく変わる。判別した工法と「同じ工法の自社過去実績の金額帯」に必ず合わせること。工法が判別できない場合は、推測で安く見積もらず、recommendationsに「工法（スカイ工法／屋根下工法／カバー工法 等）をご指定いただくと正確になります」と明記し、confidenceを下げること。
 
 【STEP3: 遮熱シート本体（特許商材）は自社実績を最優先】
-ホームセンター等の汎用遮熱シート・断熱材・アルミ保温材の安い相場（数百〜千円/m²程度）を本体に絶対に当てはめないこと。本体は「この会社の過去実績（上記★修正履歴・自社の金額帯）」、特に同じ工法の実績を最優先の基準にする。実績がまだ無ければ特許プレミアム商材として高めの専門単価で見積もり、confidenceは低め（0.3〜0.5）にし、recommendationsに「実績を入力いただくほど御社の工法別の金額帯に合った精度になります」と記載すること。
+ホームセンター等の汎用遮熱シート・断熱材・アルミ保温材の安い相場（数百〜千円/m²程度）を本体に絶対に当てはめないこと。本体は「この会社の過去実績（上記★修正履歴・自社の金額帯）」、特に同じ工法の実績を最優先の基準にする。実績がまだ無ければ特許プレミアム商材として専門単価で見積もり、confidenceは「低」（数値でなく必ず高/中/低の文字）にし、recommendationsに「実績を入力いただくほど御社の工法別の金額帯に合った精度になります」と記載すること。
 
 【STEP4: 施工（葺き師・建築板金職人）へ連携する — 出力要件】
 遮熱シートは材料を渡すだけでなく、工法どおりに屋根職人（葺き師・建築板金）が施工して初めて性能が出る。だから必ず:
@@ -4538,6 +4538,15 @@ ${droneInfo}${droneCSVInfo}${industryPrompt}
      直接工事費の8〜15%。最低でも5万円以上。数量×単価で積算しろ
    - 「現場管理費」（現場監督人件費・安全管理・品質管理・書類作成・近隣対応等。直接工事費の10〜15%。最低でも8万円以上）
    - 「福利厚生費」（法定福利費・社会保険・雇用保険・退職金積立等。人件費の15〜20%。2024年問題で上昇中。最低でも3万円以上）
+7. ★根拠を必ず示せ（「なぜその数字か」を人が検算できるようにする）★
+   - breakdown各項目の note には必ず「数量×単価」の式を書け（例: '屋根400㎡ × 5,570円 = 2,506,000円'）。単価の出どころ（自社実績/相場DB/歩掛）も一言添える。
+   - manDaysBreakdown各職種の basis に、日数・人工の歩掛根拠を式で書け（例: '屋根400㎡ ÷ 2人 ÷ @66㎡/人日 ≒ 3日'）。勘で日数を置くな。
+   - estimatedLaborCost（施工費）は、原則 manDaysBreakdown の Σ(人工 × 日額) と一致させろ。材工共で積んだ項目がある場合はその旨を該当breakdownのnoteに明記し、二重計上しないこと。
+8. ★値引き・帳尻行は禁止。各項目を"ちゃんとした値段"で出せ★
+   - breakdownは「この工事に必要な全項目」を漏れなく入れろ（材料／施工費(人工)／仮設工事／現場管理費／福利厚生費／諸経費）。
+   - 各項目の cost は「粗利を単価に織り込んだ、お客様に提示する最終価格（材工共）」で出せ。原価だけで出して後から掛率を掛ける方式にはするな。
+   - estimatedTotal は breakdown 各項目 cost の合計に必ず一致させろ。
+   - 「値引き」「差額調整」「諸経費（帳尻合わせ）」のような、金額を後から辻褄合わせする行は絶対に作るな。安くする必要があるなら各項目の単価自体を見直せ。
 
 ## 過去の施工実績（${totalCount}件のデータベースから集約）
 ${pastWorkSummary || 'まだ実績なし'}
@@ -4615,12 +4624,12 @@ ${categories}
 2. (estimatedMaterialCost + estimatedLaborCost) × markupRate ≒ estimatedTotal になっているか確認
 3. 相場データベースの「実際の工事見積 実例データ」セクションの類似工事と比較し、金額が極端に乖離していないか確認
 
-### ルールD: 見積金額は高めに出せ（最重要）
-- 材料単価は相場の上位価格帯を採用しろ（安い方ではなく高い方）
-- 人件費は熟練工の単価を基準にしろ
-- 予備費・不測の事態に備えた余裕を含めろ
-- 安く見積もって後から追加請求するより、最初から十分な金額を提示する方がお客様の信頼を得られる
-- 迷ったら高い方の金額を採用しろ
+### ルールD: 見積金額は「相場の中心帯」を基準に、妥当に出せ
+- 材料単価は相場の中心帯を採用しろ（不当な安値にも、上限にも張り付けない）
+- 人件費は標準的な職人の単価を基準にしろ（熟練工プレミアムは必要な条件があるときだけ上乗せ）
+- 予備費・不測の事態への最低限の余裕は含めてよいが、過剰に盛らない
+- ただし赤字は厳禁。拾い漏れや単価の安すぎで原価割れするより、必要な項目と妥当な単価を確実に入れろ
+- 迷ったら中心帯を採用しろ（根拠なく高い方へ寄せない。自社実績があればそれを最優先）
 4. もし乖離がある場合は金額を修正してから出力
 
 ### ルールD: breakdownの書き方
@@ -4635,19 +4644,19 @@ ${categories}
   "estimatedScale": "推定規模（例: 木造2階建て 30坪、施工面積13.3m²等）",
   "assumedArea": "この見積もりで前提とした主要な面積・数量を、編集しやすい短い形で記載（ユーザーが実測値を入力していればその値、無ければ画像・図面・航空写真からの推定値）。例: '屋根 450㎡' '延床 30坪' '外壁 320㎡'。面積・数量が金額の主要因でない工事はnull。",
   "similarWork": "過去の施工実績で最も似ている工事名（なければnull）",
-  "estimatedMaterialCost": 推定材料費（数値、円。依頼された工事のみ）,
-  "estimatedLaborCost": 推定人件費（数値、円。依頼された工事のみ）,
-  "estimatedTotal": 推定売価（数値、円。依頼された工事のみ。粗利率ルールに基づく）,
+  "estimatedMaterialCost": 材料費の目安（数値、円。参考値。総額はbreakdownの合計で決まる）,
+  "estimatedLaborCost": 施工費の目安（数値、円。参考値。manDaysBreakdownの人工×日額の合計）,
+  "estimatedTotal": 見積総額（数値、円。依頼された工事のみ）。★breakdown各項目costの合計と必ず一致させること。値引き・帳尻調整の行は作らない,
   "markupRate": 適用した掛け率（数値、例: 1.43）,
   "profitRate": 適用した粗利率（数値、%、例: 30）,
   "confidence": "高/中/低",
   "estimatedDuration": "推定工期（例: '約5日', '約2週間', '約1.5ヶ月'）。全工程の着工から完了までの暦日数。並行作業を考慮して算出",
   "totalManDays": 総人工数（数値。全職種の延べ人工合計。例: 設備工2人×3日+大工1人×2日=8）,
   "manDaysBreakdown": [
-    {"trade": "職種名", "workers": 人数, "days": 日数, "manDays": 人工数, "dailyRate": 日額単価}
+    {"trade": "職種名", "workers": 人数, "days": 日数, "manDays": 人工数, "dailyRate": 日額単価, "basis": "★なぜこの日数・人工になるのかの根拠を必ず記入。歩掛（1人が1日にこなす標準作業量）から算出した式で書く。例: '屋根400㎡ ÷ 2人 ÷ 約66㎡/人日 ≒ 3日' / 'コンセント30箇所 ÷ @15箇所/人日 = 2人工'。数量が無い管理系（現場管理・雑工）は '工期◯日に対し常駐0.5人' のように据え置き根拠を書く"}
   ],
   "breakdown": [
-    {"item": "項目名", "cost": 金額, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
+    {"item": "項目名", "cost": 粗利込みの最終見積価格（数値、円。材工共。この会社の粗利を単価に織り込んだ、お客様に提示する金額）, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
   ],
   "recommendations": "画像から判断した追加提案（依頼内容以外で必要そうな工事や注意点。例:『外壁のひび割れも確認されます。外壁補修も検討をおすすめします（別途約○万円）』）",
   "installInstruction": "★遮熱シート（サーモバリア）工事の場合のみ記入・それ以外は必ずnull★ 現場の葺き師・建築板金職人がそのまま作業できる施工指示。工法（スカイ工法／屋根下工法／カバー工法）に合わせ、[石綿事前調査の要否(既存屋根がスレート等の場合)]→[下地確認・清掃]→[張り方向・順序・重ね代]→[固定方法(スペーサー/ビス/気密テープ)]→[通気層の確保]→[端部・棟・軒・ケラバの納まり・雨仕舞い]→[安全(墜落防止・フルハーネス・親綱・踏み抜き)] を現場目線の箇条書き6〜9行で具体的に。各行に該当する公的基準名（安衛則○条／JIS A 6514／石綿事前調査 等）を明記し、必要シート量など数量の目安も添える。",
@@ -5046,48 +5055,26 @@ ${pastWork || 'まだ実績なし'}`;
        `AI解析: ${result.description || ''}\n信頼度: ${result.confidence || ''}${location ? '\n場所: ' + location : ''}`, tid]
     );
 
-    // 2. 施工登録（掛率をAI総額から逆算して精度を保つ）
-    const aiCost = (result.estimatedMaterialCost || 0) + (result.estimatedLaborCost || 0);
-    const markupRate = result.estimatedTotal && aiCost > 0
-      ? Math.round((result.estimatedTotal / aiCost) * 10000) / 10000
-      : 1.3;
+    // 2. 施工登録（各breakdown項目=粗利込みの最終価格。総額=内訳合計なので掛率1.0。施工費は内訳行に一本化し、labor_costは0で二重計上を防ぐ）
     const constructionId = runSql(
       'INSERT INTO constructions (property_id, title, construction_date, labor_cost, markup_rate, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [propertyId, result.workType, today, result.estimatedLaborCost || 0, markupRate,
+      [propertyId, result.workType, today, 0, 1,
        `AI自動作成\n${result.recommendations || ''}${result.installInstruction ? '\n\n【葺き師への施工指示】\n' + result.installInstruction : ''}`, tid]
     );
 
-    // 3. 内訳を材料明細として登録
-    let breakdownTotal = 0;
+    // 3. 内訳をそのまま明細登録（各項目=粗利込みの実額。値引き・諸経費の帳尻行は作らない）
     if (result.breakdown && result.breakdown.length > 0) {
       for (const item of result.breakdown) {
         const cost = item.cost || 0;
-        breakdownTotal += cost;
-        // 材料マスタに登録
         const matId = runSql(
           'INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?)',
           [item.item, 'AI見積', '式', cost, item.note || 'AI自動見積もり', tid]
         );
-        // 施工材料明細に追加
         runSql(
           'INSERT INTO construction_materials (construction_id, material_id, quantity, unit_price) VALUES (?, ?, ?, ?)',
           [constructionId, matId, 1, cost]
         );
       }
-    }
-    // 明細合計とAI推定材料費の差額を調整
-    const aiMaterialCost = result.estimatedMaterialCost || 0;
-    const diff = aiMaterialCost - breakdownTotal;
-    if (Math.abs(diff) >= 1) {
-      const adjName = diff > 0 ? '諸経費' : '値引き';
-      const adjMatId = runSql(
-        'INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?)',
-        [adjName, 'AI見積', '式', diff, '明細差額の自動調整', tid]
-      );
-      runSql(
-        'INSERT INTO construction_materials (construction_id, material_id, quantity, unit_price) VALUES (?, ?, ?, ?)',
-        [constructionId, adjMatId, 1, diff]
-      );
     }
 
     // 4. AI見積ログ保存（精度改善用フィードバック）
@@ -5099,7 +5086,7 @@ ${pastWork || 'まだ実績なし'}`;
         'INSERT INTO estimate_log (tenant_id, construction_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, created_at, uploaded_image, uploaded_image_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [getCurrentTenant(), constructionId, result.workType || '',
          result.estimatedMaterialCost || 0, result.estimatedLaborCost || 0,
-         result.estimatedTotal || 0, markupRate,
+         result.estimatedTotal || 0, (result.markupRate || 1),
          JSON.stringify(result), jstNow, upThumb, upPath]
       );
     } catch (e) { console.error('Estimate log insert failed:', e); }
