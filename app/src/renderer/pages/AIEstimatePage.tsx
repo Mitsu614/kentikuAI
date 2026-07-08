@@ -10,7 +10,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [location, setLocation] = useState('');
   const [comment, setComment] = useState('');
   const [area, setArea] = useState(''); // 面積・数量の実測値（AIの推定より優先させる）
-  // 施主の属性 — 提案(recommendations)のパーソナライズにのみ使う。金額には影響させない。
+  // お客様(施主)の情報 — 提案(recommendations)のパーソナライズにのみ使う。金額には影響させない。
   const [clientName, setClientName] = useState('');
   const [clientJob, setClientJob] = useState('');
   const [clientHobby, setClientHobby] = useState('');
@@ -731,10 +731,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>実測値を入れると、写真・航空写真からの推定を使わず正確に計算します（信頼度アップ）。</div>
           </div>
 
-          {/* 施主の属性 — 提案のパーソナライズ専用。金額には一切影響させない。 */}
+          {/* お客様(施主)の情報 — 提案のパーソナライズ専用。金額には一切影響させない。 */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>
-              👤 施主の属性（任意 — 提案の精度が上がります）
+              👤 お客様の情報（任意 — 提案の精度が上がります）
             </label>
             {/* 顧客名: 職業・趣味を入れて見積すると顧客DBに保存。次回同じ名前で自動読込。 */}
             <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
@@ -845,26 +845,26 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           <style>{`@keyframes spin { 0% { transform: rotateY(0deg); } 100% { transform: rotateY(360deg); } }`}</style>
           <div style={{ fontSize: 18, fontWeight: 'bold', color: '#1a2332', marginBottom: 8 }}>AI が見積もりを算出中...</div>
           <div style={{ fontSize: 14, color: '#666', marginBottom: 12 }}>
-            {elapsed < 5 ? '画像を解析しています' :
-             elapsed < 10 ? '建物の種類・規模を特定中' :
-             elapsed < 15 ? '相場データベースと照合中' :
-             elapsed < 20 ? '材料費・人件費を積算中' :
-             elapsed < 25 ? '粗利率を計算中' :
+            {elapsed < 10 ? '画像を解析しています' :
+             elapsed < 20 ? '建物の種類・規模を特定中' :
+             elapsed < 32 ? '相場データベースと照合中' :
+             elapsed < 44 ? '材料費・人件費を積算中' :
+             elapsed < 56 ? '粗利率・追加提案を計算中' :
              'もう少しで完了します'}
           </div>
-          {/* プログレスバー */}
+          {/* プログレスバー（目安60秒） */}
           <div style={{ width: 300, height: 6, background: '#eee', borderRadius: 3, margin: '0 auto 12px', overflow: 'hidden' }}>
             <div style={{
               height: '100%', borderRadius: 3,
               background: 'linear-gradient(90deg, #3a7bd5, #27ae60)',
-              width: `${Math.min(95, elapsed * 3.5)}%`,
+              width: `${Math.min(95, elapsed / 60 * 95)}%`,
               transition: 'width 1s ease',
             }} />
           </div>
           <div style={{ fontSize: 24, fontWeight: 'bold', color: '#3a7bd5' }}>
             {elapsed}秒
             <span style={{ fontSize: 13, fontWeight: 'normal', color: '#aaa', marginLeft: 8 }}>
-              / 目安 {elapsed < 15 ? '約25秒' : elapsed < 28 ? '残り約' + (28 - elapsed) + '秒' : 'もうすぐ完了します…'}
+              / 目安 {elapsed < 45 ? '約60秒' : elapsed < 60 ? '残り約' + (60 - elapsed) + '秒' : 'もうすぐ完了します…'}
             </span>
           </div>
         </div>
