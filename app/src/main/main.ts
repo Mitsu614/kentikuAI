@@ -468,6 +468,47 @@ function getTenantProfile(tid: number): { industryType: string | null; isolated:
 export interface ClientAttrs { job?: string; hobby?: string; age?: string; priorities?: string[] }
 
 /**
+ * LLMのJSON出力を寛容に解析する。素のparseに失敗したら順に修復を試みる:
+ * ① 末尾カンマの除去、② 数値中の桁区切りカンマ除去(例 1,200,000→1200000)、
+ * ③ max_tokensで途中で切れた場合の括弧・文字列の補完。
+ * 全部失敗したら最後のエラーを投げる。
+ */
+function parseLenientJson(raw: string): any {
+  try { return JSON.parse(raw); } catch (_) {}
+
+  // ① 末尾カンマ（配列/オブジェクトの閉じ直前）
+  let s = raw.replace(/,(\s*[}\]])/g, '$1');
+  try { return JSON.parse(s); } catch (_) {}
+
+  // ② 数値の桁区切りカンマ。文字列内は触らず、: の後に来る数値だけを対象にする
+  s = s.replace(/:\s*(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?)(\s*[,}\]])/g,
+    (_m, num, tail) => ': ' + num.replace(/,/g, '') + tail);
+  try { return JSON.parse(s); } catch (_) {}
+
+  // ③ 途中で切れた場合の修復：開いたままの文字列・括弧を閉じる
+  const stack: string[] = [];
+  let inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === '{') stack.push('}');
+    else if (c === '[') stack.push(']');
+    else if (c === '}' || c === ']') stack.pop();
+  }
+  let repaired = s;
+  if (inStr) repaired += '"';           // 開いたままの文字列を閉じる
+  repaired = repaired.replace(/,\s*$/, ''); // 末尾の余分なカンマ
+  while (stack.length) repaired += stack.pop();
+  return JSON.parse(repaired); // ここで失敗したら呼び出し側にthrow
+}
+
+/**
  * 施主の属性を見積プロンプト用のセクションに変換する。
  * 何も入力されていなければ空文字を返し、プロンプトに一切影響させない。
  *
@@ -4549,7 +4590,9 @@ ${pages}</body></html>`;
 
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4000,
+      // 新築など大きい見積は内訳＋工数＋施工指示＋提案で長くなり、4000では途中で切れて
+      // JSON解析エラーになっていた。非ストリーミングの安全域(〜16k)内で8000に引き上げる。
+      max_tokens: 8000,
       temperature: 0,
       system: isBeforeAfter
         ? 'あなたは大阪の建築見積もりの専門家です（実務経験20年以上）。ビフォー（施工前）とアフター（施工後）の2枚の写真を比較して、実施された工事内容を正確に判定してください。判定した工事内容に基づいて、同様の工事を行う場合の見積もりを算出してください。'
@@ -4770,11 +4813,16 @@ manDaysBreakdownの書き方例:
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '';
     console.log('AI response text:', text.substring(0, 500));
+    if (response.stop_reason === 'max_tokens') {
+      // 出力上限で切れた。parseLenientJson が括弧を補完して救うが、内訳が欠ける恐れがあるので記録。
+      console.warn('[analyze] stop_reason=max_tokens: 出力が上限で切れた可能性。修復を試みる');
+      logAiError('analyze:max-tokens', '出力がmax_tokensで切れた', { len: text.length });
+    }
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) { logAiError('analyze:no-json', 'AI応答にJSONなし', { head: text.substring(0, 300) }); throw new Error('AI応答の解析に失敗しました: ' + text.substring(0, 200)); }
     const jsonStr = jsonMatch[1] || jsonMatch[0];
     try {
-      const estimateResult = JSON.parse(jsonStr);
+      const estimateResult = parseLenientJson(jsonStr);
       // メール通知（写真・コメント・見積詳細を含む）
       const notifyImages: { filename: string; content: string }[] = [];
       if (imageBase64) notifyImages.push({ filename: 'input-photo.jpg', content: imageBase64 });
