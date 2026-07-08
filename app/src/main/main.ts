@@ -465,6 +465,40 @@ function getTenantProfile(tid: number): { industryType: string | null; isolated:
   }
 }
 
+export interface ClientAttrs { job?: string; age?: string; priorities?: string[] }
+
+/**
+ * 施主の属性を見積プロンプト用のセクションに変換する。
+ * 何も入力されていなければ空文字を返し、プロンプトに一切影響させない。
+ *
+ * ★このテキストは見積API（Anthropic）にのみ渡す。
+ *   market-insight.ts のWeb検索へは絶対に渡さないこと（外部に施主情報が出る）。
+ */
+function buildClientAttrsPrompt(attrs: ClientAttrs | null | undefined): string {
+  if (!attrs) return '';
+  const job = (attrs.job || '').trim();
+  const age = (attrs.age || '').trim();
+  const priorities = (attrs.priorities || []).filter(p => p && p.trim());
+  if (!job && !age && priorities.length === 0) return '';
+
+  const lines: string[] = ['## ★ 施主の属性（提案のパーソナライズ用）★'];
+  if (job) lines.push(`- 職業・立場: ${job}`);
+  if (age) lines.push(`- 年代: ${age}`);
+  if (priorities.length > 0) lines.push(`- 重視している点: ${priorities.join('・')}`);
+
+  lines.push(
+    '',
+    '★この属性の使い方（厳守）★',
+    '- breakdown の単価・金額を属性で変えるな。金額は自社の過去実績が最優先で、属性は一切反映させない。',
+    '- 使ってよいのは recommendations だけ。この施主に刺さる追加提案・注意点をそこに書け。',
+    '- 属性から機械的に決めつけるな（例:「経営者だから高額品を勧める」は不可）。',
+    '  写真・図面・コメントから読み取れる建物の実情と噛み合う提案だけを書け。',
+    '- 提案は「なぜこの施主に効くのか」の根拠を一言添えろ。根拠が書けない提案は書くな。',
+    '- 属性が推測に過ぎない場合は、断定せず「〜であれば」と条件付きで書け。',
+  );
+  return '\n' + lines.join('\n') + '\n';
+}
+
 // 学習完了を「学習させた人（＝実績を入力したテナント顧客）」へメール通知（1日1通まで）
 async function sendLearningCompleteNotification(tenantId: number, workType?: string) {
   try {
@@ -4084,7 +4118,7 @@ ${pages}</body></html>`;
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
   // AI見積もりのコア処理。デスクトップ(IPC)とスマホ(内蔵Webサーバー)の両方から呼ぶ
   const analyzeImageCore = async (data: any) => {
-    let { imageBase64, beforeImage, afterImage, comment, location, area } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '' } : data;
+    let { imageBase64, beforeImage, afterImage, comment, location, area, clientAttrs } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null } : data;
     // スマホ写真は数MBあり、Anthropicの5MB上限で400になるため送信前に縮小する
     imageBase64 = shrinkImageForAI(imageBase64);
     beforeImage = shrinkImageForAI(beforeImage);
@@ -4330,6 +4364,10 @@ ${pages}</body></html>`;
       marketPrompt = buildMarketPrompt(insight);
     } catch (e) { console.error('Market insight fetch failed:', e); }
 
+    // 施主の属性（職業・年代・重視点）から提案をパーソナライズする。
+    // ★この情報は見積API（Anthropic）にのみ渡す。market-insight のWeb検索には絶対に渡さない。
+    const clientAttrsPrompt = buildClientAttrsPrompt(clientAttrs);
+
     // ドローン写真のEXIF情報を抽出（GPS・高度・撮影面積）
     let droneInfo = '';
     if (hasImage && !isBeforeAfter) {
@@ -4554,6 +4592,15 @@ ${droneInfo}${droneCSVInfo}${industryPrompt}
 2. ユーザーが「キッチン交換」としか書いていないなら、キッチン関連の材料・施工費だけをbreakdownに入れろ。外壁・屋根・耐震・浴室など依頼されていない工事は絶対にbreakdownに入れるな
 3. estimatedMaterialCost・estimatedLaborCost・estimatedTotalは依頼された工事のみの金額にしろ
 4. 画像から追加で必要そうな工事を見つけた場合は「recommendations」に「○○も検討をおすすめします（参考: 約○万円）」と書け。金額計算には一切含めるな
+4-b. ★recommendations の最後に「AIならではの提案」を1〜3件、必ず書け★
+   人間の見積担当が見落としがちな、複数の情報源を突き合わせて初めて出てくる提案に限る。例:
+   - 同時施工でコストが浮く組み合わせ（例:「足場を共用できるので屋根と外壁を同時にやると足場費◯万円ぶん浮きます」）
+   - 上記のWeb検索で得た地域事情・補助金と、この物件の条件が噛み合うもの
+   - 自社の過去実績の金額帯・傾向から見て、この案件で注意すべき点
+   - 施主の属性（与えられている場合）に刺さる提案
+   各提案には必ず「なぜそう言えるのか」の根拠を一言添えろ。
+   ★禁止: 一般論・当たり前のこと（「定期的な点検をおすすめします」等）は書くな。
+   　　　  根拠が上記の情報源に紐づかない提案は書くな。無理に3件揃えるより、根拠のある1件だけの方がよい。
 5. コメントが空の場合のみ、画像から判断した全工事を見積もれ
 6. ★必須★ breakdownには以下の3項目を必ず最後に含めろ（2025-2026年の建設業界情勢を反映した現実的な金額にすること。資材高騰・人件費上昇・働き方改革による人手不足を考慮）:
    - 「仮設工事」: 相場DBの「仮設工事リース 費用一覧」セクションを参照し、工事規模に応じて以下を積算すること:
@@ -4586,6 +4633,7 @@ ${ocrCommentSummary}
 ${globalStats}
 ${externalData}
 ${marketPrompt}
+${clientAttrsPrompt}
 ${(() => {
   // ── テナント別「クセ・好み」フィット（先方の値付け・好みにめっちゃ合わせる）──
   const lines: string[] = [];

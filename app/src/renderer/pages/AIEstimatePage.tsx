@@ -10,6 +10,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [location, setLocation] = useState('');
   const [comment, setComment] = useState('');
   const [area, setArea] = useState(''); // 面積・数量の実測値（AIの推定より優先させる）
+  // 施主の属性 — 提案(recommendations)のパーソナライズにのみ使う。金額には影響させない。
+  const [clientJob, setClientJob] = useState('');
+  const [clientAge, setClientAge] = useState('');
+  const [clientPriorities, setClientPriorities] = useState<string[]>([]);
   const [reArea, setReArea] = useState(''); // 結果画面での「AIが前提にした面積」修正→再計算用
   const [analyzing, setAnalyzing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -185,9 +189,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     }, 1000);
     setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     try {
+      const clientAttrs = (clientJob || clientAge || clientPriorities.length > 0)
+        ? { job: clientJob, age: clientAge, priorities: clientPriorities }
+        : null;
       const payload = mode === 'beforeafter'
-        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal }
-        : { imageBase64: imageData || null, comment, location, area: areaVal };
+        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs }
+        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs };
       const res = await (window as any).api.analyzeImage(payload);
       setResult(res);
       setReArea(res?.assumedArea || ''); // 「AIが前提にした面積」を修正欄の初期値に
@@ -702,6 +709,58 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             />
             <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>実測値を入れると、写真・航空写真からの推定を使わず正確に計算します（信頼度アップ）。</div>
           </div>
+
+          {/* 施主の属性 — 提案のパーソナライズ専用。金額には一切影響させない。 */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>
+              👤 施主の属性（任意 — 提案の精度が上がります）
+            </label>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <select
+                value={clientJob}
+                onChange={e => setClientJob(e.target.value)}
+                style={{ flex: 1, padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit', background: '#fff' }}
+              >
+                <option value="">職業・立場（未選択）</option>
+                {['会社経営者', '個人事業主', '会社員', '公務員', '医師・士業', '農林業・漁業', '不動産オーナー', '法人（管理会社）', '退職・年金生活', 'その他'].map(j => (
+                  <option key={j} value={j}>{j}</option>
+                ))}
+              </select>
+              <select
+                value={clientAge}
+                onChange={e => setClientAge(e.target.value)}
+                style={{ flex: 1, padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit', background: '#fff' }}
+              >
+                <option value="">年代（未選択）</option>
+                {['20〜30代', '40代', '50代', '60代', '70代以上'].map(a => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {['価格重視', '見た目・デザイン', '耐久性・長持ち', '光熱費・省エネ', '工期の短さ', '近隣への配慮', '補助金を使いたい'].map(p => {
+                const on = clientPriorities.includes(p);
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setClientPriorities(prev => on ? prev.filter(x => x !== p) : [...prev, p])}
+                    style={{
+                      padding: '6px 12px', borderRadius: 999, fontSize: 12, cursor: 'pointer',
+                      border: on ? '1px solid #2563eb' : '1px solid #ddd',
+                      background: on ? '#eff6ff' : '#fff',
+                      color: on ? '#1d4ed8' : '#555',
+                      fontWeight: on ? 'bold' : 'normal',
+                    }}
+                  >{on ? '✓ ' : ''}{p}</button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: '#888', marginTop: 6 }}>
+              提案（💡欄）のパーソナライズにのみ使います。<strong>見積金額には一切影響しません。</strong>
+            </div>
+          </div>
+
           <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>🔨 工事内容</label>
           <textarea
             value={comment}
