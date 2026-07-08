@@ -240,7 +240,8 @@ export default function App() {
   // スマホ(ブラウザ)版はサーバーAPIが未対応のページを隠す（開いてもエラーになるのを防ぐ）。
   // 対応済み＝写真見積・物件・施工・請求など、現場で使う中心機能に絞る。
   const isWeb = !!(window as any).__isWeb;
-  const WEB_SUPPORTED = new Set<Page>(['dashboard', 'ai-estimate', 'properties', 'materials', 'constructions', 'invoices', 'guide', 'terms', 'settings']);
+  // 'admin' はスマホでも表示するが、pages生成時にテナント1のみ許可＆サーバー側でも403ガード済み（承認だけ）
+  const WEB_SUPPORTED = new Set<Page>(['dashboard', 'ai-estimate', 'properties', 'materials', 'constructions', 'invoices', 'guide', 'terms', 'settings', 'admin']);
   const visiblePages = isWeb ? pages.filter(p => WEB_SUPPORTED.has(p.key)) : pages;
 
   const navigateToConstruction = (constructionId: number) => {

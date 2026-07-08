@@ -229,6 +229,7 @@ const fmtDate = (s: string) => {
 
 /* ────────── コンポーネント ────────── */
 export default function AdminPage() {
+  const isWeb = !!(window as any).__isWeb; // スマホ（外部アクセス）は承認だけ表示
   const [tab, setTab] = useState<TabKey>('tenants');
   const [toast, setToast] = useState('');
 
@@ -253,6 +254,9 @@ export default function AdminPage() {
   const [creditEdits, setCreditEdits] = useState<Record<number, string>>({});
   const [usageEdits, setUsageEdits] = useState<Record<number, string>>({});
   const [tenantUsages, setTenantUsages] = useState<Record<number, { used: number; limit: number; remaining: number }>>({});
+
+  /* --- スマホ承認の信頼端末（デスクトップのみ） --- */
+  const [trustedDev, setTrustedDev] = useState<{ trusted: boolean; at: string }>({ trusted: false, at: '' });
 
   /* --- 共通 --- */
   const [loading, setLoading] = useState(false);
@@ -302,9 +306,26 @@ export default function AdminPage() {
     } catch (e) { console.error('loadAuditLog error:', e); }
   };
 
+  const loadTrustedDevice = async () => {
+    if (isWeb) return; // スマホからは操作させない（PCのみ）
+    try {
+      const d = await (window as any).api.getTrustedDevice?.();
+      if (d) setTrustedDev({ trusted: !!d.trusted, at: d.at || '' });
+    } catch (_) {}
+  };
+
+  const handleResetTrustedDevice = async () => {
+    if (!confirm('スマホ承認の「信頼端末」をリセットします。\n次にスマホで承認画面を開いた端末が、新しい信頼端末として登録されます。\nよろしいですか？')) return;
+    try {
+      await (window as any).api.resetTrustedDevice?.();
+      await loadTrustedDevice();
+      showToast('信頼端末をリセットしました。次に開いたスマホが登録されます。');
+    } catch (e) { showToast('リセットに失敗しました'); }
+  };
+
   useEffect(() => {
     setLoading(true);
-    Promise.all([loadTenants(), loadFeedback(), loadAuditLog()])
+    Promise.all([loadTenants(), loadFeedback(), loadAuditLog(), loadTrustedDevice()])
       .finally(() => setLoading(false));
   }, []);
 
@@ -408,22 +429,47 @@ export default function AdminPage() {
     <div style={styles.page}>
       {toast && <div style={styles.toast}>{toast}</div>}
 
-      <h1 style={styles.h1}>管理者ダッシュボード</h1>
+      <h1 style={styles.h1}>{isWeb ? '新規登録の承認' : '管理者ダッシュボード'}</h1>
 
-      {/* タブバー */}
-      <div style={styles.tabBar}>
-        {TABS.map(t => (
-          <button key={t.key} style={styles.tabBtn(tab === t.key)} onClick={() => setTab(t.key)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* タブバー（スマホは承認のみなので非表示） */}
+      {!isWeb && (
+        <div style={styles.tabBar}>
+          {TABS.map(t => (
+            <button key={t.key} style={styles.tabBtn(tab === t.key)} onClick={() => setTab(t.key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {loading && <p style={{ color: '#999', fontSize: 14 }}>読み込み中...</p>}
 
       {/* ====== Tab 1: テナント管理 ====== */}
       {tab === 'tenants' && (
         <div>
+          {/* スマホ承認の信頼端末（PCのみ表示） */}
+          {!isWeb && (
+            <div style={{ ...styles.card, marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#2c3e50', marginBottom: 4 }}>📱 スマホ承認の信頼端末</div>
+                {trustedDev.trusted ? (
+                  <div style={{ fontSize: 13, color: '#2e7d32' }}>
+                    登録済み（{trustedDev.at ? fmtDate(trustedDev.at) : '登録日時不明'}）— この1台のスマホだけが承認できます
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 13, color: '#e67e22' }}>
+                    未登録 — 次にスマホで承認画面を開いた端末が「信頼端末」として記憶されます
+                  </div>
+                )}
+              </div>
+              {trustedDev.trusted && (
+                <button style={styles.btnSm(COLOR.danger)} onClick={handleResetTrustedDevice}>
+                  端末をリセット（機種変更時）
+                </button>
+              )}
+            </div>
+          )}
+
           {/* リモート登録申請（Supabase） */}
           {remoteRegs.length > 0 && (
             <div style={{ ...styles.card, border: '2px solid #e67e22', marginBottom: 20 }}>
@@ -526,6 +572,13 @@ export default function AdminPage() {
             </div>
           )}
 
+          {isWeb && !remoteRegs.some((r: any) => r.plan === 'pending') && (
+            <div style={{ ...styles.card, textAlign: 'center', color: '#888', padding: 32 }}>
+              現在、承認待ちの申請はありません。
+            </div>
+          )}
+
+          {!isWeb && (<>
           {/* 集計カード */}
           <div style={{ marginBottom: 20 }}>
             <div style={styles.statBox}>
@@ -655,6 +708,7 @@ export default function AdminPage() {
               </tbody>
             </table>
           </div>
+          </>)}
         </div>
       )}
 

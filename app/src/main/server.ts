@@ -5,6 +5,7 @@ import { queryAll, queryOne, runSql, getCurrentTenant } from '../database/databa
 
 let serverUrl = '';
 let getConfigFn: (() => any) | null = null;
+let saveConfigFn: ((cfg: any) => void) | null = null;
 let analyzeFn: ((data: any) => Promise<any>) | null = null;
 let autoCreateFn: ((data: any) => any) | null = null;
 let generateFn: ((data: any) => Promise<any>) | null = null;
@@ -37,11 +38,16 @@ export function pickLanIp(): string {
   return candidates.find(isPrivate) || candidates[0] || 'localhost';
 }
 export function setConfigLoader(fn: () => any) { getConfigFn = fn; }
+export function setConfigSaver(fn: (cfg: any) => void) { saveConfigFn = fn; }
 // AI見積もりのコア処理（main.ts側で実装）をスマホAPIから呼べるように登録する
 export function setAnalyzeHandler(fn: (data: any) => Promise<any>) { analyzeFn = fn; }
 export function setAutoCreateHandler(fn: (data: any) => any) { autoCreateFn = fn; }
 // AI完成イメージ画像生成（main.ts側で実装）をスマホAPIから呼べるように登録する
 export function setGenerateImageHandler(fn: (data: any) => Promise<any>) { generateFn = fn; }
+let adminFn: ((action: string, payload: any) => Promise<any>) | null = null;
+// 新規登録の承認/却下（Supabase Edge Function 経由）をスマホAPIから呼べるように登録する。
+// adminSecret はPC内(main.ts)で保持し、スマホには一切渡さない。
+export function setAdminHandler(fn: (action: string, payload: any) => Promise<any>) { adminFn = fn; }
 
 export function startServer(distPath: string) {
   const express = require('express');
@@ -78,7 +84,25 @@ export function startServer(distPath: string) {
 
   // ── 認証ミドルウェア（レート制限・セッション有効期限付き）──
   const sessions = new Map<string, { expiry: number; tenantId: number; username: string }>(); // token -> セッション情報
-  const SESSION_TTL = 24 * 60 * 60 * 1000; // 24時間
+  const SESSION_TTL = 30 * 24 * 60 * 60 * 1000; // 30日（信頼端末はログインを保持）
+  // 前回のセッションをconfigから復元（PC/サーバー再起動後もログインを保持）
+  try {
+    const saved = (getConfigFn ? getConfigFn() : {})?.webSessions || {};
+    for (const [t, s] of Object.entries(saved as Record<string, any>)) {
+      if (s && s.expiry > Date.now()) sessions.set(t, s);
+    }
+  } catch (_) {}
+  // セッションをconfigへ保存（再起動後の復元用）。SENSITIVE_FIELDS対象外なので平文で保持。
+  const persistSessions = () => {
+    try {
+      if (!getConfigFn || !saveConfigFn) return;
+      const cfg = getConfigFn();
+      const obj: Record<string, any> = {};
+      for (const [t, s] of sessions) if (s.expiry > Date.now()) obj[t] = s;
+      cfg.webSessions = obj;
+      saveConfigFn(cfg);
+    } catch (_) {}
+  };
   const authAttempts = new Map<string, { count: number; lastAttempt: number }>();
   const MAX_AUTH_ATTEMPTS = 5;
   const AUTH_LOCKOUT_MS = 15 * 60 * 1000; // 15分ロックアウト
@@ -96,6 +120,7 @@ export function startServer(distPath: string) {
 
     // レート制限チェック
     const clientIp = req.ip || req.connection?.remoteAddress || 'unknown';
+    console.log(`[web-auth] ログイン試行: user=${username || '(空)'} ip=${clientIp} device=${String(req.headers['x-device-id'] || '(なし)').slice(0, 12)}`);
     const attempt = authAttempts.get(clientIp);
     if (attempt && attempt.count >= MAX_AUTH_ATTEMPTS && (Date.now() - attempt.lastAttempt) < AUTH_LOCKOUT_MS) {
       return res.status(429).json({ error: 'ログイン試行回数が上限に達しました。15分後に再試行してください。' });
@@ -111,8 +136,13 @@ export function startServer(distPath: string) {
           authAttempts.delete(clientIp);
           const token = crypto.randomBytes(32).toString('hex');
           sessions.set(token, { expiry: Date.now() + SESSION_TTL, tenantId: user.tenant_id, username: user.username });
+          persistSessions();
+          console.log(`[web-auth] ✅ ログイン成功: user=${user.username} tenant=${user.tenant_id}`);
           return res.json({ ok: true, token, tenantId: user.tenant_id, username: user.username });
         }
+        console.log(`[web-auth] ❌ パスワード不一致: user=${username}`);
+      } else {
+        console.log(`[web-auth] ❌ ユーザーが存在しない: user=${username}`);
       }
     }
 
@@ -214,6 +244,47 @@ async function login(){
   // ── API Routes（テナント分離付き）──
   // Web版: セッションのテナントIDを優先、なければデスクトップの現在テナント
   const tid = (req?: any) => req?.tenantId || getCurrentTenant();
+
+  // ── 管理: 新規登録の承認（オーナー=テナント1のみ）──
+  // トンネル(loca.lt)は公開URLなので、URL/ログインが漏れても他人が承認できないよう
+  // サーバー側でテナント1に厳格ガード。承認処理はPC内のadminSecretで完結する。
+  const requireOwner = (req: any, res: any) => {
+    if (req?.tenantId !== 1) { res.status(403).json({ error: '権限がありません（オーナーのみ）' }); return false; }
+    if (!adminFn) { res.status(503).json({ error: '承認機能が未準備です' }); return false; }
+    // ── 信頼端末チェック ──
+    // 最初に承認画面を開いた端末を「信頼端末」として記憶し、以後その端末だけ承認可。
+    // URL/ログインが漏れても、記憶した端末以外は承認・却下できない。変更はPCの管理画面から。
+    const deviceId = String(req.headers['x-device-id'] || '');
+    const cfg = getConfigFn ? (getConfigFn() || {}) : {};
+    const trusted = cfg.trustedAdminDeviceId || '';
+    if (!trusted) {
+      if (!deviceId) { res.status(400).json({ error: '端末IDが取得できませんでした。アプリを最新にして再度お試しください。' }); return false; }
+      cfg.trustedAdminDeviceId = deviceId;
+      cfg.trustedAdminDeviceAt = new Date().toISOString();
+      if (saveConfigFn) saveConfigFn(cfg);
+      console.log('[admin] 信頼端末を登録しました:', deviceId.slice(0, 10) + '…');
+    } else if (trusted !== deviceId) {
+      res.status(403).json({ error: 'この端末は承認用に登録されていません。登録済みの端末から操作してください（端末の変更はPCの管理画面から）。' });
+      return false;
+    }
+    return true;
+  };
+  app.get('/api/admin/registrations', async (req: any, res: any) => {
+    console.log(`[admin] 承認画面アクセス: tenant=${req.tenantId} device=${String(req.headers['x-device-id'] || '(なし)').slice(0, 12)}`);
+    if (!requireOwner(req, res)) return;
+    try { res.json(await adminFn!('list', {})); }
+    catch (e: any) { res.status(500).json({ error: e?.message || 'failed' }); }
+  });
+  app.post('/api/admin/approve', async (req: any, res: any) => {
+    if (!requireOwner(req, res)) return;
+    try { res.json(await adminFn!('approve', req.body || {})); }
+    catch (e: any) { res.status(500).json({ error: e?.message || 'failed' }); }
+  });
+  app.post('/api/admin/reject', async (req: any, res: any) => {
+    if (!requireOwner(req, res)) return;
+    try { res.json(await adminFn!('reject', req.body || {})); }
+    catch (e: any) { res.status(500).json({ error: e?.message || 'failed' }); }
+  });
 
   // 物件
   app.get('/api/properties', (req: any, res: any) => {

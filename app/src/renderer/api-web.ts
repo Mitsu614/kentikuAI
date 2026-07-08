@@ -1,9 +1,19 @@
 // スマホ（ブラウザ）用のAPI。Electron IPC の代わりに fetch を使う
 const BASE = window.location.origin;
 
+// この端末を一意に識別するID（信頼端末＝承認できる端末の判定に使う）。localStorageに永続化。
+function getDeviceId(): string {
+  let id = localStorage.getItem('device_id');
+  if (!id) {
+    id = 'dev_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem('device_id', id);
+  }
+  return id;
+}
+
 function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem('auth_token');
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { 'x-device-id': getDeviceId() };
   if (token) headers['x-auth-token'] = token;
   return headers;
 }
@@ -181,6 +191,10 @@ const webApiImpl: any = {
   deleteTenant: async () => null,
   listUsers: async () => [],
   isOwnerPC: async () => false,
+  // 新規登録の承認（オーナー=テナント1のみサーバー側で許可）。adminSecretはPC内で完結。
+  listRemoteRegistrations: async () => { try { return await get('/api/admin/registrations'); } catch { return []; } },
+  approveRemoteRegistration: (company_name: string, plan: string) => post('/api/admin/approve', { company_name, plan }),
+  rejectRemoteRegistration: (company_name: string) => post('/api/admin/reject', { company_name }),
   saveChatSession: async () => null,
   getChatSession: async () => null,
   aiChat: async () => ({ text: 'チャット見積はデスクトップアプリでご利用ください。写真からのAI見積はこの画面で使えます。', estimate: null }),

@@ -257,4 +257,8 @@ contextBridge.exposeInMainWorld('api', {
   listRemoteRegistrations: () => ipcRenderer.invoke('remote:listRegistrations'),
   approveRemoteRegistration: (companyName: string, plan: string) => ipcRenderer.invoke('remote:approve', companyName, plan),
   rejectRemoteRegistration: (companyName: string) => ipcRenderer.invoke('remote:reject', companyName),
+
+  // スマホ承認の信頼端末
+  getTrustedDevice: () => ipcRenderer.invoke('admin:getTrustedDevice'),
+  resetTrustedDevice: () => ipcRenderer.invoke('admin:resetTrustedDevice'),
 });
