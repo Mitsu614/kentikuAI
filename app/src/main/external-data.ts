@@ -11,6 +11,17 @@ const ESTAT_APP_ID = '7110f2ac6a1ccbd1449d222949de60b721019731';
 
 const CACHE_DIR = () => path.join(app.getPath('userData'), 'external-data');
 
+// 不動産情報ライブラリ(国交省)のAPIキー。無料だが利用申請が必要で、キー無しでは 401 になる。
+// main.ts と同じ api-config.json から読む（main を import すると循環参照になるため直接読む）。
+function getReinfolibApiKey(): string | null {
+  try {
+    const p = path.join(app.getPath('userData'), 'api-config.json');
+    if (!fs.existsSync(p)) return null;
+    const cfg = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    return cfg?.reinfolibApiKey || null;
+  } catch { return null; }
+}
+
 function ensureCacheDir() {
   const dir = CACHE_DIR();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -71,36 +82,55 @@ export async function fetchConstructionCostIndex(): Promise<any | null> {
   if (cached) return cached;
 
   try {
-    // 建設工事費デフレーター 時系列（年度別）
-    // statsDataId は統計表の識別子。建設総合デフレーターを取得
-    const data = await eStatGet('0003427042');
+    // 建設工事費デフレーター 2020年度基準・時系列（年度別）
+    // statsDataId=0004055085。cat01=工事種別（100:建設総合 / 110:建築総合 / 120:住宅総合 /
+    // 130:木造住宅 / 140:非木造住宅）、cat02=2020（基準年）、time=年度。
+    // ※旧ID 0003427042 は e-Stat 側に存在せず、常に空振りしていた。
+    const TYPES: Record<string, string> = {
+      '100': '建設総合', '110': '建築総合', '120': '住宅総合',
+      '130': '木造住宅', '140': '非木造住宅',
+    };
+    const data = await eStatGet('0004055085', { cdCat01: Object.keys(TYPES).join(','), cdCat02: '2020' });
 
-    const values: any[] = [];
-    if (data?.GET_STATS_DATA?.STATISTICAL_DATA?.DATA_INF?.VALUE) {
-      const rows = data.GET_STATS_DATA.STATISTICAL_DATA.DATA_INF.VALUE;
-      const arr = Array.isArray(rows) ? rows : [rows];
-      for (const row of arr.slice(-20)) { // 直近20期分
-        values.push({
-          time: row['@time'] || row['@tab'] || '',
-          value: parseFloat(row['$'] || '0'),
-          cat: row['@cat01'] || '',
-        });
-      }
-    }
+    const rows = data?.GET_STATS_DATA?.STATISTICAL_DATA?.DATA_INF?.VALUE;
+    if (!rows) throw new Error('DATA_INF.VALUE が空（統計表IDまたは絞り込み条件を確認）');
+    const arr = Array.isArray(rows) ? rows : [rows];
+
+    // @time は "2025100000" 形式。降順に並べ、直近10年度ぶんだけ残す。
+    const years = Array.from(new Set(arr.map((r: any) => String(r['@time'])))).sort().reverse().slice(0, 10);
+    const values = arr
+      .filter((r: any) => years.includes(String(r['@time'])))
+      .map((r: any) => ({
+        fiscalYear: Number(String(r['@time']).substring(0, 4)),
+        workType: TYPES[String(r['@cat01'])] || String(r['@cat01']),
+        value: parseFloat(r['$'] || '0'),
+      }))
+      .filter((v: any) => v.value > 0)
+      .sort((a: any, b: any) => b.fiscalYear - a.fiscalYear);
+
+    if (values.length === 0) throw new Error('有効な数値が0件');
+
+    const latestYear = values[0].fiscalYear;
+    const latest = values.filter((v: any) => v.fiscalYear === latestYear);
+    const baseYear = 2020;
 
     const result = {
       source: 'e-stat_deflator',
-      description: '建設工事費デフレーター（e-Stat API）',
+      statsDataId: '0004055085',
+      description: '建設工事費デフレーター（e-Stat API・2020年度基準）',
+      baseYear,
+      latestYear,
+      latest,
       dataCount: values.length,
       values,
-      note: '基準年=100。100超は物価上昇。建設コストの変動を示す政府公式指標',
+      note: `${baseYear}年度=100。100超は物価上昇。建設コストの変動を示す政府公式指標`,
     };
 
     writeCache('construction_cost_index', result);
-    console.log(`[外部データ] 建設工事費デフレーター取得完了: ${values.length}件`);
+    console.log(`[外部データ] 建設工事費デフレーター取得完了: ${values.length}件（最新${latestYear}年度 建設総合=${latest.find((l: any) => l.workType === '建設総合')?.value ?? '?'}）`);
     return result;
-  } catch (e) {
-    console.error('[外部データ] デフレーター取得失敗:', e);
+  } catch (e: any) {
+    console.error('[外部データ] デフレーター取得失敗:', e?.message || e);
     return null;
   }
 }
@@ -165,38 +195,68 @@ export async function fetchConstructionCostPerM2(): Promise<any | null> {
   if (cached) return cached;
 
   try {
-    // 建築工事費調査: 構造別の工事費単価
-    const data = await eStatGet('0004104862');
+    // 建築着工統計「建築主別、構造別／建築物の数、床面積、工事費予定額」(statsDataId=0003461558)。
+    // m²単価そのものを公表している統計表は無いので、tab=14(工事費予定額,万円) ÷ tab=13(床面積,m²) で算出する。
+    // cat02=11(建築主:計) に絞り、最新月のデータだけを使う。
+    // ※旧ID 0004104862 は e-Stat 側に存在せず、常に空振りしていた。
+    const STRUCTURES: Record<string, string> = {
+      '12': '木造', '13': 'SRC造', '14': 'RC造', '15': 'S造', '16': 'CB造',
+    };
+    const TAB_FLOOR = '13';   // 床面積の合計（m²）
+    const TAB_COST = '14';    // 工事費予定額（万円）
+    const data = await eStatGet('0003461558', { cdCat02: '11' });
 
-    const costs: any[] = [];
-    if (data?.GET_STATS_DATA?.STATISTICAL_DATA?.DATA_INF?.VALUE) {
-      const rows = data.GET_STATS_DATA.STATISTICAL_DATA.DATA_INF.VALUE;
-      const arr = Array.isArray(rows) ? rows : [rows];
-      for (const row of arr.slice(-100)) {
-        costs.push({
-          time: row['@time'] || '',
-          cat01: row['@cat01'] || '',
-          cat02: row['@cat02'] || '',
-          cat03: row['@cat03'] || '',
-          value: parseFloat(row['$'] || '0'),
-          unit: row['@unit'] || '',
-        });
-      }
+    const rows = data?.GET_STATS_DATA?.STATISTICAL_DATA?.DATA_INF?.VALUE;
+    if (!rows) throw new Error('DATA_INF.VALUE が空（統計表IDまたは絞り込み条件を確認）');
+    const arr = Array.isArray(rows) ? rows : [rows];
+
+    // 最新月（@time の最大値）だけを採用する
+    const latestTime = arr.map((r: any) => String(r['@time'])).sort().reverse()[0];
+    const latestRows = arr.filter((r: any) => String(r['@time']) === latestTime);
+
+    // 構造 × 表章項目 で引けるようにする
+    const byStructure: Record<string, Record<string, number>> = {};
+    for (const r of latestRows) {
+      const st = String(r['@cat01']);
+      if (!STRUCTURES[st]) continue;
+      (byStructure[st] ||= {})[String(r['@tab'])] = parseFloat(r['$'] || '0');
     }
+
+    const costs = Object.entries(byStructure)
+      .map(([code, tabs]) => {
+        const floorM2 = tabs[TAB_FLOOR] || 0;
+        const costManYen = tabs[TAB_COST] || 0;
+        if (floorM2 <= 0 || costManYen <= 0) return null;
+        return {
+          structure: STRUCTURES[code],
+          floorAreaM2: floorM2,
+          // 工事費予定額の単位は「万円」。円に直してから床面積で割る。
+          yenPerM2: Math.round((costManYen * 10000) / floorM2),
+        };
+      })
+      .filter(Boolean) as any[];
+
+    if (costs.length === 0) throw new Error('構造別の床面積・工事費が取れなかった');
+
+    // "2024001212" → 2024年12月
+    const y = latestTime.substring(0, 4);
+    const m = String(Number(latestTime.substring(8, 10)));
 
     const result = {
       source: 'e-stat_cost_per_m2',
-      description: '建築工事費調査 m²単価（e-Stat API）',
+      statsDataId: '0003461558',
+      description: '建築着工統計から算出した構造別m²単価（e-Stat API）',
+      period: `${y}年${m}月`,
       dataCount: costs.length,
       costs,
-      note: '構造別・用途別の実際のm²あたり工事費。国交省調査に基づく実績値',
+      note: '着工建築物の工事費予定額 ÷ 床面積。実際の契約額ではなく着工時の予定額である点に注意',
     };
 
     writeCache('construction_cost_m2', result);
-    console.log(`[外部データ] 建築工事費m²単価取得完了: ${costs.length}件`);
+    console.log(`[外部データ] 構造別m²単価取得完了(${result.period}): ` + costs.map(c => `${c.structure}=${c.yenPerM2.toLocaleString()}円/m²`).join(', '));
     return result;
-  } catch (e) {
-    console.error('[外部データ] 工事費m²単価取得失敗:', e);
+  } catch (e: any) {
+    console.error('[外部データ] 工事費m²単価取得失敗:', e?.message || e);
     return null;
   }
 }
@@ -214,10 +274,13 @@ export async function fetchLaborCosts(): Promise<any | null> {
     const html = await httpsGet('https://www.mlit.go.jp/totikensangyo/const/sosei_const_tk2_000033.html');
     const pdfMatch = html.match(/href="([^"]*roumu[^"]*\.pdf)"/i) || html.match(/href="([^"]*content\/\d+\.pdf)"/i);
 
-    // 令和8年（2026年）3月適用の最新単価（国交省公表値）
+    // ★この単価表はアプリに内蔵した固定値であり、上のHTTP取得で解析したものではない。
+    //   上の取得は最新PDFのURLを拾うためだけに使っている。
+    //   国交省が労務単価を改定したら（例年3月適用）、下の rate / prev を手で更新すること。
     const result: any = {
       source: 'mlit_labor_costs',
-      description: '公共工事設計労務単価（令和8年3月適用）',
+      dataSource: 'bundled', // 内蔵値。自動更新されない
+      description: '公共工事設計労務単価（令和8年3月適用・アプリ内蔵の公表値）',
       effectiveDate: '2026-03-01',
       nationalAverage: 25834,
       yoyChange: '+4.5%',
@@ -284,11 +347,20 @@ export async function fetchLandPrices(prefecture: string): Promise<any | null> {
 
     const code = prefCodes[prefecture] || prefCodes[prefecture.replace(/県|府|都|道/, '')] || '27';
 
-    const url = `https://www.reinfolib.mlit.go.jp/ex-api/external/XIT001?from=${from}&to=${to}&area=${code}&priceClassification=01`;
-    const body = await httpsGet(url);
-    const data = JSON.parse(body);
+    // 不動産情報ライブラリは API キー必須（キー無しだと 401）。
+    // 未設定なら通信せずに諦める。以前はキー無しで叩いて毎回 401 を握り潰していた。
+    const apiKey = getReinfolibApiKey();
+    if (!apiKey) {
+      console.warn('[外部データ] 不動産取引価格: APIキー未設定のためスキップ（api-config.json の reinfolibApiKey）');
+      return null;
+    }
 
-    if (!data || !Array.isArray(data)) return null;
+    const url = `https://www.reinfolib.mlit.go.jp/ex-api/external/XIT001?from=${from}&to=${to}&area=${code}&priceClassification=01`;
+    const body = await httpsGet(url, { 'Ocp-Apim-Subscription-Key': apiKey });
+    const json = JSON.parse(body);
+    // 正常時は { status: "OK", data: [...] }
+    const data = Array.isArray(json) ? json : json?.data;
+    if (!Array.isArray(data)) throw new Error(`想定外の応答: ${body.substring(0, 120)}`);
 
     const trades = data.slice(0, 100);
     const prices = trades
@@ -332,9 +404,8 @@ export async function fetchAllExternalData(): Promise<string> {
   const results: string[] = [];
 
   try {
-    const [deflator, buildingStats, costM2, labor] = await Promise.all([
+    const [deflator, costM2, labor] = await Promise.all([
       fetchConstructionCostIndex(),
-      fetchBuildingStartStats(),
       fetchConstructionCostPerM2(),
       fetchLaborCosts(),
     ]);
@@ -344,24 +415,34 @@ export async function fetchAllExternalData(): Promise<string> {
       const lines = Object.values(labor.trades).map((t: any) =>
         `${t.name}: ${t.rate.toLocaleString()}円/日（前年${t.prev.toLocaleString()}円、${t.rate > t.prev ? '+' : ''}${Math.round((t.rate - t.prev) / t.prev * 100)}%）`
       );
-      results.push(`## 最新 公共工事設計労務単価（${labor.effectiveDate}適用・全職種平均${labor.nationalAverage.toLocaleString()}円・${labor.yoyChange}・${labor.consecutiveYears}年連続上昇）\n${lines.join('\n')}`);
+      results.push(`## 公共工事設計労務単価（${labor.effectiveDate}適用・全職種平均${labor.nationalAverage.toLocaleString()}円・${labor.yoyChange}・${labor.consecutiveYears}年連続上昇）\n${lines.join('\n')}\n※公共工事の積算用単価。民間工事はこの0.8〜1.3倍が目安。`);
     }
 
-    // 建設工事費デフレーター
-    if (deflator?.values?.length > 0) {
-      const recent = deflator.values.slice(-5);
-      const lines = recent.map((v: any) => `${v.time}: ${v.value}`);
-      results.push(`## 建設工事費デフレーター（e-Stat API・${deflator.dataCount}件取得）\n直近の推移:\n${lines.join('\n')}\n※基準年=100。現在の建設コスト水準を示す政府公式指標`);
+    // 建設工事費デフレーター（工事種別ごとの最新値＋建設総合の推移）
+    if (deflator?.latest?.length > 0) {
+      const latestLines = deflator.latest.map((v: any) => `${v.workType}: ${v.value}`);
+      const trend = deflator.values
+        .filter((v: any) => v.workType === '建設総合')
+        .slice(0, 5)
+        .map((v: any) => `${v.fiscalYear}年度: ${v.value}`);
+      results.push(
+        `## 建設工事費デフレーター（e-Stat API・${deflator.baseYear}年度=100）\n` +
+        `【${deflator.latestYear}年度の水準】\n${latestLines.join('\n')}\n` +
+        `【建設総合の推移】\n${trend.join('\n')}\n` +
+        `※${deflator.baseYear}年度と比べて資材・労務がどれだけ上がったかを示す政府公式指標。` +
+        `古い実績や相場表の金額を今の金額に直すときは、この比で補正すること。`
+      );
     }
 
-    // 建築着工統計
-    if (buildingStats?.structures?.length > 0) {
-      results.push(`## 建築着工統計（e-Stat API・${buildingStats.dataCount}件取得）\n構造別・用途別の着工データ ${buildingStats.dataCount}件を取得済み。見積の妥当性チェックに使用。`);
-    }
-
-    // 建築工事費m²単価
+    // 構造別m²単価（着工統計から算出）
     if (costM2?.costs?.length > 0) {
-      results.push(`## 建築工事費調査 m²単価（e-Stat API・${costM2.dataCount}件取得）\n構造別・用途別の実績m²単価 ${costM2.dataCount}件を取得済み。見積金額が実績値の範囲内かチェックに使用。`);
+      const lines = costM2.costs
+        .sort((a: any, b: any) => b.floorAreaM2 - a.floorAreaM2)
+        .map((c: any) => `${c.structure}: ${c.yenPerM2.toLocaleString()}円/m²（${Math.round(c.yenPerM2 * 3.30578).toLocaleString()}円/坪）`);
+      results.push(
+        `## 構造別の実勢m²単価（e-Stat 建築着工統計・${costM2.period}着工分）\n${lines.join('\n')}\n` +
+        `※全国の着工建築物の工事費予定額÷床面積。新築の妥当性チェックに使う。改修・部分工事には適用しないこと。`
+      );
     }
   } catch (e) {
     console.error('[外部データ] 一括取得でエラー:', e);
