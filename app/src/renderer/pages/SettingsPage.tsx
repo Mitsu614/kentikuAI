@@ -118,6 +118,22 @@ export default function SettingsPage() {
             </select>
           </div>
         </div>
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px dashed #ddd' }}>
+          <label style={{ fontWeight: 600 }}>不動産情報ライブラリ APIキー（任意）</label>
+          <p style={{ fontSize: 12, color: '#666', margin: '4px 0 8px' }}>
+            国土交通省の不動産取引価格データを見積の地域補正に使います。
+            <a href="https://www.reinfolib.mlit.go.jp/api/request/" target="_blank" rel="noreferrer">利用申請</a>
+            （無料）で取得したキーを入れてください。未入力でも他の機能は動きます。
+          </p>
+          <input
+            type="password"
+            value={config.reinfolibApiKey || ''}
+            onChange={e => setConfig({ ...config, reinfolibApiKey: e.target.value })}
+            placeholder="未設定（地価データは使いません）"
+            style={{ width: '100%' }}
+          />
+        </div>
+
         {config.industryType === 'lease' && (
           <div style={{ background: '#fef9e7', border: '1px solid #f39c12', borderRadius: 8, padding: 12, marginTop: 8, fontSize: 13 }}>
             <strong>仮設工事リース業モード:</strong> 足場・養生・仮囲い・仮設建物・重機・運搬の詳細な相場データでAI見積もりを行います。リース日数・月額ベースの見積もりに対応。

@@ -6,7 +6,7 @@ import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, 
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin } from './supabase-sync';
-import { fetchAllExternalData, fetchRegionalData } from './external-data';
+import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 
 // ── トライアル用埋め込みキー ──
@@ -30,7 +30,7 @@ function decryptTrialKey(encoded: string): string {
 }
 
 // ── API キー暗号化 ──
-const SENSITIVE_FIELDS = ['anthropicKey', 'openaiKey', 'serverPassword', 'licenseToken', 'adminSecret'];
+const SENSITIVE_FIELDS = ['anthropicKey', 'openaiKey', 'serverPassword', 'licenseToken', 'adminSecret', 'reinfolibApiKey'];
 // オブジェクトのまま持つ機密（JSON化してから暗号化する）。
 // webSessions は30日有効なスマホ用セッショントークンなので平文で置かない。
 const SENSITIVE_JSON_FIELDS = ['webSessions'];
@@ -1227,6 +1227,7 @@ app.whenReady().then(async () => {
   setTimeout(() => sendStatsToSupabase(), 8000);
 
   // 外部公的データをバックグラウンドで事前取得（キャッシュ更新）
+  setReinfolibApiKey(loadApiConfig().reinfolibApiKey);
   setTimeout(() => {
     fetchAllExternalData().then(() => console.log('[起動] 外部データ事前取得完了')).catch(() => {});
   }, 12000);
@@ -2996,6 +2997,8 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('config:save', (_e, cfg: any) => {
     saveApiConfig(cfg);
+    // 不動産情報ライブラリのキーは external-data 側へ注入する（保存値は暗号化されているため）
+    setReinfolibApiKey(cfg.reinfolibApiKey);
     // テナントの連絡先も更新
     const tid = getCurrentTenant();
     if (tid > 1) {
@@ -4334,7 +4337,13 @@ ${pages}</body></html>`;
     // DBの既存施工・材料データを取得
     const materialCategories = queryAll('SELECT DISTINCT category FROM materials ORDER BY category');
 
-    // 1万件の実績を工事タイプ別に統計集約してAIに渡す
+    // 見積が参照するテナント（管理者は検証用に切替可）。統計・実績アンカーの両方でこれを使う。
+    const estTid = getEstimateTenant();
+
+    // 過去の実績を工事タイプ別に統計集約してAIに渡す。
+    // ★tenant_id で必ず絞ること。絞らないと他社の平均単価が自社の見積プロンプトに載る。
+    // ★AIが自動生成した施工（notes が「AI自動作成」で始まる）は実績ではない。混ぜるとAIが
+    //   自分の出力を実績として再学習し、金額が発散する。
     const statsRows = queryAll(`
       SELECT c.notes as type_tag,
         COUNT(*) as cnt,
@@ -4344,22 +4353,22 @@ ${pages}</body></html>`;
         ROUND(AVG(c.markup_rate * 100)) as avg_markup
       FROM constructions c
       LEFT JOIN (SELECT construction_id, SUM(quantity * unit_price) as cm_total FROM construction_materials GROUP BY construction_id) cm ON cm.construction_id = c.id
+      WHERE c.tenant_id = ? AND COALESCE(c.notes, '') NOT LIKE 'AI自動作成%'
       GROUP BY SUBSTR(c.notes, 1, INSTR(c.notes || '|', CHAR(10)) - 1)
       HAVING cnt >= 3
       ORDER BY cnt DESC
       LIMIT 30
-    `);
+    `, [estTid]);
     const pastWorkSummary = statsRows.map((s: any) => {
       const tag = (s.type_tag || '').split('\n')[0];
       return `- ${tag}: ${s.cnt}件実績 | 材料費 平均${Math.round(s.avg_mat||0).toLocaleString()}円（${Math.round(s.min_mat||0).toLocaleString()}〜${Math.round(s.max_mat||0).toLocaleString()}）| 人件費 平均${Math.round(s.avg_labor||0).toLocaleString()}円 | 掛率平均${s.avg_markup||130}%`;
     }).join('\n');
-    const totalCount = queryOne('SELECT COUNT(*) as c FROM constructions')?.c || 0;
+    const totalCount = queryOne(`SELECT COUNT(*) as c FROM constructions WHERE tenant_id = ? AND COALESCE(notes, '') NOT LIKE 'AI自動作成%'`, [estTid])?.c || 0;
 
     const categories = materialCategories.map((c: any) => c.category).join(', ');
 
     // テナント別プロファイル（山下さん=遮熱シート専門・隔離学習 等）
     // 管理者が検証用にテナントを切り替えている場合はそのテナントの実績・業種で見積もる。
-    const estTid = getEstimateTenant();
     const estProfile = getTenantProfile(estTid);
     if (estTid !== getCurrentTenant()) {
       console.log(`[管理者] 見積対象テナントを ${estTid} に切り替えて解析（業種=${estProfile.industryType || 'general'}）`);
@@ -5247,12 +5256,15 @@ manDaysBreakdownの書き方例:
     const client = new Anthropic({ apiKey: config.anthropicKey });
 
     // 相場DB参照用の簡易コスト情報
+    // ★analyze 側と同じく、テナント限定＋AI自動生成の施工を除外する
+    const chatTid = getEstimateTenant();
     const statsRows = queryAll(`
       SELECT SUBSTR(c.notes, 1, INSTR(c.notes || CHAR(10), CHAR(10)) - 1) as type_tag,
         COUNT(*) as cnt, ROUND(AVG(COALESCE(cm_total, 0))) as avg_mat, ROUND(AVG(c.labor_cost)) as avg_labor, ROUND(AVG(c.markup_rate * 100)) as avg_markup
       FROM constructions c LEFT JOIN (SELECT construction_id, SUM(quantity * unit_price) as cm_total FROM construction_materials GROUP BY construction_id) cm ON cm.construction_id = c.id
+      WHERE c.tenant_id = ? AND COALESCE(c.notes, '') NOT LIKE 'AI自動作成%'
       GROUP BY SUBSTR(c.notes, 1, INSTR(c.notes || CHAR(10), CHAR(10)) - 1) HAVING cnt >= 2 ORDER BY cnt DESC LIMIT 20
-    `);
+    `, [chatTid]);
     const pastWork = statsRows.map((s: any) => `${(s.type_tag||'').split('\n')[0]}: ${s.cnt}件 材料平均${Math.round(s.avg_mat||0).toLocaleString()}円 労務平均${Math.round(s.avg_labor||0).toLocaleString()}円`).join('\n');
 
     // 過去のチャット学習メモを取得

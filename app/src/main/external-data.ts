@@ -12,15 +12,12 @@ const ESTAT_APP_ID = '7110f2ac6a1ccbd1449d222949de60b721019731';
 const CACHE_DIR = () => path.join(app.getPath('userData'), 'external-data');
 
 // 不動産情報ライブラリ(国交省)のAPIキー。無料だが利用申請が必要で、キー無しでは 401 になる。
-// main.ts と同じ api-config.json から読む（main を import すると循環参照になるため直接読む）。
-function getReinfolibApiKey(): string | null {
-  try {
-    const p = path.join(app.getPath('userData'), 'api-config.json');
-    if (!fs.existsSync(p)) return null;
-    const cfg = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return cfg?.reinfolibApiKey || null;
-  } catch { return null; }
+// api-config.json 上では暗号化されているため、復号済みの値を main.ts から注入してもらう。
+let reinfolibApiKey: string | null = null;
+export function setReinfolibApiKey(key: string | null | undefined) {
+  reinfolibApiKey = key || null;
 }
+function getReinfolibApiKey(): string | null { return reinfolibApiKey; }
 
 function ensureCacheDir() {
   const dir = CACHE_DIR();
@@ -270,13 +267,12 @@ export async function fetchLaborCosts(): Promise<any | null> {
   if (cached) return cached;
 
   try {
-    // 国交省の労務単価公表ページ
-    const html = await httpsGet('https://www.mlit.go.jp/totikensangyo/const/sosei_const_tk2_000033.html');
-    const pdfMatch = html.match(/href="([^"]*roumu[^"]*\.pdf)"/i) || html.match(/href="([^"]*content\/\d+\.pdf)"/i);
-
-    // ★この単価表はアプリに内蔵した固定値であり、上のHTTP取得で解析したものではない。
-    //   上の取得は最新PDFのURLを拾うためだけに使っている。
+    // ★★この単価表はアプリに内蔵した固定値であり、通信で取得しているものではない★★
+    //   以前は国交省ページを httpsGet して最新PDFのURLを拾おうとしていたが、
+    //   そのURL(sosei_const_tk2_000033.html)は 404 を返す。httpsGet はステータスを見ずに
+    //   本文を返すため、404のHTMLを正常応答として処理し続けていた（無害だが完全に無駄）。
     //   国交省が労務単価を改定したら（例年3月適用）、下の rate / prev を手で更新すること。
+    //   改定を見落とさないよう、effectiveDate から13ヶ月経過したら下で警告を出す。
     const result: any = {
       source: 'mlit_labor_costs',
       dataSource: 'bundled', // 内蔵値。自動更新されない
@@ -306,14 +302,24 @@ export async function fetchLaborCosts(): Promise<any | null> {
         generalDriver:    { name: '運転手(一般)', rate: 24800, prev: 23700 },
         hvac:             { name: '設備工(空調)', rate: 30300, prev: 29000 },
       },
-      pdfUrl: pdfMatch ? pdfMatch[1] : 'https://www.mlit.go.jp/report/press/content/001981942.pdf',
+      pdfUrl: 'https://www.mlit.go.jp/report/press/content/001981942.pdf',
     };
 
+    // 改定の見落とし検知。適用日から13ヶ月経っていたら「更新されていない」とみなす。
+    const monthsOld = (Date.now() - new Date(result.effectiveDate).getTime()) / (1000 * 60 * 60 * 24 * 30.44);
+    result.stale = monthsOld > 13;
+    if (result.stale) {
+      console.warn(
+        `[外部データ] ⚠ 労務単価が${Math.floor(monthsOld)}ヶ月前(${result.effectiveDate}適用)のままです。` +
+        `国交省の改定を確認し external-data.ts の trades を更新してください: ${result.pdfUrl}`
+      );
+    }
+
     writeCache('labor_costs', result);
-    console.log('[外部データ] 労務単価取得完了');
+    console.log(`[外部データ] 労務単価: 内蔵値を使用（${result.effectiveDate}適用・${Object.keys(result.trades).length}職種）`);
     return result;
-  } catch (e) {
-    console.error('[外部データ] 労務単価取得失敗:', e);
+  } catch (e: any) {
+    console.error('[外部データ] 労務単価の組み立てに失敗:', e?.message || e);
     return null;
   }
 }
