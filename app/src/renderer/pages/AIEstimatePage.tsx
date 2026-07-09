@@ -221,7 +221,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
 
   // 見積前の面積確認。面積を間違えたまま本見積を回すと「再計算」でクレジットを二重に使うため、
   // 実測値が未入力かつ写真がある場合だけ、先にAIの推定面積を提示して直してもらう。
-  const [areaCheck, setAreaCheck] = useState<{ assumedArea: string; basis: string; confidence: string } | null>(null);
+  const [areaCheck, setAreaCheck] = useState<{
+    assumedArea: string; basis: string; confidence: string;
+    scaleRef?: string; roofAreaM2?: number; developFactor?: number; quantityM2?: number;
+    coversWholeRoof?: boolean; missingPart?: string; needsDimension?: string;
+    isEstimate?: boolean; rangeMinM2?: number; rangeMaxM2?: number;
+  } | null>(null);
   const [checkingArea, setCheckingArea] = useState(false);
   const [confirmArea, setConfirmArea] = useState('');
 
@@ -901,10 +906,35 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           {/* 面積の事前確認。ここで直せば、見積後の「再計算」でクレジットを二重に使わずに済む */}
           {areaCheck && (
             <div className="card" style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #93c5fd', padding: '14px 16px' }}>
-              <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1e40af', marginBottom: 6 }}>
-                📐 写真から読み取った面積です。合っていますか？（信頼度: {areaCheck.confidence}）
+              <div style={{ fontSize: 13, fontWeight: 'bold', color: areaCheck.isEstimate ? '#b45309' : '#1e40af', marginBottom: 6 }}>
+                {areaCheck.isEstimate
+                  ? '📐 推測値です。屋根全体が写っていないため確定できません'
+                  : `📐 写真から読み取った面積です。合っていますか？（信頼度: ${areaCheck.confidence}）`}
               </div>
-              <div style={{ fontSize: 12, color: '#475569', marginBottom: 8 }}>根拠: {areaCheck.basis}</div>
+              {areaCheck.isEstimate && (
+                <div style={{ fontSize: 12, color: '#78350f', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, padding: '6px 8px', marginBottom: 8 }}>
+                  {!!areaCheck.rangeMinM2 && !!areaCheck.rangeMaxM2 && (
+                    <div style={{ marginBottom: 4 }}>
+                      想定レンジ: <strong>{areaCheck.rangeMinM2}〜{areaCheck.rangeMaxM2}㎡</strong>（推測が入るぶん幅があります）
+                    </div>
+                  )}
+                  {areaCheck.needsDimension && (
+                    <div><strong>{areaCheck.needsDimension}</strong> が分かれば正確に計算できます。</div>
+                  )}
+                  {areaCheck.missingPart && <div style={{ marginTop: 4 }}>写っていない部分: {areaCheck.missingPart}</div>}
+                  <div style={{ marginTop: 4 }}>このまま進めても構いません。分かる範囲で下の欄を直してください。</div>
+                </div>
+              )}
+              <div style={{ fontSize: 12, color: '#475569', marginBottom: 4 }}>根拠: {areaCheck.basis}</div>
+              {areaCheck.scaleRef && (
+                <div style={{ fontSize: 12, color: '#475569', marginBottom: 4 }}>基準にした寸法: {areaCheck.scaleRef}</div>
+              )}
+              {/* 折板屋根は山谷があるぶん、実際に張る面積が屋根面積より大きい（展開係数） */}
+              {!!areaCheck.roofAreaM2 && !!areaCheck.developFactor && areaCheck.developFactor > 1 && (
+                <div style={{ fontSize: 12, color: '#1e40af', marginBottom: 8, background: '#dbeafe', padding: '4px 8px', borderRadius: 4 }}>
+                  屋根面積 {areaCheck.roofAreaM2}㎡ × 展開係数 {areaCheck.developFactor}（山谷の凹凸ぶん）＝ 見積数量 {areaCheck.quantityM2}㎡
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <input
                   type="text"
