@@ -1,6 +1,34 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PageGuide } from '../components/PageGuide';
 
+// 金額・人数などの数値入力欄。
+// ・クリック（フォーカス）で中身を全選択 → そのまま打てば丸ごと置き換わる
+// ・入力中は空欄にもできる（0 に強制で戻さない）。空欄は 0 として親へ渡す
+// ・確定（blur）時に数値へ丸める
+function NumInput({ value, onValue, style, min }: {
+  value: number;
+  onValue: (n: number) => void;
+  style?: React.CSSProperties;
+  min?: number;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const display = text !== null ? text : String(Math.round(value || 0));
+  return (
+    <input
+      type="number"
+      min={min}
+      value={display}
+      onFocus={e => e.currentTarget.select()}
+      onChange={e => {
+        setText(e.target.value);
+        onValue(e.target.value === '' ? 0 : Number(e.target.value) || 0);
+      }}
+      onBlur={() => setText(null)}
+      style={style}
+    />
+  );
+}
+
 export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigateToConstruction?: (id: number) => void }) {
   const [imageData, setImageData] = useState<string | null>(null);
   const [beforeImage, setBeforeImage] = useState<string | null>(null);
@@ -987,28 +1015,25 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
                   <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>材料費（目安）</div>
-                  <input
-                    type="number"
-                    value={Math.round(result.estimatedMaterialCost || 0)}
-                    onChange={e => setResult({ ...result, estimatedMaterialCost: Number(e.target.value) || 0 })}
+                  <NumInput
+                    value={result.estimatedMaterialCost || 0}
+                    onValue={n => setResult({ ...result, estimatedMaterialCost: n })}
                     style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
                   />
                 </div>
                 <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
                   <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>人件費（目安）</div>
-                  <input
-                    type="number"
-                    value={Math.round(result.estimatedLaborCost || 0)}
-                    onChange={e => setResult({ ...result, estimatedLaborCost: Number(e.target.value) || 0 })}
+                  <NumInput
+                    value={result.estimatedLaborCost || 0}
+                    onValue={n => setResult({ ...result, estimatedLaborCost: n })}
                     style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
                   />
                 </div>
                 <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
                   <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>売上金額（税抜）</div>
-                  <input
-                    type="number"
-                    value={Math.round(result.estimatedTotal || 0)}
-                    onChange={e => setResult({ ...result, estimatedTotal: Number(e.target.value) || 0 })}
+                  <NumInput
+                    value={result.estimatedTotal || 0}
+                    onValue={n => setResult({ ...result, estimatedTotal: n })}
                     style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
                   />
                 </div>
@@ -1076,12 +1101,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     <tr key={i}>
                       <td>{b.item}</td>
                       <td style={{ textAlign: 'right' }}>
-                        <input
-                          type="number"
-                          value={Math.round(b.cost || 0)}
-                          onChange={e => {
+                        <NumInput
+                          value={b.cost || 0}
+                          onValue={n => {
                             const next = [...result.breakdown];
-                            next[i] = { ...next[i], cost: Number(e.target.value) || 0 };
+                            next[i] = { ...next[i], cost: n };
                             // 内訳は粗利込みの最終提示額なので、合計＝内訳の総和にそろえる
                             const sum = next.reduce((s: number, r: any) => s + (Number(r.cost) || 0), 0);
                             setResult({ ...result, breakdown: next, estimatedTotal: sum });
@@ -1183,19 +1207,19 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         {m.basis && <div style={{ fontSize: 11, color: '#888', fontWeight: 'normal', marginTop: 3, lineHeight: 1.5 }}>根拠: {m.basis}</div>}
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        <input type="number" min={0} value={Number(m.workers) || 0}
-                          onChange={e => patchRow({ workers: Number(e.target.value) || 0 })}
+                        <NumInput min={0} value={Number(m.workers) || 0}
+                          onValue={n => patchRow({ workers: n })}
                           style={numStyle} />
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        <input type="number" min={0} value={Number(m.days) || 0}
-                          onChange={e => patchRow({ days: Number(e.target.value) || 0 })}
+                        <NumInput min={0} value={Number(m.days) || 0}
+                          onValue={n => patchRow({ days: n })}
                           style={numStyle} />
                       </td>
                       <td style={{ textAlign: 'center', fontWeight: 'bold' }}>{Number(m.manDays) || 0}</td>
                       <td style={{ textAlign: 'right' }}>
-                        <input type="number" min={0} value={Number(m.dailyRate) || 0}
-                          onChange={e => patchRow({ dailyRate: Number(e.target.value) || 0 })}
+                        <NumInput min={0} value={Number(m.dailyRate) || 0}
+                          onValue={n => patchRow({ dailyRate: n })}
                           style={{ ...numStyle, width: 100, textAlign: 'right' }} />
                       </td>
                       <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{fmt(subtotal)}</td>
