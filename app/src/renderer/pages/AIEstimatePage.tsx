@@ -226,9 +226,36 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     scaleRef?: string; roofAreaM2?: number; developFactor?: number; quantityM2?: number;
     coversWholeRoof?: boolean; missingPart?: string; needsDimension?: string;
     isEstimate?: boolean; rangeMinM2?: number; rangeMaxM2?: number;
+    widthM?: number; lengthM?: number; slopeFactor?: number;
+    rawM2?: number; calibration?: number; calibrationSamples?: number;
+    target?: string; targetLabel?: string; unvalidated?: boolean;
   } | null>(null);
   const [checkingArea, setCheckingArea] = useState(false);
   const [confirmArea, setConfirmArea] = useState('');
+  const [learned, setLearned] = useState<{ calibration: number; samples: number } | null>(null);
+
+  // 実測に直して見積もる。直した値はそのテナントの較正係数の学習に回す。
+  const proceedWithArea = async () => {
+    const m2 = Number(confirmArea);
+    if (!(m2 > 0) || !areaCheck) return;
+    const predicted = Number(areaCheck.quantityM2) || 0;
+    // 触っていない（＝AIの値をそのまま承認）ときは学習しない。承認は「合っている」証拠として弱い
+    const edited = predicted > 0 && Math.abs(m2 - predicted) / predicted > 0.02;
+    if (edited && areaCheck.rawM2) {
+      try {
+        const r = await (window as any).api.recordAreaCorrection({
+          rawM2: areaCheck.rawM2, predictedM2: predicted, correctedM2: m2,
+          isEstimate: !!areaCheck.isEstimate,
+          widthM: areaCheck.widthM, lengthM: areaCheck.lengthM,
+          slopeFactor: areaCheck.slopeFactor, developFactor: areaCheck.developFactor,
+          scaleRef: areaCheck.scaleRef, confidence: areaCheck.confidence, comment,
+          target: areaCheck.target,
+        });
+        if (r?.recorded && r.usable) setLearned({ calibration: r.calibration, samples: r.samples });
+      } catch (_) { /* 学習に失敗しても見積は止めない */ }
+    }
+    analyze(`${areaCheck.targetLabel || '屋根'} ${m2}㎡`);
+  };
 
   // 管理者限定: 見積が参照する実績・業種プロンプトを他テナントのものに切り替える（検証用）。
   // 非管理者では isAdmin=false が返り、セレクタ自体が描画されない。
@@ -259,10 +286,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     if (area.trim() || !mainImage) { analyze(); return; }
     setCheckingArea(true);
     setError('');
+    setLearned(null);
     try {
       const res = await (window as any).api.estimateArea({ imageBase64: mainImage, comment });
       setAreaCheck(res);
-      setConfirmArea(res?.assumedArea || '');
+      setConfirmArea(res?.quantityM2 ? String(Math.round(res.quantityM2)) : '');
     } catch (e: any) {
       // 事前確認に失敗しても見積自体は止めない（上限到達・読み取り失敗など）
       console.warn('面積の事前確認をスキップ:', e?.message || e);
@@ -908,9 +936,15 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div className="card" style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #93c5fd', padding: '14px 16px' }}>
               <div style={{ fontSize: 13, fontWeight: 'bold', color: areaCheck.isEstimate ? '#b45309' : '#1e40af', marginBottom: 6 }}>
                 {areaCheck.isEstimate
-                  ? '📐 推測値です。屋根全体が写っていないため確定できません'
-                  : `📐 写真から読み取った面積です。合っていますか？（信頼度: ${areaCheck.confidence}）`}
+                  ? `📐 推測値です。${areaCheck.targetLabel || '対象'}の全体が写っていないため確定できません`
+                  : `📐 写真から読み取った${areaCheck.targetLabel || ''}の面積です。合っていますか？（信頼度: ${areaCheck.confidence}）`}
               </div>
+              {areaCheck.unvalidated && (
+                <div style={{ fontSize: 12, color: '#78350f', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, padding: '6px 8px', marginBottom: 8 }}>
+                  {areaCheck.targetLabel}の推定は検証データが少ないため、屋根より精度が落ちます。実測に直してください。
+                  直した値を学習して、次回から御社の写真に合わせて寄っていきます。
+                </div>
+              )}
               {areaCheck.isEstimate && (
                 <div style={{ fontSize: 12, color: '#78350f', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, padding: '6px 8px', marginBottom: 8 }}>
                   {!!areaCheck.rangeMinM2 && !!areaCheck.rangeMaxM2 && (
@@ -936,14 +970,21 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label style={{ fontSize: 13, color: '#334155', whiteSpace: 'nowrap' }}>見積数量</label>
                 <input
-                  type="text"
+                  type="number"
+                  min={0}
+                  step="0.1"
                   value={confirmArea}
+                  onFocus={e => e.currentTarget.select()}
                   onChange={e => setConfirmArea(e.target.value)}
-                  placeholder="例: 屋根 48㎡"
-                  style={{ flex: '1 1 220px', minWidth: 180, padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 14, fontFamily: 'inherit' }}
+                  style={{ width: 110, padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 15, fontWeight: 600, textAlign: 'right', fontFamily: 'inherit' }}
                 />
-                <button className="btn btn-primary" disabled={analyzing || !confirmArea.trim()} onClick={() => analyze(confirmArea)} style={{ whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: 14, color: '#334155' }}>㎡</span>
+                {!!areaCheck.quantityM2 && Number(confirmArea) !== Math.round(areaCheck.quantityM2) && (
+                  <span style={{ fontSize: 11, color: '#64748b' }}>AIの推定 {Math.round(areaCheck.quantityM2)}㎡</span>
+                )}
+                <button className="btn btn-primary" disabled={analyzing || !(Number(confirmArea) > 0)} onClick={proceedWithArea} style={{ whiteSpace: 'nowrap' }}>
                   この面積で見積もる
                 </button>
                 <button className="btn" disabled={analyzing} onClick={() => analyze()} style={{ whiteSpace: 'nowrap' }}>
@@ -952,7 +993,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               </div>
               <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
                 実測値に直してから見積もると、金額が正確になります。ここでの確認はクレジットを消費しません。
+                {!areaCheck.isEstimate && <>直した値は<strong>次回以降の面積推定の精度に反映されます</strong>。</>}
               </div>
+              {!!areaCheck.calibrationSamples && (
+                <div style={{ fontSize: 11, color: '#1e40af', marginTop: 4 }}>
+                  実測 {areaCheck.calibrationSamples} 件を学習済み（補正係数 ×{areaCheck.calibration}）
+                </div>
+              )}
+              {learned && (
+                <div style={{ fontSize: 12, color: '#065f46', background: '#d1fae5', border: '1px solid #6ee7b7', borderRadius: 4, padding: '6px 8px', marginTop: 6 }}>
+                  ✓ 実測値を学習しました。実測 {learned.samples} 件・補正係数 ×{learned.calibration} で、次回からの推定が寄ります。
+                </div>
+              )}
             </div>
           )}
 

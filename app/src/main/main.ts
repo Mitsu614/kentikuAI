@@ -5218,6 +5218,65 @@ manDaysBreakdownの書き方例:
 - 複数棟が写っているときは、依頼内容の対象になっている棟だけを測れ。
 `;
 
+  // 外壁塗装・内装は屋根とスケール基準がまったく違う。屋根のガイドを当てると壊れる。
+  const WALL_SCALE_GUIDE = `
+## ★★基準スケールは「外壁と同じ面」にあるものを1つだけ選べ★★
+手前の車・塀・植栽は壁と別の平面にある。使うと面積が大きく出る。
+
+## 外壁面上の規格寸法（これだけを基準にしろ）
+- 引違いサッシ（掃出し窓）: 幅 1690〜1800mm × 高 1800〜2000mm
+- 腰高窓: 幅 1690mm × 高 970mm ／ 小窓: 幅 640mm × 高 970mm
+- 玄関ドア: 幅 800〜900mm × 高 2000mm（片開き）
+- 窯業系サイディング: 働き幅 455mm（横張り1段）／ 長さ 3030mm
+- モルタル・ALC: ALCパネル 幅 600mm
+- 化粧ブロック: 390mm × 190mm（※塀にしか無い。壁の基準に使うな）
+- 階高: 木造 2900〜3000mm ／ 軒高 = 階高×階数 + 300〜500mm
+
+## ★★数えるな★★
+サイディングの段数・ブロックの個数を数えて長さを出すな。5個を超えると必ず間違える
+[arXiv:2407.06581]。**サッシ1枚と壁全体の見かけの比**で出せ。
+
+## 出し方
+1. 建物の平面形を長方形とみなし、間口 widthM と 奥行 lengthM（水平投影）を出す。
+   ・写真1枚では奥行きが写らないことが多い。読めないなら標準値を使い basis に書け。
+   ・戸建て2階建ての標準: 間口 7.0〜9.0m ／ 奥行 7.0〜9.0m。
+2. 軒高 heightM を出す（平屋 3.0〜3.5m／2階建て 6.0〜6.8m／3階建て 9.0〜9.8m）。
+3. 外壁面積 = 2 × (widthM + lengthM) × heightM。これはこちらで計算する。
+4. openingFactor に開口部（窓・ドア）の控除率を入れる。
+   ・実務では 30㎡未満の開口は控除しないことが多い。控除しないなら 1.0。
+   ・窓が多い住宅で控除するなら 0.85 前後。迷ったら 1.0 にして basis に書け。
+
+## 屋根の値は使うな
+slopeFactor と developFactor は外壁では常に 1 だ。`;
+
+  const FLOOR_SCALE_GUIDE = `
+## ★★基準スケールは「床と同じ面」にあるものを選べ★★
+壁に貼ってあるもの・天井のものを床の基準に使うな。
+
+## 内装の規格寸法
+- 畳（中京間）: 1820mm × 910mm ／ 半畳 910mm × 910mm
+- フローリング: 働き幅 303mm（1尺）／ 長さ 1818mm
+- 床タイル・Pタイル: 303mm角 / 450mm角 / 600mm角
+- 建具（室内ドア）: 幅 780mm × 高 2000mm
+- システムキッチン間口: 2550mm（標準）
+- 天井高: 住宅 2400mm ／ 店舗 2700〜3000mm
+- ユニットバス 1616 = 1600mm × 1600mm
+
+## ★★数えるな★★
+フローリングの本数・タイルの枚数を数えるな。ドア1枚や畳1枚と部屋全体の
+**見かけの比**で出せ [arXiv:2407.06581]。
+
+## 出し方
+1. 部屋（または店舗フロア）の 間口 widthM × 奥行 lengthM を出す。床面積はこちらで計算する。
+2. 写真1枚に部屋の四隅が収まっていないなら coversWholeRoof = false にして、
+   askUserFor に「床面積（坪でも㎡でも可）」と書け。
+3. 天井高が読めるなら heightM に入れる（壁・天井の数量に使う）。
+4. 標準値: 住宅の1室 6帖=9.9㎡ / 8帖=13.2㎡ / LDK 16〜20帖=26〜33㎡。
+   店舗は 10〜30坪（33〜99㎡）が最頻。
+
+## 屋根の値は使うな
+slopeFactor と developFactor は内装では常に 1 だ。`;
+
   // ── 管理者限定: 見積対象テナントの切り替え ──
   // 非管理者には isAdmin:false を返す（レンダラ側でセレクタごと非表示になる）。
   ipcMain.handle('admin:listEstimateTenants', () => {
@@ -5254,6 +5313,97 @@ manDaysBreakdownの書き方例:
     return { success: true, current: t.id };
   });
 
+  // ── 面積の較正を実測から学習する ────────────────────────────────
+  // AIは寸法を系統的に小さく答える。その補正係数 AREA_CALIBRATION_BASE=1.40 は
+  // 正解付き11件のベンチで決めた「全国平均」であって、そのテナントが撮る写真
+  // （空撮か地上か、工場か戸建てか）には合っていない。
+  // そこで、ユーザーが推定面積を実測値に直したときの比を貯めて、係数を寄せていく。
+  //
+  // 比は必ず「較正前の生値」に対して取る。較正後の値に対して取ると、学習した係数が
+  // 次の学習の分母に入り、係数が指数的に発散する。
+  //
+  // 基準値は対象ごとに違う。1.40 は「屋根」11件で決めた値であって、外壁・内装には根拠がない。
+  // 検証していないものに勝手な係数を置くほうが有害なので、外壁・内装は 1.00 から始めて実測で学ぶ。
+  const AREA_CALIBRATION_BASE: Record<string, number> = { roof: 1.40, wall: 1.00, floor: 1.00 };
+  const AREA_CAL_PRIOR = 5;   // 事前分布の重み。実測5件で基準値と学習値が半々になる
+  const AREA_CAL_MIN = 0.60;
+  const AREA_CAL_MAX = 2.50;
+  const areaBase = (target?: string) => AREA_CALIBRATION_BASE[target || 'roof'] ?? 1.0;
+
+  function ensureAreaCorrectionTable() {
+    try {
+      runSql(`CREATE TABLE IF NOT EXISTS area_corrections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id INTEGER NOT NULL,
+        raw_m2 REAL NOT NULL,          -- 較正をかける前の w×l×勾配×展開
+        predicted_m2 REAL,             -- そのとき画面に出ていた値
+        corrected_m2 REAL NOT NULL,    -- ユーザーが直した実測値
+        ratio REAL NOT NULL,           -- corrected / raw
+        usable INTEGER NOT NULL DEFAULT 1,  -- 屋根全体が写っていない推測値は較正に使わない
+        width_m REAL, length_m REAL, slope_factor REAL, develop_factor REAL,
+        scale_ref TEXT, confidence TEXT, comment TEXT,
+        target TEXT NOT NULL DEFAULT 'roof',
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+      )`, []);
+      // 既存DB向け。target 列が無い時代のデータは屋根しか無い（外壁・内装は分岐前に存在しない）
+      const cols = queryAll('PRAGMA table_info(area_corrections)', []).map((c: any) => c.name);
+      if (!cols.includes('target')) runSql(`ALTER TABLE area_corrections ADD COLUMN target TEXT NOT NULL DEFAULT 'roof'`, []);
+    } catch (_) {}
+  }
+
+  /** そのテナント・その対象（屋根/外壁/内装）の実測から較正係数を求める。実測が無ければ基準値。 */
+  function getAreaCalibration(tid: number, target?: string): { value: number; samples: number; base: number } {
+    ensureAreaCorrectionTable();
+    const t = target || 'roof';
+    const base = areaBase(t);
+    // 屋根の実測で外壁の係数を動かしてはいけない。対象ごとに完全に分ける
+    // ratio の外れ値は打ち間違い（桁違い）とみなして捨てる
+    const rows = queryAll(
+      `SELECT ratio FROM area_corrections
+       WHERE tenant_id = ? AND target = ? AND usable = 1 AND ratio BETWEEN 0.25 AND 4.0
+       ORDER BY id DESC LIMIT 50`, [tid, t]);
+    if (!rows.length) return { value: base, samples: 0, base };
+    // 対数空間で基準値に縮小推定（n件でも1件でも壊れないように）
+    const sumLog = rows.reduce((s: number, r: any) => s + Math.log(Number(r.ratio)), 0);
+    const n = rows.length;
+    const logCal = (Math.log(base) * AREA_CAL_PRIOR + sumLog) / (n + AREA_CAL_PRIOR);
+    const cal = Math.min(AREA_CAL_MAX, Math.max(AREA_CAL_MIN, Math.exp(logCal)));
+    return { value: Math.round(cal * 1000) / 1000, samples: n, base };
+  }
+
+  /** ユーザーが直した面積を記録する。書き込みは常に自分のテナントへ（他テナントを汚さない）。 */
+  ipcMain.handle('ai:recordAreaCorrection', (_e, d: {
+    rawM2: number; predictedM2: number; correctedM2: number; isEstimate?: boolean;
+    widthM?: number; lengthM?: number; slopeFactor?: number; developFactor?: number;
+    scaleRef?: string; confidence?: string; comment?: string; target?: string;
+  }) => {
+    const raw = Number(d?.rawM2) || 0;
+    const corrected = Number(d?.correctedM2) || 0;
+    if (raw <= 0 || corrected <= 0) return { recorded: false, reason: '値が不正です' };
+    const ratio = corrected / raw;
+    if (ratio < 0.1 || ratio > 10) return { recorded: false, reason: '推定値と離れすぎているため学習対象外です' };
+
+    const tid = getCurrentTenant();
+    const target = ['roof', 'wall', 'floor'].includes(d?.target || '') ? d!.target! : 'roof';
+    ensureAreaCorrectionTable();
+    // 対象全体が写っていない写真は、寸法そのものが推測。較正の材料にはしない（記録は残す）
+    const usable = d?.isEstimate ? 0 : 1;
+    runSql(
+      `INSERT INTO area_corrections
+       (tenant_id, raw_m2, predicted_m2, corrected_m2, ratio, usable, width_m, length_m, slope_factor, develop_factor, scale_ref, confidence, comment, target)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [tid, raw, Number(d?.predictedM2) || null, corrected, ratio, usable,
+        Number(d?.widthM) || null, Number(d?.lengthM) || null,
+        Number(d?.slopeFactor) || null, Number(d?.developFactor) || null,
+        d?.scaleRef || null, d?.confidence || null, (d?.comment || '').slice(0, 200) || null, target]);
+
+    const cal = getAreaCalibration(tid, target);
+    console.log(`[面積学習] tenant ${tid} [${target}]: 生${raw.toFixed(1)}㎡ → 実測${corrected}㎡ (比${ratio.toFixed(2)}) ${usable ? '' : '※推測値のため較正には不使用 '}→ 較正係数 ${cal.value} (n=${cal.samples})`);
+    return { recorded: true, usable: !!usable, calibration: cal.value, samples: cal.samples };
+  });
+
+  ipcMain.handle('ai:areaCalibration', (_e, target?: string) => getAreaCalibration(getEstimateTenant(), target));
+
   ipcMain.handle('ai:estimateArea', async (_e, data: { imageBase64?: string; comment?: string }) => {
     const image = shrinkImageForAI(data?.imageBase64);
     if (!image) throw new Error('ERROR: 面積の事前確認には写真が必要です。');
@@ -5282,21 +5432,54 @@ manDaysBreakdownの書き方例:
           { type: 'image', source: { type: 'base64', media_type: detectMediaType(image), data: image.replace(/^data:image\/\w+;base64,/, '') } },
           {
             type: 'text',
-            text: `${data?.comment ? `依頼内容: ${data.comment}\n\n` : ''}この屋根の**寸法だけ**を答えてください。面積は計算しないでください（こちらで計算します）。
+            text: `${data?.comment ? `依頼内容: ${data.comment}\n\n` : ''}この写真の工事対象について、**寸法だけ**を答えてください。面積は計算しないでください（こちらで計算します）。
+
+## まず、何を測るのかを決めろ
+依頼内容と写真から、target を1つ選ぶ。
+- "roof"  … 屋根（葺き替え・カバー工法・屋根塗装・遮熱シート）
+- "wall"  … 外壁（外壁塗装・サイディング・防水）
+- "floor" … 内装（店舗内装・床・クロス・リフォーム）※屋内の写真は必ずこれ
+- "unknown" … どれとも判断できない
+
+**依頼内容が優先。** 依頼が外壁塗装なら、屋根が写っていても target は "wall" だ。
+
+★★依頼された対象が写真に**まったく**写っていないときだけ、寸法を答えるな★★
+  例: 依頼が「店舗の内装リフォーム」で、写真が屋根なら、屋根を測ってはいけない。
+  そのときは target を依頼どおりにしたまま、widthM = 0、lengthM = 0 とし、
+  coversWholeRoof = false、askUserFor に「床面積(㎡または坪)」のように必要な情報を書け。
+  **写っているものを測って、依頼と違う数字を返すのが最悪の失敗だ。**
+
+★ただし、対象が**一部でも**写っているなら、必ず寸法を出せ。
+  全体が収まっていないことを理由に 0 を返すな。読めるところを読み、読めない方向は
+  下の「推測値の作り方」の標準値で補い、coversWholeRoof = false・confidence = 低 にしろ。
+  widthM = 0 が許されるのは、対象が1ピクセルも写っていないときだけだ。
+
+target が "unknown" のときも寸法を答えず、askUserFor に必要な情報を書け。
+
+━━━━━━ target = "roof" のとき ━━━━━━
 ${AREA_SCALE_GUIDE}
+
+━━━━━━ target = "wall" のとき ━━━━━━
+${WALL_SCALE_GUIDE}
+
+━━━━━━ target = "floor" のとき ━━━━━━
+${FLOOR_SCALE_GUIDE}
 
 答えるのは次の値だけです。掛け算はしないこと。
 
 以下のJSONのみを返してください（説明文は不要）:
 {
-  "coversWholeRoof": true か false。屋根の輪郭（四隅・棟から軒まで）が写真に収まっているか,
+  "target": "roof" / "wall" / "floor" / "unknown",
+  "coversWholeRoof": true か false。対象の輪郭が写真に収まっているか（roof=四隅と棟から軒 / wall=建物の間口と高さ / floor=部屋の四隅）,
   "missingPart": coversWholeRoof が false のとき、何が写っていないか。true なら null,
   "askUserFor": coversWholeRoof が false のとき、1つ聞けば面積が確定する情報。true なら null,
-  "scaleRef": "基準にした物とその実寸（例: 折板の山ピッチ 500mm）。屋根平面上の物に限る",
-  "widthM": 梁間方向の水平投影長さ(m、数値。軒の出・けらばの出を含む),
-  "lengthM": 桁行方向の水平投影長さ(m、数値。軒の出を含む),
-  "slopeFactor": 勾配補正係数(数値。√(1+(寸/10)²)。折板1.005 / 戸建て4寸1.077・5寸1.118),
-  "developFactor": 展開係数(数値。折板88mm=1.41 / 折板150mm=1.69 / スレート大波1.1 / 平葺き・瓦1.0),
+  "scaleRef": "基準にした物とその実寸（例: 折板の山ピッチ 500mm）。対象と同じ平面上の物に限る",
+  "widthM": 間口方向の水平投影長さ(m、数値。roofは軒の出・けらばの出を含む),
+  "lengthM": 奥行方向の水平投影長さ(m、数値。roofは軒の出を含む),
+  "heightM": 軒高(m、数値。wall のときだけ。roof/floor では 0),
+  "openingFactor": 開口部の控除率(数値。wall のときだけ。控除しないなら1.0、窓の多い住宅で控除するなら0.85前後。roof/floor では 1),
+  "slopeFactor": 勾配補正係数(数値。roof のみ。√(1+(寸/10)²)。折板1.005 / 戸建て4寸1.077・5寸1.118。wall/floor では 1),
+  "developFactor": 展開係数(数値。roof のみ。折板88mm=1.41 / 折板150mm=1.69 / スレート大波1.1 / 平葺き・瓦1.0。wall/floor では 1),
   "basis": "どの基準物からどの寸法を読み、どこに標準値を当てたか",
   "confidence": "高/中/低"
 }`,
@@ -5326,21 +5509,82 @@ ${AREA_SCALE_GUIDE}
     //   1.25倍以内は5/11まで落ちる。つまりこの係数は「バイアスの向きと桁」までしか信用できない。
     // ★データの偏り: 斜め空撮8/11、住宅7/11。真上からの空撮・地上写真の検証は薄い。
     //   地上からの見上げ写真は最も悪く（比0.48）、屋根平面上に基準物が写らないため。
-    // 実績が増えたら、確定した屋根面積とAIの推定値を突き合わせて再較正すること。
-    const AREA_CALIBRATION = 1.40;
+    // ★遠近法(平面ホモグラフィ)も試したが却下。合成画像では誤差0.00%でも実写では悪化する
+    //   （1.25倍以内 4/10、最悪6.80倍）。原因は射影変換ではなく、AIが参照物の実寸を
+    //   「山を数えて」出すこと。大屋根で幾何平均比0.38まで落ちる。
+    //
+    // この係数は、ユーザーが推定面積を実測値に直すたびに、そのテナント用に学習される
+    //   （getAreaCalibration / area_corrections テーブル）。実測が無い間は基準値のまま。
+    // ★依頼文とAIの判定が食い違ったら、AIを信じない。
+    // 実測: 「店舗の内装リフォーム」の依頼に屋根写真を渡すと、AIは依頼を無視して屋根を測り
+    // 「屋根44㎡」を返した。それがそのまま見積の数量になる。写真に写っているものを測るより、
+    // 数字を出さずに聞き返すほうが常に安い。
+    const cmt = data?.comment || '';
+    const wantRoof = /屋根|折板|遮熱|カバー工法|瓦|スレート|棟|樋|板金/.test(cmt);
+    const wantWall = /外壁|サイディング|モルタル|ALC|塗り替え|吹付/.test(cmt);
+    const wantFloor = /内装|クロス|壁紙|床|フローリング|天井|間仕切|造作|厨房|店舗改装/.test(cmt);
+    const asked = wantFloor && !wantRoof ? 'floor' : wantWall && !wantRoof ? 'wall' : wantRoof ? 'roof' : null;
+
+    let target = ['roof', 'wall', 'floor'].includes(result.target) ? result.target : 'roof';
+    if (asked && result.target !== asked) {
+      console.warn(`[面積事前確認] 依頼は「${asked}」なのにAIは「${result.target}」と判定。寸法を破棄して聞き返す: ${cmt.slice(0, 40)}`);
+      target = asked;
+      result.widthM = 0; result.lengthM = 0;
+      result.coversWholeRoof = false;
+      result.missingPart = `依頼された対象（${asked === 'floor' ? '室内' : asked === 'wall' ? '外壁' : '屋根'}）が写真に写っていません`;
+    }
+    result.target = target;
+    const LABEL: Record<string, string> = { roof: '屋根', wall: '外壁', floor: '床' };
+    result.targetLabel = LABEL[target];
+
+    const cal = getAreaCalibration(getEstimateTenant(), target);
+    const AREA_CALIBRATION = cal.value;
     const w = Number(result.widthM) || 0;
     const l = Number(result.lengthM) || 0;
-    const slope = Number(result.slopeFactor) > 0 ? Number(result.slopeFactor) : 1;
-    const develop = Number(result.developFactor) > 0 ? Number(result.developFactor) : 1;
-    if (w > 0 && l > 0) {
-      const plan = w * l * AREA_CALIBRATION;
-      result.planAreaM2 = Math.round(plan * 10) / 10;
-      result.roofAreaM2 = Math.round(plan * slope * 10) / 10;
-      result.quantityM2 = Math.round(plan * slope * develop * 10) / 10;
-      result.assumedArea = `屋根 ${Math.round(result.quantityM2)}㎡`;
-      // ベンチの最悪誤差1.81倍・1.5倍以内10/11 を踏まえたレンジ
+    // 屋根の勾配・展開は外壁と内装には存在しない。AIが誤って入れてきても効かせない
+    const slope = target === 'roof' && Number(result.slopeFactor) > 0 ? Number(result.slopeFactor) : 1;
+    const develop = target === 'roof' && Number(result.developFactor) > 0 ? Number(result.developFactor) : 1;
+    const height = target === 'wall' && Number(result.heightM) > 0 ? Number(result.heightM) : 0;
+    const opening = target === 'wall' && Number(result.openingFactor) > 0 && Number(result.openingFactor) <= 1
+      ? Number(result.openingFactor) : 1;
+    result.slopeFactor = slope; result.developFactor = develop;
+
+    // 較正前の生値。実測で直されたとき、この値との比を学習に使う
+    let raw = 0;
+    if (target === 'wall') {
+      // 建物を長方形とみなした外周 × 軒高 × 開口控除
+      if (w > 0 && l > 0 && height > 0) raw = 2 * (w + l) * height * opening;
+    } else if (w > 0 && l > 0) {
+      raw = w * l * slope * develop;   // floor は slope=develop=1 なので単純な床面積
+    }
+
+    if (raw > 0) {
+      const q = raw * AREA_CALIBRATION;
+      result.quantityM2 = Math.round(q * 10) / 10;
+      result.rawM2 = Math.round(raw * 10) / 10;
+      if (target === 'roof') {
+        result.planAreaM2 = Math.round(w * l * AREA_CALIBRATION * 10) / 10;
+        result.roofAreaM2 = Math.round(w * l * AREA_CALIBRATION * slope * 10) / 10;
+      } else if (target === 'floor') {
+        result.planAreaM2 = result.quantityM2;
+      }
+      result.assumedArea = `${LABEL[target]} ${Math.round(result.quantityM2)}㎡`;
+      // ベンチの最悪誤差1.81倍・1.5倍以内10/11 を踏まえたレンジ（屋根で測った値。外壁・内装は未検証）
       result.rangeMinM2 = Math.round(result.quantityM2 * 0.75);
       result.rangeMaxM2 = Math.round(result.quantityM2 * 1.35);
+    }
+    result.calibration = AREA_CALIBRATION;
+    result.calibrationSamples = cal.samples;
+
+    // 対象が判別できないなら、数字を作らない。根拠のない面積を出すほうが有害
+    if (result.target === 'unknown' || raw <= 0) {
+      result.isEstimate = true;
+      result.confidence = '低';
+      result.needsDimension = result.askUserFor || '工事対象と、その面積（㎡または坪）';
+    }
+    // 外壁・内装の較正係数はまだ実測で検証していない。過信させない
+    if (target !== 'roof' && cal.samples < 3) {
+      result.unvalidated = true;
     }
 
     // 屋根の輪郭が写っていない写真では面積は確定しない。それでも数字が無いと先へ進めないので、

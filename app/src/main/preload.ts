@@ -137,6 +137,8 @@ contextBridge.exposeInMainWorld('api', {
   // AI
   analyzeImage: (data: any) => ipcRenderer.invoke('ai:analyzeImage', data),
   estimateArea: (data: any) => ipcRenderer.invoke('ai:estimateArea', data),
+  recordAreaCorrection: (data: any) => ipcRenderer.invoke('ai:recordAreaCorrection', data),
+  areaCalibration: () => ipcRenderer.invoke('ai:areaCalibration'),
   listEstimateTenants: () => ipcRenderer.invoke('admin:listEstimateTenants'),
   setEstimateTenant: (tenantId: number | null) => ipcRenderer.invoke('admin:setEstimateTenant', tenantId),
   importDroneCSV: () => ipcRenderer.invoke('drone:importCSV'),
