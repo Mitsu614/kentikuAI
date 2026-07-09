@@ -4220,19 +4220,19 @@ ${pages}</body></html>`;
     // → 取り込む実績件数を大幅に増やして「テナント内でめっちゃ学習」させる。
     const feedbackLimit = estProfile.isolated ? 200 : 50;
 
-    // AI見積 vs 実際の編集結果のフィードバックデータを生成（学習ループ: 自動蓄積された実績値を使用）
+    // AI見積 vs 実際の編集結果のフィードバックデータを生成（学習ループ: 確定実績のみ使用）
+    // constructions の fixed_selling_price / labor_cost や construction_materials の合計は使わない。
+    // AI見積は自動で constructions に保存されるため、それを「修正後の実額」として拾うと
+    // AI自身の出力を再学習して金額が暴走する（実績アンカー側と同じ理由で確定実績のみに限定）。
     const feedbackRows = queryAll(`
       SELECT el.work_type,
         el.ai_material_cost, el.ai_labor_cost, el.ai_total, el.ai_markup_rate,
-        COALESCE(el.actual_material_cost, (SELECT SUM(cm.quantity * cm.unit_price) FROM construction_materials cm WHERE cm.construction_id = el.construction_id), 0) as actual_material_cost,
-        COALESCE(el.actual_labor_cost, c.labor_cost) as actual_labor_cost,
-        COALESCE(el.actual_markup_rate, c.markup_rate) as actual_markup_rate,
-        COALESCE(el.actual_selling_price, c.fixed_selling_price) as actual_selling_price,
+        el.actual_material_cost, el.actual_labor_cost, el.actual_markup_rate, el.actual_selling_price,
         el.ai_json, el.feedback_at
       FROM estimate_log el
-      LEFT JOIN constructions c ON c.id = el.construction_id
-      WHERE el.tenant_id = ? AND el.construction_id IS NOT NULL
-      ORDER BY COALESCE(el.feedback_at, el.created_at) DESC
+      WHERE el.tenant_id = ? AND el.feedback_at IS NOT NULL
+        AND (el.actual_material_cost > 0 OR el.actual_labor_cost > 0 OR el.actual_selling_price > 0)
+      ORDER BY el.feedback_at DESC
       LIMIT ${feedbackLimit}
     `, [estTid]);
 
@@ -4240,20 +4240,28 @@ ${pages}</body></html>`;
     if (feedbackRows.length > 0) {
       const corrections: string[] = [];
       for (const fb of feedbackRows) {
-        const matDiff = fb.actual_material_cost - fb.ai_material_cost;
-        const laborDiff = fb.actual_labor_cost - fb.ai_labor_cost;
-        const matPct = fb.ai_material_cost > 0 ? Math.round((matDiff / fb.ai_material_cost) * 100) : 0;
-        const laborPct = fb.ai_labor_cost > 0 ? Math.round((laborDiff / fb.ai_labor_cost) * 100) : 0;
-        const totalDiff = (fb.actual_selling_price || 0) - (fb.ai_total || 0);
-        const totalPct = fb.ai_total > 0 ? Math.round((totalDiff / fb.ai_total) * 100) : 0;
+        // 予実管理の入力欄は空欄を 0 として保存する（BudgetPage）。0 は「未入力」であって
+        // 「0円に修正された」ではないので、両側が正の値の項目だけを修正履歴として扱う。
+        const aiMat = Number(fb.ai_material_cost) || 0, aiLabor = Number(fb.ai_labor_cost) || 0;
+        const aiTotal = Number(fb.ai_total) || 0;
+        const actMat = Number(fb.actual_material_cost) || 0, actLabor = Number(fb.actual_labor_cost) || 0;
+        const actTotal = Number(fb.actual_selling_price) || 0;
+        const hasMat = aiMat > 0 && actMat > 0;
+        const hasLabor = aiLabor > 0 && actLabor > 0;
+        const hasTotal = aiTotal > 0 && actTotal > 0;
+        const matDiff = actMat - aiMat, laborDiff = actLabor - aiLabor, totalDiff = actTotal - aiTotal;
+        const matPct = hasMat ? Math.round((matDiff / aiMat) * 100) : 0;
+        const laborPct = hasLabor ? Math.round((laborDiff / aiLabor) * 100) : 0;
+        const totalPct = hasTotal ? Math.round((totalDiff / aiTotal) * 100) : 0;
 
         // 5%以上の差分がある場合フィードバック
         if (Math.abs(matPct) >= 5 || Math.abs(laborPct) >= 5 || Math.abs(totalPct) >= 5) {
           const parts: string[] = [`${fb.work_type}`];
-          if (Math.abs(matPct) >= 5) parts.push(`材料費: AI${fb.ai_material_cost.toLocaleString()}円→修正後${fb.actual_material_cost.toLocaleString()}円(${matDiff > 0 ? '+' : ''}${matPct}%)`);
-          if (Math.abs(laborPct) >= 5) parts.push(`人件費: AI${fb.ai_labor_cost.toLocaleString()}円→修正後${fb.actual_labor_cost.toLocaleString()}円(${laborDiff > 0 ? '+' : ''}${laborPct}%)`);
-          if (Math.abs(totalPct) >= 5) parts.push(`売価: AI${(fb.ai_total||0).toLocaleString()}円→修正後${(fb.actual_selling_price||0).toLocaleString()}円(${totalDiff > 0 ? '+' : ''}${totalPct}%)`);
-          if (fb.actual_markup_rate !== fb.ai_markup_rate) parts.push(`掛率: AI${fb.ai_markup_rate}→実際${fb.actual_markup_rate}`);
+          if (Math.abs(matPct) >= 5) parts.push(`材料費: AI${aiMat.toLocaleString()}円→修正後${actMat.toLocaleString()}円(${matDiff > 0 ? '+' : ''}${matPct}%)`);
+          if (Math.abs(laborPct) >= 5) parts.push(`人件費: AI${aiLabor.toLocaleString()}円→修正後${actLabor.toLocaleString()}円(${laborDiff > 0 ? '+' : ''}${laborPct}%)`);
+          if (Math.abs(totalPct) >= 5) parts.push(`売価: AI${aiTotal.toLocaleString()}円→修正後${actTotal.toLocaleString()}円(${totalDiff > 0 ? '+' : ''}${totalPct}%)`);
+          const aiMk = Number(fb.ai_markup_rate) || 0, actMk = Number(fb.actual_markup_rate) || 0;
+          if (aiMk > 0 && actMk > 0 && actMk !== aiMk) parts.push(`掛率: AI${aiMk}→実際${actMk}`);
 
           // AI見積のbreakdownから削除・追加された項目を検出
           try {
