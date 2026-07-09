@@ -473,6 +473,31 @@ export interface ClientAttrs { job?: string; hobby?: string; age?: string; prior
  * ③ max_tokensで途中で切れた場合の括弧・文字列の補完。
  * 全部失敗したら最後のエラーを投げる。
  */
+// OCRした見積書の「見出し行（工事名 1式 ◯◯円）」は、その下に並ぶ内訳と金額が重複する。
+// これを明細として足すと原価が実際の2倍になり、掛率も売価/原価が1を割って学習を壊す。
+// （実例: 森鉄筋 養老工場の見積書。明細合計¥1,002,000 に対し税抜総額は¥500,000）
+// 明細合計が小計を明らかに超える場合、「他の全明細の合計とほぼ同額の行」を見出し行とみなして落とす。
+function dropSummaryRows(items: any[], subtotal: any): any[] {
+  if (!Array.isArray(items) || items.length < 2) return items || [];
+  const sub = Number(subtotal) || 0;
+  const amountOf = (i: any) => Number(i?.amount) || (Number(i?.quantity) || 1) * (Number(i?.unitPrice) || 0);
+  let rows = items.slice();
+  for (let pass = 0; pass < 2; pass++) {
+    const sum = rows.reduce((s, i) => s + amountOf(i), 0);
+    if (sub <= 0 || sum <= sub * 1.05) break;
+    // 自分を除いた残りの合計と2%以内で一致する行 ＝ 見出し行
+    const idx = rows.findIndex(i => {
+      const a = amountOf(i);
+      const rest = sum - a;
+      return a > 0 && rest > 0 && Math.abs(a - rest) <= rest * 0.02;
+    });
+    if (idx < 0) break;
+    console.warn(`[OCR] 見出し行を明細から除外: ${rows[idx]?.name} ¥${amountOf(rows[idx]).toLocaleString()}（明細合計¥${sum.toLocaleString()} / 小計¥${sub.toLocaleString()}）`);
+    rows = rows.filter((_, n) => n !== idx);
+  }
+  return rows;
+}
+
 // 内訳の費目分類。AIが category を返さない古いログ用に、項目名からも推定できるようにする。
 function classifyBreakdownItem(item: any): '材料' | '施工費' | '仮設' | '経費' {
   const cat = String(item?.category || '');
@@ -3785,7 +3810,7 @@ ${pages}</body></html>`;
   "total": 合計（税込、数値）,
   "items": [
     {
-      "name": "項目名",
+      "name": "項目名（★見出し行・小計行・合計行は items に含めるな。工事名だけを書いた『◯◯工事 1式』のような行の下に、その内訳が並んでいる場合、その見出し行は items に入れず内訳だけを入れろ。items の amount 合計が subtotal と一致することを必ず確認しろ）",
       "quantity": 数量（数値）,
       "unit": "単位",
       "unitPrice": 単価（数値）,
@@ -3846,14 +3871,13 @@ ${pages}</body></html>`;
     const taxRate = data.taxRate || 0.1;
     let laborCost = 0;
     let materialTotal = 0;
-    if (data.items) {
-      for (const item of data.items) {
-        const amt = item.amount || (item.quantity || 1) * (item.unitPrice || 0);
-        if (item.name && (item.name.includes('人件費') || item.name.includes('施工費') || item.name.includes('労務費'))) {
-          laborCost += amt;
-        } else {
-          materialTotal += amt;
-        }
+    const items = dropSummaryRows(data.items, data.subtotal);
+    for (const item of items) {
+      const amt = item.amount || (item.quantity || 1) * (item.unitPrice || 0);
+      if (item.name && (item.name.includes('人件費') || item.name.includes('施工費') || item.name.includes('労務費'))) {
+        laborCost += amt;
+      } else {
+        materialTotal += amt;
       }
     }
     const totalCost = materialTotal + laborCost;
