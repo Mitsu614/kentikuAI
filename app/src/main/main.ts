@@ -473,18 +473,55 @@ export interface ClientAttrs { job?: string; hobby?: string; age?: string; prior
  * ③ max_tokensで途中で切れた場合の括弧・文字列の補完。
  * 全部失敗したら最後のエラーを投げる。
  */
-// AIの自己申告した estimatedTotal は breakdown 合計とずれることがある（画面の見出し金額と
-// 内訳表の合計欄に別々の数字が出る）。内訳が真実なので、総額は必ず内訳合計で上書きする。
+// 内訳の費目分類。AIが category を返さない古いログ用に、項目名からも推定できるようにする。
+function classifyBreakdownItem(item: any): '材料' | '施工費' | '仮設' | '経費' {
+  const cat = String(item?.category || '');
+  if (cat === '材料' || cat === '施工費' || cat === '仮設' || cat === '経費') return cat;
+  const name = String(item?.item || '');
+  if (/現場管理費|福利厚生|諸経費|一般管理|法定福利/.test(name)) return '経費';
+  if (/仮設|足場|養生|仮囲い|誘導員|重機回送/.test(name)) return '仮設';
+  if (/施工費|人工|人件費|労務|手間/.test(name)) return '施工費';
+  return '材料';
+}
+
+// AIの自己申告した estimatedTotal / estimatedMaterialCost / estimatedLaborCost は、内訳と合わない。
+// 画面は「材料費・人件費・売上金額」を並べるが、仮設と経費の置き場所が無いため足しても売上に届かず、
+// AIの申告値は内訳の施工費行とも Σ(人工×日額) とも一致していなかった（実測）。
+// 内訳が真実なので、総額も費目別の金額もすべて内訳から積み直す。
 // ai_total は実績アンカー・学習にも使われるため、ここでズレを残すと誤った金額を学習する。
 function reconcileEstimateTotal(result: any, context: string): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
   const sum = result.breakdown.reduce((s: number, b: any) => s + (Number(b?.cost) || 0), 0);
   if (sum <= 0) return result;
+
+  // 各行の原価。costBase が無い古いログは掛率から逆算する（cost は粗利込みの売価）。
+  const markup = Number(result.markupRate) > 1 ? Number(result.markupRate) : 1.3;
+  const baseOf = (b: any) => {
+    const cb = Number(b?.costBase) || 0;
+    const price = Number(b?.cost) || 0;
+    // 原価が売価を超えるのは明らかな誤り。その場合も掛率から引き直す。
+    if (cb > 0 && cb <= price) return cb;
+    return Math.round(price / markup);
+  };
+  const baseBy = (cat: string) => result.breakdown
+    .filter((b: any) => classifyBreakdownItem(b) === cat)
+    .reduce((s: number, b: any) => s + baseOf(b), 0);
+
   const claimed = Number(result.estimatedTotal) || 0;
   if (Math.abs(sum - claimed) > 1) {
     console.warn(`[${context}] estimatedTotal が内訳合計と不一致: 申告${claimed} → 内訳合計${sum} で上書き`);
-    result.estimatedTotal = sum;
   }
+  result.estimatedTotal = sum;
+  result.estimatedMaterialCost = baseBy('材料');
+  result.estimatedLaborCost = baseBy('施工費');
+  // 仮設は材料費でも人件費でもないため画面から消えていた。経費としてまとめて表示する。
+  result.estimatedExpenseCost = baseBy('仮設') + baseBy('経費');
+
+  // 材料費 + 人件費 + 経費 + 粗利 = 売上金額 が必ず成立するように、粗利は差分で置く。
+  const costTotal = result.estimatedMaterialCost + result.estimatedLaborCost + result.estimatedExpenseCost;
+  result.grossProfit = sum - costTotal;
+  result.profitRate = sum > 0 ? Math.round((result.grossProfit / sum) * 1000) / 10 : 0;
+  result.markupRate = costTotal > 0 ? Math.round((sum / costTotal) * 100) / 100 : 1;
   return result;
 }
 
@@ -4513,10 +4550,20 @@ ${pages}</body></html>`;
   ・小面積（目安25〜100m²）で㎡単価が上がる。高層・急勾配・折板の複雑形状・搬入/アクセス困難。
   ・厚手多層・高性能製品（サーモバリアS等）。稼働中工場で夜間/休日・工程分割が必要。
   ・下地劣化（既存屋根補修・換気棟設置）、既存がスレートで石綿事前調査(有資格者)が必要。
+- ★★スカイ工法の単価は「自社実績」で確定している（推測するな）★★
+  実績: 森鉄筋(株)養老工場・折板屋根・48m²（2026-06-25 見積書、税抜総額¥500,000）
+  ・本体「スカイ工法施工（折板屋根用）」＝ **6,500円/m²（材工共）**。48m² × 6,500 = ¥312,000。
+  ・安全対策費（親綱設置）＝ ¥50,000/現場（式）。屋根上作業なら必ず計上する。
+  ・昇降用足場（外部昇降階段）＝ ¥80,000/現場（式）。
+  ・諸経費 ＝ ¥60,000（税抜総額の約12%）。
+  ・足場面積の拾い方は「折板屋根面積 × 1.4」。
+  ・この構成で 48m² のオールイン単価は ¥10,417/m²（＝総額¥500,000 ÷ 48m²）。
+  ★スカイ工法の見積は、面積が違ってもこの単価構成を守れ。本体は6,500円/m²固定、親綱と昇降階段は
+  現場あたりの固定費、諸経費は総額の約12%。面積に比例させるのは本体のみ。
 - ★屋根形状による差: 折板屋根＝山谷の張り手間・端部役物でやや割高。スレート(大波/小波)＝踏み抜き養生・石綿調査で割高化しやすい。金属平板/平面＝標準。
-- ★別途計上する付帯費（相場）: 足場 約15〜20万円/現場、高圧洗浄 +500円/m²〜、プライマー塗装 +1,000円/m²〜。
+- ★別途計上する付帯費（スカイ工法以外・実績が無い工法の目安）: 足場 約15〜20万円/現場、高圧洗浄 +500円/m²〜、プライマー塗装 +1,000円/m²〜。
 - ★規模感の検算（桁ズレ防止・必ず最後に検算する）:
-  ・小規模の目安: 屋根 約48m²・スカイ工法 ＝ 本体 約¥31万(≒6,500円/m²) ＋ 足場・安全対策・諸経費 約¥19万 → 総額 約¥50万。
+  ・小規模の目安: 屋根 約48m²・スカイ工法 ＝ 本体 ¥312,000(6,500円/m²) ＋ 親綱¥50,000 ＋ 昇降足場¥80,000 ＋ 諸経費¥60,000 → 税抜総額 約¥50万（実績と一致）。
   ・中〜大規模の目安: 工場屋根 約1,000m² ＝ 総額 約200万〜500万円。
   ・出した総額がこの目安の【2倍以上】または【半分以下】なら、必ず数量(m²)と㎡単価を計算し直す。
     特に小規模(〜100m²)なのに総額が数百万円になっていたら、単価か数量の取り違え＝ほぼ誤り。`;
@@ -4812,6 +4859,12 @@ ${categories}
 ### ルールE: breakdownの書き方
 - 各項目に「数量×単価」の根拠をnoteに記載（材料の行は "7m²×5,570円/m²"、施工費の行は "3人工×2日×25,000円"）
 - 設備機器は型番相当のグレードをnoteに記載（例: "TOTO同等品中級グレード"）
+- ★各項目に category を必ず付けろ。値は "材料" / "施工費" / "仮設" / "経費" の4つのいずれか。
+  ・"材料": 材料そのもの　・"施工費": 職人の人工　・"仮設": 足場・養生・仮囲い・誘導員・重機回送
+  ・"経費": 現場管理費・福利厚生費・諸経費（率で算出する経費）
+- ★各項目に costBase（原価・粗利を含まない仕入/人工の実費）と cost（お客様に提示する粗利込みの売価）の
+  両方を必ず出せ。costBase < cost であること。粗利は cost と costBase の差として表現しろ。
+  例: 材料原価 100,000円・掛率1.3 → costBase: 100000, cost: 130000
 
 ## 出力形式（必ずこのJSON形式で返してください）
 \`\`\`json
@@ -4821,9 +4874,11 @@ ${categories}
   "estimatedScale": "推定規模（例: 木造2階建て 30坪、施工面積13.3m²等）",
   "assumedArea": "この見積もりで前提とした主要な面積・数量を、編集しやすい短い形で記載（ユーザーが実測値を入力していればその値、無ければ画像・図面・航空写真からの推定値）。例: '屋根 450㎡' '延床 30坪' '外壁 320㎡'。面積・数量が金額の主要因でない工事はnull。",
   "similarWork": "過去の施工実績で最も似ている工事名（なければnull）",
-  "estimatedMaterialCost": 材料費（数値、円。breakdownの「材料の行」の合計。施工費を含めるな）,
-  "estimatedLaborCost": 施工費（数値、円。breakdownの「施工費の行」の合計＝manDaysBreakdownの人工×日額の合計）,
+  "estimatedMaterialCost": 材料費の原価（数値、円。category="材料"の行の costBase 合計）,
+  "estimatedLaborCost": 人件費の原価（数値、円。category="施工費"の行の costBase 合計＝manDaysBreakdownの人工×日額の合計）,
+  "estimatedExpenseCost": 経費の原価（数値、円。category="仮設"と"経費"の行の costBase 合計）,
   "estimatedTotal": 見積総額（数値、円。依頼された工事のみ）。★breakdown各項目costの合計と必ず一致させること。値引き・帳尻調整の行は作らない,
+  "grossProfit": 粗利（数値、円。estimatedTotal −(材料+人件費+経費の原価)）,
   "markupRate": 適用した掛け率（数値、例: 1.43）,
   "profitRate": 適用した粗利率（数値、%、例: 30）,
   "confidence": "高/中/低",
@@ -4833,7 +4888,7 @@ ${categories}
     {"trade": "職種名", "workers": 人数, "days": 日数, "manDays": 人工数, "dailyRate": 日額単価, "basis": "★なぜこの日数・人工になるのかの根拠を必ず記入。歩掛（1人が1日にこなす標準作業量）から算出した式で書く。例: '屋根400㎡ ÷ 2人 ÷ 約66㎡/人日 ≒ 3日' / 'コンセント30箇所 ÷ @15箇所/人日 = 2人工'。数量が無い管理系（現場管理・雑工）は '工期◯日に対し常駐0.5人' のように据え置き根拠を書く"}
   ],
   "breakdown": [
-    {"item": "項目名", "cost": 粗利込みの最終見積価格（数値、円。材工共。この会社の粗利を単価に織り込んだ、お客様に提示する金額）, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
+    {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい）, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
   ],
   "recommendations": "画像から判断した追加提案（依頼内容以外で必要そうな工事や注意点。例:『外壁のひび割れも確認されます。外壁補修も検討をおすすめします（別途約○万円）』）",
   "installInstruction": "★遮熱シート（サーモバリア）工事の場合のみ記入・それ以外は必ずnull★ 現場の葺き師・建築板金職人がそのまま作業できる施工指示。工法（スカイ工法／屋根下工法／カバー工法）に合わせ、[石綿事前調査の要否(既存屋根がスレート等の場合)]→[下地確認・清掃]→[張り方向・順序・重ね代]→[固定方法(スペーサー/ビス/気密テープ)]→[通気層の確保]→[端部・棟・軒・ケラバの納まり・雨仕舞い]→[安全(墜落防止・フルハーネス・親綱・踏み抜き)] を現場目線の箇条書き6〜9行で具体的に。各行に該当する公的基準名（安衛則○条／JIS A 6514／石綿事前調査 等）を明記し、必要シート量など数量の目安も添える。",
@@ -4897,6 +4952,65 @@ manDaysBreakdownの書き方例:
     }
   };
   ipcMain.handle('ai:analyzeImage', (_e, data: any) => analyzeImageCore(data));
+
+  // ── 見積前の面積確認（画像から面積・数量だけを読み取って提示する）──
+  // 本見積(1〜2クレジット)の前に面積を直せるようにする。面積を間違えたまま見積を出すと
+  // 「この面積で再計算」で本見積をもう一度回すことになり、クレジットと工事レコードを無駄にする。
+  // 相場DBも内訳出力も乗らない小さな呼び出し（本見積の約5%のAPI原価）なのでクレジットは消費しない。
+  // 無料呼び出しの濫用を防ぐため、画像必須＋テナントごとの1日上限を設ける。
+  const AREA_PRECHECK_DAILY_LIMIT = 30;
+  ipcMain.handle('ai:estimateArea', async (_e, data: { imageBase64?: string; comment?: string }) => {
+    const image = shrinkImageForAI(data?.imageBase64);
+    if (!image) throw new Error('ERROR: 面積の事前確認には写真が必要です。');
+
+    const tid = getCurrentTenant();
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
+    try { runSql('CREATE TABLE IF NOT EXISTS area_precheck_log (tenant_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (tenant_id, day))', []); } catch (_) {}
+    const used = queryOne('SELECT count FROM area_precheck_log WHERE tenant_id = ? AND day = ?', [tid, today])?.count || 0;
+    if (used >= AREA_PRECHECK_DAILY_LIMIT) {
+      throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力して見積もりを作成してください。');
+    }
+
+    const config = loadApiConfig();
+    if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。設定画面からAPIキーを入力してください。');
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: config.anthropicKey });
+
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 300,
+      temperature: 0,
+      system: 'あなたは建築の積算担当者です。写真から工事対象の面積・数量だけを推定します。金額は一切出しません。',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: detectMediaType(image), data: image.replace(/^data:image\/\w+;base64,/, '') } },
+          {
+            type: 'text',
+            text: `${data?.comment ? `依頼内容: ${data.comment}\n\n` : ''}この写真の工事対象について、見積の前提になる主要な面積・数量を1つだけ推定してください。
+- 屋根工事なら屋根面積、外壁なら外壁面積、内装なら床面積、というように金額を最も左右する数量を1つ選ぶ
+- 写真から寸法の手がかり（人・車・ブロック・折板の山ピッチ・サッシ等）を探し、根拠に必ず書く
+- 手がかりが乏しければ confidence を「低」にする。無理に断定しない
+
+以下のJSONのみを返してください（説明文は不要）:
+{"assumedArea": "屋根 48㎡ のような短い表記", "basis": "推定の根拠を1文で", "confidence": "高/中/低"}`,
+          },
+        ],
+      }],
+    });
+
+    const text = (response.content[0] as any)?.text || '';
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('面積の読み取りに失敗しました。面積を直接入力してください。');
+    const result = parseLenientJson(match[0]);
+
+    runSql(
+      'INSERT INTO area_precheck_log (tenant_id, day, count) VALUES (?, ?, 1) ON CONFLICT(tenant_id, day) DO UPDATE SET count = count + 1',
+      [tid, today]
+    );
+    console.log(`[面積事前確認] tenant ${tid}: ${result.assumedArea} (${result.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
+    return result;
+  });
   // スマホ経路のエラーはファイルに記録（原因追跡用）
   setAnalyzeHandler(async (d: any) => { try { return await analyzeImageCore(d); } catch (e: any) { logAiError('analyze', e, { hasImg: !!(d && (d.imageBase64 || d.beforeImage)) }); throw e; } });
 

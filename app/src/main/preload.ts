@@ -136,6 +136,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // AI
   analyzeImage: (data: any) => ipcRenderer.invoke('ai:analyzeImage', data),
+  estimateArea: (data: any) => ipcRenderer.invoke('ai:estimateArea', data),
   importDroneCSV: () => ipcRenderer.invoke('drone:importCSV'),
   generateImage: (data: any) => ipcRenderer.invoke('ai:generateImage', data),
   autoCreateFromEstimate: (data: any) => ipcRenderer.invoke('ai:autoCreate', data),

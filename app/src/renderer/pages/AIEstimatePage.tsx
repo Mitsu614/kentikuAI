@@ -216,8 +216,35 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     ? (!!imageData || comment.trim().length > 0)
     : (!!beforeImage && !!afterImage) || comment.trim().length > 0;
 
+  // 見積前の面積確認。面積を間違えたまま本見積を回すと「再計算」でクレジットを二重に使うため、
+  // 実測値が未入力かつ写真がある場合だけ、先にAIの推定面積を提示して直してもらう。
+  const [areaCheck, setAreaCheck] = useState<{ assumedArea: string; basis: string; confidence: string } | null>(null);
+  const [checkingArea, setCheckingArea] = useState(false);
+  const [confirmArea, setConfirmArea] = useState('');
+
+  const startEstimate = async () => {
+    if (!canAnalyze) return;
+    const mainImage = mode === 'beforeafter' ? (afterImage || beforeImage) : imageData;
+    // 実測値を入れてあるなら聞く必要はない。写真が無ければ読み取れない。
+    if (area.trim() || !mainImage) { analyze(); return; }
+    setCheckingArea(true);
+    setError('');
+    try {
+      const res = await (window as any).api.estimateArea({ imageBase64: mainImage, comment });
+      setAreaCheck(res);
+      setConfirmArea(res?.assumedArea || '');
+    } catch (e: any) {
+      // 事前確認に失敗しても見積自体は止めない（上限到達・読み取り失敗など）
+      console.warn('面積の事前確認をスキップ:', e?.message || e);
+      analyze();
+    } finally {
+      setCheckingArea(false);
+    }
+  };
+
   const analyze = async (areaOverride?: string) => {
     if (!canAnalyze) return;
+    setAreaCheck(null);
     // 結果画面から「この面積で再計算」した場合は上書き値を使い、入力欄にも反映
     const areaVal = areaOverride !== undefined ? areaOverride : area;
     if (areaOverride !== undefined) setArea(areaOverride);
@@ -846,9 +873,37 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               WebkitUserSelect: 'text', userSelect: 'text',
             }}
           />
+          {/* 面積の事前確認。ここで直せば、見積後の「再計算」でクレジットを二重に使わずに済む */}
+          {areaCheck && (
+            <div className="card" style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #93c5fd', padding: '14px 16px' }}>
+              <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1e40af', marginBottom: 6 }}>
+                📐 写真から読み取った面積です。合っていますか？（信頼度: {areaCheck.confidence}）
+              </div>
+              <div style={{ fontSize: 12, color: '#475569', marginBottom: 8 }}>根拠: {areaCheck.basis}</div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={confirmArea}
+                  onChange={e => setConfirmArea(e.target.value)}
+                  placeholder="例: 屋根 48㎡"
+                  style={{ flex: '1 1 220px', minWidth: 180, padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 14, fontFamily: 'inherit' }}
+                />
+                <button className="btn btn-primary" disabled={analyzing || !confirmArea.trim()} onClick={() => analyze(confirmArea)} style={{ whiteSpace: 'nowrap' }}>
+                  この面積で見積もる
+                </button>
+                <button className="btn" disabled={analyzing} onClick={() => analyze()} style={{ whiteSpace: 'nowrap' }}>
+                  面積を指定せず見積もる
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
+                実測値に直してから見積もると、金額が正確になります。ここでの確認はクレジットを消費しません。
+              </div>
+            </div>
+          )}
+
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button className="btn btn-primary" onClick={() => analyze()} disabled={analyzing || !canAnalyze} style={{ fontSize: 16, padding: '12px 32px' }}>
-              {analyzing ? '🔄 AI が解析中...' : '🤖 AI で見積もりを解析'}
+            <button className="btn btn-primary" onClick={startEstimate} disabled={analyzing || checkingArea || !canAnalyze} style={{ fontSize: 16, padding: '12px 32px' }}>
+              {analyzing ? '🔄 AI が解析中...' : checkingArea ? '📐 面積を読み取り中...' : '🤖 AI で見積もりを解析'}
             </button>
             <span style={{ fontSize: 12, color: '#888' }}>
               {mode === 'beforeafter' ? 'ビフォーアフター写真から工事内容を判定します' :
@@ -1012,32 +1067,51 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 <div style={{ fontSize: 14, color: '#888', marginBottom: 4 }}>お見積金額（税抜・利益込）</div>
                 <div style={{ fontSize: 36, fontWeight: 'bold', color: '#27ae60' }}>{fmt(result.estimatedTotal)}</div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
-                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>材料費（目安）</div>
-                  <NumInput
-                    value={result.estimatedMaterialCost || 0}
-                    onValue={n => setResult({ ...result, estimatedMaterialCost: n })}
-                    style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
-                  />
-                </div>
-                <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
-                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>人件費（目安）</div>
-                  <NumInput
-                    value={result.estimatedLaborCost || 0}
-                    onValue={n => setResult({ ...result, estimatedLaborCost: n })}
-                    style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
-                  />
-                </div>
-                <div style={{ background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' }}>
-                  <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>売上金額（税抜）</div>
-                  <NumInput
-                    value={result.estimatedTotal || 0}
-                    onValue={n => setResult({ ...result, estimatedTotal: n })}
-                    style={{ width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' }}
-                  />
-                </div>
-              </div>
+              {/* 材料費 + 人件費 + 経費 + 粗利 = 売上金額。原価を編集すると粗利が自動で追従する */}
+              {(() => {
+                const mat = Number(result.estimatedMaterialCost) || 0;
+                const labor = Number(result.estimatedLaborCost) || 0;
+                const exp = Number(result.estimatedExpenseCost) || 0;
+                const total = Number(result.estimatedTotal) || 0;
+                const profit = total - (mat + labor + exp);
+                const rate = total > 0 ? Math.round((profit / total) * 1000) / 10 : 0;
+                const tile = { background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' };
+                const num = { width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' as const };
+                return (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                      <div style={tile}>
+                        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>材料費（原価）</div>
+                        <NumInput value={mat} onValue={n => setResult({ ...result, estimatedMaterialCost: n })} style={num} />
+                      </div>
+                      <div style={tile}>
+                        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>人件費（原価）</div>
+                        <NumInput value={labor} onValue={n => setResult({ ...result, estimatedLaborCost: n })} style={num} />
+                      </div>
+                      <div style={tile}>
+                        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>経費（仮設・現場管理・福利厚生）</div>
+                        <NumInput value={exp} onValue={n => setResult({ ...result, estimatedExpenseCost: n })} style={num} />
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+                      <div style={{ ...tile, background: profit < 0 ? '#fef2f2' : '#f0fdf4', border: `1px solid ${profit < 0 ? '#fecaca' : '#86efac'}` }}>
+                        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>粗利（{rate}%）</div>
+                        <div style={{ padding: 6, fontSize: 15, fontWeight: 'bold', textAlign: 'right', color: profit < 0 ? '#dc2626' : '#15803d' }}>
+                          {fmt(profit)}
+                        </div>
+                      </div>
+                      <div style={tile}>
+                        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>売上金額（税抜）</div>
+                        <NumInput value={total} onValue={n => setResult({ ...result, estimatedTotal: n })} style={num} />
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, color: profit < 0 ? '#dc2626' : '#64748b', marginTop: 8, textAlign: 'center' }}>
+                      材料費 {fmt(mat)} ＋ 人件費 {fmt(labor)} ＋ 経費 {fmt(exp)} ＋ 粗利 {fmt(profit)} ＝ 売上金額 {fmt(total)}
+                      {profit < 0 && '　※原価が売上を超えています。金額を見直してください'}
+                    </div>
+                  </>
+                );
+              })()}
               {autoCreated && (
                 <button className="btn btn-primary btn-sm" style={{ marginTop: 10, width: '100%' }} onClick={async () => {
                   try {
