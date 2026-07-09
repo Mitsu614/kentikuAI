@@ -473,6 +473,21 @@ export interface ClientAttrs { job?: string; hobby?: string; age?: string; prior
  * ③ max_tokensで途中で切れた場合の括弧・文字列の補完。
  * 全部失敗したら最後のエラーを投げる。
  */
+// AIの自己申告した estimatedTotal は breakdown 合計とずれることがある（画面の見出し金額と
+// 内訳表の合計欄に別々の数字が出る）。内訳が真実なので、総額は必ず内訳合計で上書きする。
+// ai_total は実績アンカー・学習にも使われるため、ここでズレを残すと誤った金額を学習する。
+function reconcileEstimateTotal(result: any, context: string): any {
+  if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
+  const sum = result.breakdown.reduce((s: number, b: any) => s + (Number(b?.cost) || 0), 0);
+  if (sum <= 0) return result;
+  const claimed = Number(result.estimatedTotal) || 0;
+  if (Math.abs(sum - claimed) > 1) {
+    console.warn(`[${context}] estimatedTotal が内訳合計と不一致: 申告${claimed} → 内訳合計${sum} で上書き`);
+    result.estimatedTotal = sum;
+  }
+  return result;
+}
+
 function parseLenientJson(raw: string): any {
   try { return JSON.parse(raw); } catch (_) {}
 
@@ -4689,10 +4704,20 @@ ${droneInfo}${droneCSVInfo}${industryPrompt}
 7. ★根拠を必ず示せ（「なぜその数字か」を人が検算できるようにする）★
    - breakdown各項目の note には必ず「数量×単価」の式を書け（例: '屋根400㎡ × 5,570円 = 2,506,000円'）。単価の出どころ（自社実績/相場DB/歩掛）も一言添える。
    - manDaysBreakdown各職種の basis に、日数・人工の歩掛根拠を式で書け（例: '屋根400㎡ ÷ 2人 ÷ @66㎡/人日 ≒ 3日'）。勘で日数を置くな。
-   - estimatedLaborCost（施工費）は、原則 manDaysBreakdown の Σ(人工 × 日額) と一致させろ。材工共で積んだ項目がある場合はその旨を該当breakdownのnoteに明記し、二重計上しないこと。
-8. ★値引き・帳尻行は禁止。各項目を"ちゃんとした値段"で出せ★
+   - estimatedLaborCost（施工費）は manDaysBreakdown の Σ(人工 × 日額) と必ず一致させろ。勘で置くな。
+8. ★★★二重計上の禁止（最重要）★★★
+   breakdownは「材料の行」と「施工費(人工)の行」を必ず分ける。同じ費用を2つの行に入れるな。
+   - 材料の行: 材料費だけを入れろ。人件費・施工手間を含めるな（＝"材工共"の行を作るな）。
+     noteは「数量 × 材料単価」の式にしろ。例: '遮熱シート 600㎡ × @1,600円/㎡'
+   - 施工費の行: 人件費はすべてここに集約しろ。職種ごとに「施工費（板金工・葺き師）」等で分けてよい。
+     全施工費行の合計は manDaysBreakdown の Σ(人工 × 日額) と一致させろ。
+   - ★足場・養生・仮囲い・仮設トイレ・交通誘導員・重機回送は「仮設工事」の行にだけ入れろ。
+     「足場工事」「安全設備」等の別行を立てて足場を二度計上するな。とび工の人工も仮設工事の行に含めろ。
+   - 現場管理費・福利厚生費は上記のどの行とも重複させるな（率で算出する経費であり、実費を再計上する行ではない）。
+   - 出力前に必ず検算しろ: 同じ職人の人工・同じ足場・同じ材料が2行に現れていないか、1行ずつ確認する。
+9. ★値引き・帳尻行は禁止。各項目を"ちゃんとした値段"で出せ★
    - breakdownは「この工事に必要な全項目」を漏れなく入れろ（材料／施工費(人工)／仮設工事／現場管理費／福利厚生費／諸経費）。
-   - 各項目の cost は「粗利を単価に織り込んだ、お客様に提示する最終価格（材工共）」で出せ。原価だけで出して後から掛率を掛ける方式にはするな。
+   - 各項目の cost は「粗利を単価に織り込んだ、お客様に提示する最終価格」で出せ。原価だけで出して後から掛率を掛ける方式にはするな。
    - estimatedTotal は breakdown 各項目 cost の合計に必ず一致させろ。
    - 「値引き」「差額調整」「諸経費（帳尻合わせ）」のような、金額を後から辻褄合わせする行は絶対に作るな。安くする必要があるなら各項目の単価自体を見直せ。
 
@@ -4770,9 +4795,11 @@ ${categories}
 - 実例データにある類似工事の金額レンジ内に収まっているか確認
 
 ### ルールC: 自己検証（出力前に必ず実行）
-1. breakdownの全項目のcostを合計 → estimatedMaterialCost + estimatedLaborCost と大きくずれていないか確認
-2. (estimatedMaterialCost + estimatedLaborCost) × markupRate ≒ estimatedTotal になっているか確認
-3. 相場データベースの「実際の工事見積 実例データ」セクションの類似工事と比較し、金額が極端に乖離していないか確認
+1. ★二重計上チェック: 同じ人工・同じ足場・同じ材料が2つの行に入っていないか、breakdownを1行ずつ確認する
+2. estimatedTotal = breakdown 各項目 cost の単純合計になっているか確認（掛率を後から掛けるな。粗利は各行の単価に織り込み済み）
+3. estimatedLaborCost = 施工費の行の合計 = manDaysBreakdown の Σ(人工 × 日額) の3つが一致しているか確認
+4. estimatedMaterialCost = 材料の行の合計 になっているか確認
+5. 相場データベースの「実際の工事見積 実例データ」セクションの類似工事と比較し、金額が極端に乖離していないか確認
 
 ### ルールD: 見積金額は「相場の中心帯」を基準に、妥当に出せ
 - 材料単価は相場の中心帯を採用しろ（不当な安値にも、上限にも張り付けない）
@@ -4780,10 +4807,10 @@ ${categories}
 - 予備費・不測の事態への最低限の余裕は含めてよいが、過剰に盛らない
 - ただし赤字は厳禁。拾い漏れや単価の安すぎで原価割れするより、必要な項目と妥当な単価を確実に入れろ
 - 迷ったら中心帯を採用しろ（根拠なく高い方へ寄せない。自社実績があればそれを最優先）
-4. もし乖離がある場合は金額を修正してから出力
+- 上記の検証で乖離が見つかった場合は、金額を修正してから出力しろ
 
-### ルールD: breakdownの書き方
-- 各項目に「数量×単価」の根拠をnoteに記載（例: "7m²×5,570円/m²" や "3人工×2日×25,000円"）
+### ルールE: breakdownの書き方
+- 各項目に「数量×単価」の根拠をnoteに記載（材料の行は "7m²×5,570円/m²"、施工費の行は "3人工×2日×25,000円"）
 - 設備機器は型番相当のグレードをnoteに記載（例: "TOTO同等品中級グレード"）
 
 ## 出力形式（必ずこのJSON形式で返してください）
@@ -4794,8 +4821,8 @@ ${categories}
   "estimatedScale": "推定規模（例: 木造2階建て 30坪、施工面積13.3m²等）",
   "assumedArea": "この見積もりで前提とした主要な面積・数量を、編集しやすい短い形で記載（ユーザーが実測値を入力していればその値、無ければ画像・図面・航空写真からの推定値）。例: '屋根 450㎡' '延床 30坪' '外壁 320㎡'。面積・数量が金額の主要因でない工事はnull。",
   "similarWork": "過去の施工実績で最も似ている工事名（なければnull）",
-  "estimatedMaterialCost": 材料費の目安（数値、円。参考値。総額はbreakdownの合計で決まる）,
-  "estimatedLaborCost": 施工費の目安（数値、円。参考値。manDaysBreakdownの人工×日額の合計）,
+  "estimatedMaterialCost": 材料費（数値、円。breakdownの「材料の行」の合計。施工費を含めるな）,
+  "estimatedLaborCost": 施工費（数値、円。breakdownの「施工費の行」の合計＝manDaysBreakdownの人工×日額の合計）,
   "estimatedTotal": 見積総額（数値、円。依頼された工事のみ）。★breakdown各項目costの合計と必ず一致させること。値引き・帳尻調整の行は作らない,
   "markupRate": 適用した掛け率（数値、例: 1.43）,
   "profitRate": 適用した粗利率（数値、%、例: 30）,
@@ -4844,7 +4871,7 @@ manDaysBreakdownの書き方例:
     if (!jsonMatch) { logAiError('analyze:no-json', 'AI応答にJSONなし', { head: text.substring(0, 300) }); throw new Error('AI応答の解析に失敗しました: ' + text.substring(0, 200)); }
     const jsonStr = jsonMatch[1] || jsonMatch[0];
     try {
-      const estimateResult = parseLenientJson(jsonStr);
+      const estimateResult = reconcileEstimateTotal(parseLenientJson(jsonStr), 'analyze');
       // メール通知（写真・コメント・見積詳細を含む）
       const notifyImages: { filename: string; content: string }[] = [];
       if (imageBase64) notifyImages.push({ filename: 'input-photo.jpg', content: imageBase64 });
@@ -5022,7 +5049,7 @@ ${pastWork || 'まだ実績なし'}`;
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
     let estimate = null;
     if (jsonMatch) {
-      try { estimate = JSON.parse(jsonMatch[1]); } catch (e) { console.error('Chat estimate JSON parse failed:', e); }
+      try { estimate = reconcileEstimateTotal(JSON.parse(jsonMatch[1]), 'chat'); } catch (e) { console.error('Chat estimate JSON parse failed:', e); }
     }
 
     // 学習メモが含まれていればDBに保存
