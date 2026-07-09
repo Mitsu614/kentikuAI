@@ -3941,18 +3941,22 @@ ${pages}</body></html>`;
       propertyId = runSql('INSERT INTO properties (name, address, notes, tenant_id) VALUES (?,?,?,?)',
         [data.title || '読み取り書類', data.clientAddress || null, `OCR取り込み: ${data.documentType}\n発行元: ${data.issuerName || ''}`, tid]);
 
-      conId = runSql('INSERT INTO constructions (property_id, title, construction_date, labor_cost, markup_rate, notes, tenant_id) VALUES (?,?,?,?,?,?,?)',
-        [propertyId, data.title || 'OCR取り込み工事', data.issueDate || today, laborCost, markupRate, `OCR取り込み\n発行元: ${data.issuerName || ''}`, tid]);
+      // ★OCRで読み取った書類は「実際に出した金額」そのもの＝確定実績。actual_* に必ず書く。
+      //   確定実績アンカー(analyzeImageCore)は actual_* しか読まないため、ここを空にすると
+      //   PDFを何件取り込んでもアンカーが発火せず、AIが相場に引っ張られて金額を外す。
+      conId = runSql(
+        'INSERT INTO constructions (property_id, title, construction_date, labor_cost, markup_rate, notes, tenant_id, actual_material_cost, actual_labor_cost, actual_selling_price) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        [propertyId, data.title || 'OCR取り込み工事', data.issueDate || today, laborCost, markupRate,
+         `OCR取り込み\n発行元: ${data.issuerName || ''}`, tid, materialTotal, laborCost, sellingPrice]
+      );
 
-      // 材料明細
-      if (data.items) {
-        for (const item of data.items) {
-          if (item.name && (item.name.includes('人件費') || item.name.includes('施工費') || item.name.includes('労務費'))) continue;
-          const matId = runSql('INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?,?,?,?,?,?)',
-            [item.name || '（品名不明）', item.category || 'その他', item.unit || '式', item.unitPrice || item.amount || 0, 'OCR取り込み', tid]);
-          runSql('INSERT INTO construction_materials (construction_id, material_id, quantity, unit_price) VALUES (?,?,?,?)',
-            [conId, matId, item.quantity || 1, item.unitPrice || item.amount || 0]);
-        }
+      // 材料明細（見出し行を除いた明細を使う。見出し行を入れると原価が2倍になる）
+      for (const item of items) {
+        if (item.name && (item.name.includes('人件費') || item.name.includes('施工費') || item.name.includes('労務費'))) continue;
+        const matId = runSql('INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?,?,?,?,?,?)',
+          [item.name || '（品名不明）', item.category || 'その他', item.unit || '式', item.unitPrice || item.amount || 0, 'OCR取り込み', tid]);
+        runSql('INSERT INTO construction_materials (construction_id, material_id, quantity, unit_price) VALUES (?,?,?,?)',
+          [conId, matId, item.quantity || 1, item.unitPrice || item.amount || 0]);
       }
 
       // 新規OCR取込も学習ループに送信（実績データとして扱う）
@@ -4410,14 +4414,22 @@ ${pages}</body></html>`;
           [estTid]
         );
         const ocrAnchors: string[] = [];
+        const seenDocs = new Set<string>();
         for (const r of ocrRows) {
+          // 同じ書類を複数回取り込んでいると、同じ金額が何度もアンカーに並んで重み付けが狂う
+          const docKey = `${(r.title || '').replace(/\s|㈱|株式会社|\(株\)/g, '')}|${Math.round(r.total || 0)}`;
+          if (seenDocs.has(docKey)) continue;
+          seenDocs.add(docKey);
+
           const bits: string[] = [`[${r.document_type || '書類'}] ${r.title || '（件名なし）'}`];
           if (r.total > 0) bits.push(`合計¥${Math.round(r.total).toLocaleString()}`);
           // 明細から単価付き項目を抽出。遮熱/特許/シート（＝この会社の唯一の正解データ）は
           // 打ち切らず必ず全項目残し、その他項目のみ上限を設ける（過去PDFの実単価を厚く学習）。
           try {
             const oj = JSON.parse(r.ocr_json || '{}');
-            const items = Array.isArray(oj.items) ? oj.items : [];
+            // 見出し行（工事名 1式 ◯◯円）は内訳と金額が重複する。アンカーに載せると
+            // AIが「本体は◯◯円/式」と誤学習するので、ここでも必ず落とす。
+            const items = dropSummaryRows(Array.isArray(oj.items) ? oj.items : [], oj.subtotal);
             const priced = items.filter((it: any) => it && it.name && (it.unitPrice > 0 || it.amount > 0));
             const isCore = (it: any) => /(遮熱|特許|シート|工法|カバー|葺|内張|外張|吹付)/.test(it.name || '');
             const fmt = (it: any) => {
@@ -4578,22 +4590,30 @@ ${pages}</body></html>`;
   実績: 森鉄筋(株)養老工場・折板屋根・48m²（2026-06-25 見積書、税抜総額¥500,000）
   ① 本体「スカイ工法施工（折板屋根用）」＝ **6,500円/m²（材工共・お客様提示の売価）**。
      ★これは材料と施工費を合わせた単価だ。breakdownでは材料行と施工費行に分けて書くが、
-     **「材料行のcost ＋ 施工費行のcost」の合計を必ず 6,500円/m² × 面積 に一致させろ**。
-     手順: 先に施工費行を Σ(人工×日額)×掛率 で出す → 材料行 = 6,500円/m²×面積 − 施工費行。
+     **「材料行のcost ＋ 施工費行のcost」の合計を必ず（本体㎡単価 × 面積）に一致させろ**。
+     手順: 先に施工費行を Σ(人工×日額)×掛率 で出す → 材料行 = 本体㎡単価×面積 − 施工費行。
      材料単価を勝手に1,500〜2,000円/m²等に落として本体を痩せさせるのは誤り（実績と乖離する）。
      例: 48m² → 本体合計 ¥312,000（材料行＋施工費行の合計）。
+  ★★本体㎡単価は面積で変わる。6,500円/m² は「48m²規模」の実績値だ★★
+     ・**〜100m²: 6,500円/m²**（自社実績の帯。この範囲では6,500円/m²を必ず使う）
+     ・100〜300m²: 5,500〜6,500円/m²　・300〜1,000m²: 4,500〜5,500円/m²　・1,000m²超: 4,000〜5,000円/m²
+     大面積はスケールメリットで逓減するが、**自社実績が無いのは100m²超だけ**。逓減させるときは
+     confidenceを「中」以下にし、recommendationsに「大面積の実績が無いため㎡単価は暫定です。
+     実績を入れていただくほど御社の金額帯に合います」と必ず添えろ。4,000円/m²は下回るな。
   ② 安全対策費（親綱設置）＝ ¥50,000/現場（式・固定）。屋根上作業なら必ず計上する。→ category "仮設"
   ③ 昇降用足場（外部昇降階段）＝ ¥80,000/現場（式・固定）。→ category "仮設"
   ④ 諸経費 ＝ 税抜総額の約12%（48m²の実績では¥60,000）。→ category "経費"
   ・足場面積の拾い方は「折板屋根面積 × 1.4」。
   ・この構成で 48m² のオールイン単価は ¥10,417/m²（＝総額¥500,000 ÷ 48m²）。
-  ★面積が変わっても構成を守れ。**面積に比例させるのは①の本体だけ**。②③は現場あたりの固定費、
-  ④は総額の約12%。総額が「6,500円/m²×面積 ＋ ¥130,000 ＋ 諸経費」から大きく外れたら計算し直せ。
+  ★面積が変わっても構成を守れ。**面積に比例させるのは①の本体だけ**（㎡単価は上の帯で選ぶ）。
+  ②③は現場あたりの固定費、④は総額の約12%。
+  総額が「本体㎡単価×面積 ＋ ¥130,000 ＋ 諸経費」から大きく外れたら計算し直せ。
 - ★屋根形状による差: 折板屋根＝山谷の張り手間・端部役物でやや割高。スレート(大波/小波)＝踏み抜き養生・石綿調査で割高化しやすい。金属平板/平面＝標準。
 - ★別途計上する付帯費（スカイ工法以外・実績が無い工法の目安）: 足場 約15〜20万円/現場、高圧洗浄 +500円/m²〜、プライマー塗装 +1,000円/m²〜。
 - ★規模感の検算（桁ズレ防止・必ず最後に検算する）:
   ・小規模の目安: 屋根 約48m²・スカイ工法 ＝ 本体 ¥312,000(6,500円/m²・材料行＋施工費行) ＋ 親綱¥50,000 ＋ 昇降足場¥80,000 ＋ 諸経費¥60,000 → 税抜総額 約¥50万（実績と一致）。
-  ・スカイ工法の総額が 6,500円/m²×面積 を下回っていたら、必ず誤り。本体を痩せさせていないか確認しろ。
+  ・100m²以下のスカイ工法で、本体（材料行＋施工費行）が 6,500円/m²×面積 を下回っていたら必ず誤り。
+    材料単価を勝手に下げて本体を痩せさせていないか、1行ずつ確認して積み直せ。
   ・中〜大規模の目安: 工場屋根 約1,000m² ＝ 総額 約200万〜500万円。
   ・出した総額がこの目安の【2倍以上】または【半分以下】なら、必ず数量(m²)と㎡単価を計算し直す。
     特に小規模(〜100m²)なのに総額が数百万円になっていたら、単価か数量の取り違え＝ほぼ誤り。`;
