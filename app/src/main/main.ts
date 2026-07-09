@@ -786,6 +786,38 @@ function saveImageToDiskWithThumb(dataUrl: string | null | undefined, kind: stri
   }
 }
 
+// DBに置いてよい画像の上限。これを超えるものはディスクへ逃がす。
+const IMAGE_INLINE_LIMIT = 200000;
+
+// 小さい画像はDBに置いたままにする（サムネを保存し直してディスクが増えるのを防ぐ）。
+function offloadImageIfLarge(dataUrl: string | null | undefined, kind: string): { thumb: string | null; filePath: string | null } {
+  if (!dataUrl || typeof dataUrl !== 'string' || dataUrl.length <= IMAGE_INLINE_LIMIT) {
+    return { thumb: dataUrl || null, filePath: null };
+  }
+  return saveImageToDiskWithThumb(dataUrl, kind);
+}
+
+// ── 既存の物件図面（base64がDBに直書き）をディスクへ移行 ──
+// estimate_log は v3.1.9 で移行済みだったが、properties は素通しのままだった。
+// 実測: floor_plan_image だけで 52.8MB（DB 61MB の87%）。
+function migratePropertyImagesToDisk() {
+  try {
+    const rows = queryAll(
+      `SELECT id, floor_plan_image FROM properties
+       WHERE floor_plan_image_path IS NULL AND floor_plan_image IS NOT NULL
+         AND LENGTH(floor_plan_image) > ${IMAGE_INLINE_LIMIT}`
+    );
+    if (!rows.length) return;
+    console.log(`画像移行: ${rows.length}件の物件図面をディスクへ移行します`);
+    for (const r of rows) {
+      const { thumb, filePath } = saveImageToDiskWithThumb(r.floor_plan_image, 'plan');
+      runSql('UPDATE properties SET floor_plan_image = ?, floor_plan_image_path = ? WHERE id = ?', [thumb, filePath, r.id]);
+    }
+    vacuum();
+    console.log('画像移行: 物件図面の移行完了（DBを圧縮しました）');
+  } catch (e) { console.error('物件図面の移行エラー:', e); }
+}
+
 // ── 既存の見積ログ画像（base64がDBに直書き）を一度だけディスクへ移行してDBを圧縮 ──
 function migrateEstimateImagesToDisk() {
   try {
@@ -973,6 +1005,7 @@ app.whenReady().then(async () => {
 
   // 既存の見積ログ画像をディスクへ移行してDBを圧縮（一度だけ・もっさり対策）
   migrateEstimateImagesToDisk();
+  migratePropertyImagesToDisk();
 
   // テナントID=1以外があれば自動切替（トライアル版対応）
   const allTenants = queryAll('SELECT id FROM tenants WHERE id > 1 ORDER BY id ASC');
@@ -1535,19 +1568,29 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('properties:create', (_e, data: any) => {
+    const { thumb, filePath } = offloadImageIfLarge(data.floorPlanImage, 'plan');
     const id = runSql(
-      'INSERT INTO properties (name, address, floor_plan_image, notes, tenant_id) VALUES (?, ?, ?, ?, ?)',
-      [data.name, data.address, data.floorPlanImage || null, data.notes || null, getCurrentTenant()]
+      'INSERT INTO properties (name, address, floor_plan_image, floor_plan_image_path, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [data.name, data.address, thumb, filePath, data.notes || null, getCurrentTenant()]
     );
     logAudit('create', 'property', id, data.name);
     return id;
   });
 
   ipcMain.handle('properties:update', (_e, data: any) => {
-    runSql(
-      'UPDATE properties SET name=?, address=?, floor_plan_image=?, notes=? WHERE id=?',
-      [data.name, data.address, data.floorPlanImage || null, data.notes || null, data.id]
-    );
+    const { thumb, filePath } = offloadImageIfLarge(data.floorPlanImage, 'plan');
+    // filePath が null（＝画像が小さい/未変更のサムネ）のときは既存のパスを消さない
+    if (filePath) {
+      runSql(
+        'UPDATE properties SET name=?, address=?, floor_plan_image=?, floor_plan_image_path=?, notes=? WHERE id=?',
+        [data.name, data.address, thumb, filePath, data.notes || null, data.id]
+      );
+    } else {
+      runSql(
+        'UPDATE properties SET name=?, address=?, floor_plan_image=?, notes=? WHERE id=?',
+        [data.name, data.address, thumb, data.notes || null, data.id]
+      );
+    }
   });
 
   ipcMain.handle('properties:delete', (_e, id: number) => {
@@ -5471,10 +5514,11 @@ ${pastWork || 'まだ実績なし'}`;
     const dueDate = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0];
     const tid = getCurrentTenant();
 
-    // 1. 物件登録
+    // 1. 物件登録（現場写真は原寸だとDBが肥大化するのでディスクへ逃がす）
+    const plan = offloadImageIfLarge(imageBase64, 'plan');
     const propertyId = runSql(
-      'INSERT INTO properties (name, address, floor_plan_image, notes, tenant_id) VALUES (?, ?, ?, ?, ?)',
-      [result.workType + '（AI見積もり）', location || result.estimatedScale || '', imageBase64 || null,
+      'INSERT INTO properties (name, address, floor_plan_image, floor_plan_image_path, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [result.workType + '（AI見積もり）', location || result.estimatedScale || '', plan.thumb, plan.filePath,
        `AI解析: ${result.description || ''}\n信頼度: ${result.confidence || ''}${location ? '\n場所: ' + location : ''}`, tid]
     );
 
@@ -5658,8 +5702,9 @@ ${pastWork || 'まだ実績なし'}`;
     // 物件
     const propIdMap: Record<number, number> = {};
     for (const p of (raw.properties || [])) {
-      const newId = runSql('INSERT INTO properties (name, address, floor_plan_image, notes, tenant_id) VALUES (?, ?, ?, ?, ?)',
-        [p.name, p.address, p.floor_plan_image, p.notes, tid]);
+      const plan = offloadImageIfLarge(p.floor_plan_image, 'plan');
+      const newId = runSql('INSERT INTO properties (name, address, floor_plan_image, floor_plan_image_path, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?)',
+        [p.name, p.address, plan.thumb, plan.filePath, p.notes, tid]);
       propIdMap[p.id] = newId;
       imported.properties++;
     }

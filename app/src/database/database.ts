@@ -690,6 +690,13 @@ function migrate() {
     if (!tenantCols.find((c: any) => c.name === 'learning_notified_date')) {
       db.run('ALTER TABLE tenants ADD COLUMN learning_notified_date TEXT');
     }
+
+    // 図面・物件写真のディスク退避先。DBにはサムネだけ残す（estimate_log と同じ方式）。
+    // 実測: floor_plan_image だけで 52.8MB / DB 61MB を占めていた。
+    const propCols = queryAll('PRAGMA table_info(properties)');
+    if (!propCols.find((c: any) => c.name === 'floor_plan_image_path')) {
+      db.run('ALTER TABLE properties ADD COLUMN floor_plan_image_path TEXT');
+    }
     // 山下八起さん＝屋号「ビューティープラス」のテナント（特許取得の遮熱シート専門）を
     // 自動判定して別系統に設定。既に industry_type が手動設定済みの場合は上書きしない（冪等）
     try {
