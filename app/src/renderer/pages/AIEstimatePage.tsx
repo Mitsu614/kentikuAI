@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PageGuide } from '../components/PageGuide';
 
+// 消費税率。AIが出す金額はすべて税抜（原価・粗利の計算がしやすいため）。表示のときだけ税込を併記する。
+const TAX_RATE = 0.1;
+
 // 金額・人数などの数値入力欄。
 // ・クリック（フォーカス）で中身を全選択 → そのまま打てば丸ごと置き換わる
 // ・入力中は空欄にもできる（0 に強制で戻さない）。空欄は 0 として親へ渡す
@@ -221,6 +224,28 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [areaCheck, setAreaCheck] = useState<{ assumedArea: string; basis: string; confidence: string } | null>(null);
   const [checkingArea, setCheckingArea] = useState(false);
   const [confirmArea, setConfirmArea] = useState('');
+
+  // 管理者限定: 見積が参照する実績・業種プロンプトを他テナントのものに切り替える（検証用）。
+  // 非管理者では isAdmin=false が返り、セレクタ自体が描画されない。
+  const [estTenants, setEstTenants] = useState<{ id: number; name: string; industryType: string; isolated: boolean }[]>([]);
+  const [estTenantId, setEstTenantId] = useState<number | ''>('');
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await (window as any).api.listEstimateTenants();
+        if (res?.isAdmin) {
+          setEstTenants(res.tenants || []);
+          setEstTenantId(res.current || '');
+        }
+      } catch (_) { /* 旧ビルドでは未実装 */ }
+    })();
+  }, []);
+  const changeEstTenant = async (v: string) => {
+    const id = v ? Number(v) : null;
+    const res = await (window as any).api.setEstimateTenant(id);
+    if (res?.success) setEstTenantId(id || '');
+    else setError(res?.error || 'テナントを切り替えられませんでした');
+  };
 
   const startEstimate = async () => {
     if (!canAnalyze) return;
@@ -901,6 +926,26 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </div>
           )}
 
+          {estTenants.length > 0 && (
+            <div style={{ marginTop: 12, padding: 10, border: '1px dashed #94a3b8', borderRadius: 6, background: '#f8fafc' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 6 }}>
+                🔧 検証対象のテナント（管理者のみ表示）
+              </div>
+              <select value={estTenantId} onChange={e => changeEstTenant(e.target.value)} style={{ padding: '6px 10px', fontSize: 13, minWidth: 280 }}>
+                <option value="">管理者（自分）</option>
+                {estTenants.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}（{t.industryType}{t.isolated ? '・隔離' : ''}）
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
+                選んだテナントの実績・業種プロンプトで見積もります。作成した物件・見積ログは管理者テナントに保存され、
+                そのテナントの学習データは書き換わりません。
+              </div>
+            </div>
+          )}
+
           <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
             <button className="btn btn-primary" onClick={startEstimate} disabled={analyzing || checkingArea || !canAnalyze} style={{ fontSize: 16, padding: '12px 32px' }}>
               {analyzing ? '🔄 AI が解析中...' : checkingArea ? '📐 面積を読み取り中...' : '🤖 AI で見積もりを解析'}
@@ -1066,6 +1111,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               <div style={{ textAlign: 'center', marginBottom: 16 }}>
                 <div style={{ fontSize: 14, color: '#888', marginBottom: 4 }}>お見積金額（税抜・利益込）</div>
                 <div style={{ fontSize: 36, fontWeight: 'bold', color: '#27ae60' }}>{fmt(result.estimatedTotal)}</div>
+                {/* 消費税10%。端数は円未満切り捨て（請求書の慣行に合わせる） */}
+                <div style={{ fontSize: 15, color: '#15803d', marginTop: 4 }}>
+                  税込 <strong style={{ fontSize: 20 }}>{fmt(Math.floor((Number(result.estimatedTotal) || 0) * (1 + TAX_RATE)))}</strong>
+                  <span style={{ fontSize: 12, color: '#888', marginLeft: 8 }}>
+                    （消費税 {fmt(Math.floor((Number(result.estimatedTotal) || 0) * TAX_RATE))}）
+                  </span>
+                </div>
               </div>
               {/* 材料費 + 人件費 + 経費 + 粗利 = 売上金額。原価を編集すると粗利が自動で追従する */}
               {(() => {
@@ -1103,10 +1155,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       <div style={tile}>
                         <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>売上金額（税抜）</div>
                         <NumInput value={total} onValue={n => setResult({ ...result, estimatedTotal: n })} style={num} />
+                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 4, textAlign: 'right' }}>
+                          税込 {fmt(Math.floor(total * (1 + TAX_RATE)))}
+                        </div>
                       </div>
                     </div>
                     <div style={{ fontSize: 11, color: profit < 0 ? '#dc2626' : '#64748b', marginTop: 8, textAlign: 'center' }}>
-                      材料費 {fmt(mat)} ＋ 人件費 {fmt(labor)} ＋ 経費 {fmt(exp)} ＋ 粗利 {fmt(profit)} ＝ 売上金額 {fmt(total)}
+                      材料費 {fmt(mat)} ＋ 人件費 {fmt(labor)} ＋ 経費 {fmt(exp)} ＋ 粗利 {fmt(profit)} ＝ 売上金額 {fmt(total)}（税込 {fmt(Math.floor(total * (1 + TAX_RATE)))}）
                       {profit < 0 && '　※原価が売上を超えています。金額を見直してください'}
                     </div>
                   </>

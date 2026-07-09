@@ -455,6 +455,23 @@ function isHeatshieldWork(workType?: string): boolean {
   return /遮熱|特許/.test(workType);
 }
 
+// ── 管理者限定: 見積対象テナントの切り替え ──
+// 管理者（vendor本人）が山下さんの遮熱見積を再現・検証するための仕組み。
+// 切り替えるのは「見積が参照する側」だけ。実績アンカー・業種プロンプト・学習メモを
+// 対象テナントのものにする。書き込み（自動作成・estimate_log）は管理者テナントのまま。
+// テナントIDを差し替えるだけなので、他社の実績が混ざることはない。
+const ADMIN_TENANT_ID = 1;
+let estimateTenantOverride: number | null = null;
+
+function isAdminTenant(): boolean { return getCurrentTenant() === ADMIN_TENANT_ID; }
+
+/** 見積が実績・業種設定を読みに行くテナント。管理者が切替中のときだけ別テナントを返す。 */
+function getEstimateTenant(): number {
+  const cur = getCurrentTenant();
+  if (estimateTenantOverride && cur === ADMIN_TENANT_ID) return estimateTenantOverride;
+  return cur;
+}
+
 // テナント別の業種/学習プロファイル（山下さん等の個別テナント対応）
 function getTenantProfile(tid: number): { industryType: string | null; isolated: boolean } {
   try {
@@ -509,23 +526,30 @@ function classifyBreakdownItem(item: any): '材料' | '施工費' | '仮設' | '
   return '材料';
 }
 
+// 掛率（売価 ÷ 原価）。AIが原価を分けずに返してきたときの逆算に使う。
+// 一般工事は粗利25%前後。遮熱シート（山下さん）は材工共の実勢価格が決まっており、粗利は1割。
+const DEFAULT_MARKUP = 1.3;
+const HEATSHIELD_MARKUP = 1.11; // 粗利率 約10%
+
 // AIの自己申告した estimatedTotal / estimatedMaterialCost / estimatedLaborCost は、内訳と合わない。
 // 画面は「材料費・人件費・売上金額」を並べるが、仮設と経費の置き場所が無いため足しても売上に届かず、
 // AIの申告値は内訳の施工費行とも Σ(人工×日額) とも一致していなかった（実測）。
 // 内訳が真実なので、総額も費目別の金額もすべて内訳から積み直す。
 // ai_total は実績アンカー・学習にも使われるため、ここでズレを残すと誤った金額を学習する。
-function reconcileEstimateTotal(result: any, context: string): any {
+function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
   const sum = result.breakdown.reduce((s: number, b: any) => s + (Number(b?.cost) || 0), 0);
   if (sum <= 0) return result;
 
   // 各行の原価。costBase が無い古いログは掛率から逆算する（cost は粗利込みの売価）。
-  const markup = Number(result.markupRate) > 1 ? Number(result.markupRate) : 1.3;
+  const markup = Number(result.markupRate) > 1.02 ? Number(result.markupRate) : fallbackMarkup;
   const baseOf = (b: any) => {
     const cb = Number(b?.costBase) || 0;
     const price = Number(b?.cost) || 0;
-    // 原価が売価を超えるのは明らかな誤り。その場合も掛率から引き直す。
-    if (cb > 0 && cb <= price) return cb;
+    // costBase == cost（原価を分けずに売価をそのまま入れた）は粗利ゼロになるので原価未分離とみなす。
+    // 原価が売価を超えるのも明らかな誤り。どちらも掛率から引き直す。
+    if (cb > 0 && cb <= price * 0.98) return cb;
+    if (cb > 0) console.warn(`[${context}] 原価未分離: ${b?.item} costBase=${cb} cost=${price} → 掛率${markup}で逆算`);
     return Math.round(price / markup);
   };
   const baseBy = (cat: string) => result.breakdown
@@ -787,7 +811,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.3.12';
+const CURRENT_VERSION = '3.3.13';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -1656,8 +1680,7 @@ app.whenReady().then(async () => {
           const config = loadApiConfig();
           const learnTid = getCurrentTenant();
           const learnWorkType = log.work_type || '不明';
-          const profile = getTenantProfile(learnTid);
-          if (profile.isolated && isHeatshieldWork(learnWorkType)) {
+          if (isHeatshieldWork(learnWorkType)) {
             // 特許の遮熱シートが絡む工事のみ隔離: 全国共有プールには送らず自社実績だけで学習
             try { runSql('UPDATE estimate_log SET synced_at = ? WHERE id = ?', [now, log.id]); } catch (_) {}
             console.log('学習ループ: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
@@ -2280,7 +2303,7 @@ app.whenReady().then(async () => {
     logAudit('create', 'tenant', id, `${name}（無料トライアル50回・材料${defaultMats.length}件コピー）`);
     return id;
   });
-  ipcMain.handle('tenants:switch', (_e, id: number) => { setCurrentTenant(id); });
+  ipcMain.handle('tenants:switch', (_e, id: number) => { setCurrentTenant(id); estimateTenantOverride = null; });
   ipcMain.handle('tenants:current', () => getCurrentTenant());
   ipcMain.handle('tenants:delete', (_e, id: number) => {
     // テナントに紐づく全データを削除
@@ -2426,8 +2449,9 @@ app.whenReady().then(async () => {
         return { ok: false, error: '管理者の承認待ちです。しばらくお待ちください。' };
       }
     }
-    // テナント切替
+    // テナント切替（管理者の見積対象テナント切り替えはログインのたびに解除する）
     setCurrentTenant(user.tenant_id);
+    estimateTenantOverride = null;
     currentSession = { username: user.username, tenantId: user.tenant_id, role: user.role };
     logAudit('login', 'user', user.id, username);
     return { ok: true, username: user.username, tenantId: user.tenant_id, role: user.role };
@@ -2436,6 +2460,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('auth:logout', () => {
     currentSession = null;
     setCurrentTenant(1);
+    estimateTenantOverride = null;
     return { ok: true };
   });
 
@@ -3129,8 +3154,7 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
       const config = loadApiConfig();
       const learnTid = getCurrentTenant();
       const learnWorkType = log.work_type || '不明';
-      const profile = getTenantProfile(learnTid);
-      if (profile.isolated && isHeatshieldWork(learnWorkType)) {
+      if (isHeatshieldWork(learnWorkType)) {
         // 特許の遮熱シートが絡む工事のみ隔離: 共有プールに送らず自社実績だけで学習
         console.log('学習ループ（出面）: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
         sendLearningCompleteNotification(learnTid, learnWorkType);
@@ -3368,8 +3392,7 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
         //   他の送信箇所（estimate_log 経由・実績入力画面）と同じゲートをここにも掛ける。
         const config = loadApiConfig();
         const budgetWorkType = log.work_type || '不明';
-        const budgetProfile = getTenantProfile(tid);
-        if (budgetProfile.isolated && isHeatshieldWork(budgetWorkType)) {
+        if (isHeatshieldWork(budgetWorkType)) {
           console.log('学習ループ（予実管理）: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
         } else {
           sendFeedbackToSupabase([{
@@ -3918,8 +3941,7 @@ ${pages}</body></html>`;
 
       // Supabaseに送信（非同期で）
       const ocrLearnTid = getCurrentTenant();
-      const ocrProfile = getTenantProfile(ocrLearnTid);
-      if (ocrProfile.isolated && isHeatshieldWork(workType)) {
+      if (isHeatshieldWork(workType)) {
         // 特許の遮熱シートが絡む工事のみ隔離: 共有プールに送らず自社実績だけで学習
         console.log('学習ループ（OCR紐付け）: 遮熱シート（特許）工事のため共有プール送信をスキップ');
         sendLearningCompleteNotification(ocrLearnTid, workType);
@@ -3963,8 +3985,7 @@ ${pages}</body></html>`;
       if (materialTotal > 0 || laborCost > 0) {
         const workType = data.title || 'OCR取込';
         const ocrNewTid = getCurrentTenant();
-        const ocrNewProfile = getTenantProfile(ocrNewTid);
-        if (ocrNewProfile.isolated && isHeatshieldWork(workType)) {
+        if (isHeatshieldWork(workType)) {
           // 特許の遮熱シートが絡む工事のみ隔離: 共有プールに送らず自社実績だけで学習
           console.log('学習ループ（OCR新規）: 遮熱シート（特許）工事のため共有プール送信をスキップ');
           sendLearningCompleteNotification(ocrNewTid, workType);
@@ -4294,8 +4315,12 @@ ${pages}</body></html>`;
     const categories = materialCategories.map((c: any) => c.category).join(', ');
 
     // テナント別プロファイル（山下さん=遮熱シート専門・隔離学習 等）
-    const estTid = getCurrentTenant();
+    // 管理者が検証用にテナントを切り替えている場合はそのテナントの実績・業種で見積もる。
+    const estTid = getEstimateTenant();
     const estProfile = getTenantProfile(estTid);
+    if (estTid !== getCurrentTenant()) {
+      console.log(`[管理者] 見積対象テナントを ${estTid} に切り替えて解析（業種=${estProfile.industryType || 'general'}）`);
+    }
     // 隔離テナント（特許遮熱シート等・相場が存在しない商材）は、自社実績が唯一の正解データ。
     // → 取り込む実績件数を大幅に増やして「テナント内でめっちゃ学習」させる。
     const feedbackLimit = estProfile.isolated ? 200 : 50;
@@ -4608,6 +4633,13 @@ ${pages}</body></html>`;
   ★面積が変わっても構成を守れ。**面積に比例させるのは①の本体だけ**（㎡単価は上の帯で選ぶ）。
   ②③は現場あたりの固定費、④は総額の約12%。
   総額が「本体㎡単価×面積 ＋ ¥130,000 ＋ 諸経費」から大きく外れたら計算し直せ。
+  ⑤★★粗利は1割★★ 上の①〜④の金額はすべて **cost（お客様に提示する売価）** だ。原価ではない。
+     各行の costBase（原価）は **cost ÷ 1.11**（粗利率 約10%）で置け。
+     ・costBase と cost を同じ数字にするな。同額にすると粗利がゼロになり見積として成立しない。
+     ・売価（cost）を粗利1割ぶん値引きして総額を¥500,000に収めようとするな。総額は¥500,000を上回ってよい。
+     例（48m²）: 材料行 cost 225,300 / costBase 202,973、施工費行 cost 86,700 / costBase 78,108、
+       親綱 cost 50,000 / costBase 45,045、足場 cost 80,000 / costBase 72,072、諸経費 cost 60,000 / costBase 54,054。
+       → estimatedTotal ¥502,000、原価合計 ¥452,252、粗利 ¥49,748（9.9%）。
 - ★屋根形状による差: 折板屋根＝山谷の張り手間・端部役物でやや割高。スレート(大波/小波)＝踏み抜き養生・石綿調査で割高化しやすい。金属平板/平面＝標準。
 - ★別途計上する付帯費（スカイ工法以外・実績が無い工法の目安）: 足場 約15〜20万円/現場、高圧洗浄 +500円/m²〜、プライマー塗装 +1,000円/m²〜。
 - ★規模感の検算（桁ズレ防止・必ず最後に検算する）:
@@ -4912,9 +4944,14 @@ ${categories}
 - ★各項目に category を必ず付けろ。値は "材料" / "施工費" / "仮設" / "経費" の4つのいずれか。
   ・"材料": 材料そのもの　・"施工費": 職人の人工　・"仮設": 足場・養生・仮囲い・誘導員・重機回送
   ・"経費": 現場管理費・福利厚生費・諸経費（率で算出する経費）
-- ★各項目に costBase（原価・粗利を含まない仕入/人工の実費）と cost（お客様に提示する粗利込みの売価）の
-  両方を必ず出せ。costBase < cost であること。粗利は cost と costBase の差として表現しろ。
+- ★★★各項目に costBase（原価・粗利を含まない仕入/人工の実費）と cost（お客様に提示する粗利込みの売価）の
+  両方を必ず出せ。**costBase と cost を同じ数字にすることは絶対に禁止**（粗利がゼロになり見積として成立しない）。
+  costBase は cost より必ず小さい。粗利は cost と costBase の差として表現しろ。★★★
   例: 材料原価 100,000円・掛率1.3 → costBase: 100000, cost: 130000
+  ・仮設（足場・親綱）や諸経費の行も同じだ。原価と売価を分けろ。同額にするな。
+  ・実績アンカーや過去書類から拾った金額は「お客様に提示した売価＝cost」だ。それを costBase に入れるな。
+  ・出力前に必ず確認しろ: grossProfit ＝ estimatedTotal −（材料+人件費+経費の原価合計）> 0 になっているか。
+    ゼロや負になっていたら costBase を掛率で割り直してから出力しろ。
 
 ## 出力形式（必ずこのJSON形式で返してください）
 \`\`\`json
@@ -4976,7 +5013,10 @@ manDaysBreakdownの書き方例:
     if (!jsonMatch) { logAiError('analyze:no-json', 'AI応答にJSONなし', { head: text.substring(0, 300) }); throw new Error('AI応答の解析に失敗しました: ' + text.substring(0, 200)); }
     const jsonStr = jsonMatch[1] || jsonMatch[0];
     try {
-      const estimateResult = reconcileEstimateTotal(parseLenientJson(jsonStr), 'analyze');
+      const estimateResult = reconcileEstimateTotal(
+        parseLenientJson(jsonStr), 'analyze',
+        industryType === 'heatshield' ? HEATSHIELD_MARKUP : DEFAULT_MARKUP
+      );
       // メール通知（写真・コメント・見積詳細を含む）
       const notifyImages: { filename: string; content: string }[] = [];
       if (imageBase64) notifyImages.push({ filename: 'input-photo.jpg', content: imageBase64 });
@@ -5009,6 +5049,43 @@ manDaysBreakdownの書き方例:
   // 相場DBも内訳出力も乗らない小さな呼び出し（本見積の約5%のAPI原価）なのでクレジットは消費しない。
   // 無料呼び出しの濫用を防ぐため、画像必須＋テナントごとの1日上限を設ける。
   const AREA_PRECHECK_DAILY_LIMIT = 30;
+
+  // ── 管理者限定: 見積対象テナントの切り替え ──
+  // 非管理者には isAdmin:false を返す（レンダラ側でセレクタごと非表示になる）。
+  ipcMain.handle('admin:listEstimateTenants', () => {
+    if (!isAdminTenant()) return { isAdmin: false, current: null, tenants: [] };
+    const rows = queryAll(
+      `SELECT id, name, contact_company, industry_type, isolated_learning FROM tenants
+       WHERE id != ? AND industry_type IS NOT NULL AND industry_type != ''
+       ORDER BY id`,
+      [ADMIN_TENANT_ID]
+    );
+    return {
+      isAdmin: true,
+      current: estimateTenantOverride,
+      tenants: rows.map((t: any) => ({
+        id: t.id,
+        name: t.contact_company || t.name || `テナント${t.id}`,
+        industryType: t.industry_type,
+        isolated: !!t.isolated_learning,
+      })),
+    };
+  });
+
+  ipcMain.handle('admin:setEstimateTenant', (_e, tenantId: number | null) => {
+    if (!isAdminTenant()) return { success: false, error: '管理者のみ使用できます' };
+    if (!tenantId) {
+      estimateTenantOverride = null;
+      console.log('[管理者] 見積対象テナントの切り替えを解除');
+      return { success: true, current: null };
+    }
+    const t = queryOne('SELECT id, name FROM tenants WHERE id = ?', [tenantId]);
+    if (!t) return { success: false, error: 'テナントが見つかりません' };
+    estimateTenantOverride = t.id;
+    console.log(`[管理者] 見積対象テナントを ${t.name}(${t.id}) に切り替え`);
+    return { success: true, current: t.id };
+  });
+
   ipcMain.handle('ai:estimateArea', async (_e, data: { imageBase64?: string; comment?: string }) => {
     const image = shrinkImageForAI(data?.imageBase64);
     if (!image) throw new Error('ERROR: 面積の事前確認には写真が必要です。');
