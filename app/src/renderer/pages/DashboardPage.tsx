@@ -81,12 +81,8 @@ export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onN
             <span style={{ fontSize: 22, fontWeight: 'bold' }}>{usage.used}</span>
             <span style={{ fontSize: 12, opacity: 0.8 }}>/ {usage.limit}</span>
             <span style={{ fontSize: 11, opacity: 0.7, marginLeft: 4 }}>（残{usage.remaining}）</span>
-            {/* デモは残ストックだけでなく期限でも止まる。予告なく切れると商談中に事故る */}
-            {typeof usage.daysLeft === 'number' && (
-              <span style={{ fontSize: 11, marginLeft: 6, paddingLeft: 10, borderLeft: '1px solid rgba(255,255,255,.4)' }}>
-                {usage.daysLeft > 0 ? `期限 ${usage.expiresAt}（あと${usage.daysLeft}日）` : '期限切れ'}
-              </span>
-            )}
+            {/* ★デモ期限は顧客に見せない（隠し仕様）。カウントダウンを出すとクロージングの
+                期限として機能しなくなる。期限はオーナー宛の利用通知メールにだけ載せる。 */}
           </div>
         ) : (
           <div style={{

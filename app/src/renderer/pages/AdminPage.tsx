@@ -253,7 +253,7 @@ export default function AdminPage() {
   /* --- クレジット操作 --- */
   const [creditEdits, setCreditEdits] = useState<Record<number, string>>({});
   const [usageEdits, setUsageEdits] = useState<Record<number, string>>({});
-  const [tenantUsages, setTenantUsages] = useState<Record<number, { used: number; limit: number; remaining: number }>>({});
+  const [tenantUsages, setTenantUsages] = useState<Record<number, { used: number; limit: number; remaining: number; expiresAt?: string | null; daysLeft?: number | null }>>({});
 
   /* --- スマホ承認の信頼端末（デスクトップのみ） --- */
   const [trustedDev, setTrustedDev] = useState<{ trusted: boolean; at: string }>({ trusted: false, at: '' });
@@ -628,6 +628,14 @@ export default function AdminPage() {
                       <td style={styles.td}>{PLAN_LABEL[t.plan] || t.plan}</td>
                       <td style={styles.td}>
                         <div>残: <strong style={{ color: (tenantUsages[t.id]?.remaining || 0) <= 5 ? '#e74c3c' : '#27ae60' }}>{tenantUsages[t.id]?.remaining ?? '-'}</strong> / {t.plan_limit ?? '-'}</div>
+                        {/* デモは期限でも止まる。顧客画面には出さないが、オーナーはここで気づけるようにする */}
+                        {typeof tenantUsages[t.id]?.daysLeft === 'number' && (
+                          <div style={{ fontSize: 11, fontWeight: 700, color: (tenantUsages[t.id]!.daysLeft as number) <= 5 ? '#e74c3c' : '#e67e22' }}>
+                            {(tenantUsages[t.id]!.daysLeft as number) > 0
+                              ? `デモ期限 ${tenantUsages[t.id]!.expiresAt}（あと${tenantUsages[t.id]!.daysLeft}日）`
+                              : `デモ期限切れ（${tenantUsages[t.id]!.expiresAt}）`}
+                          </div>
+                        )}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#888' }}>
                           使用:
                           <input
