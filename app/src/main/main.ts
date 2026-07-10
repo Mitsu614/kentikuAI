@@ -594,10 +594,54 @@ function repairDigitDrops(result: any, context: string): string[] {
   return warnings;
 }
 
+// 折板屋根の遮熱工事は「見積数量 = 屋根面積 × 1.4（展開係数）」で拾う。
+// AIは文章で指示しても掛け忘れる（実例: 早川鉄筋様 北棟 725.8㎡ をそのまま数量にし、
+// 自分で引用した自社実績 1,002㎡ = 725.8×1.38 と矛盾する見積を出した）。
+//
+// 方針は「迷ったら低い側」:
+//   ・掛け忘れ（比が申告係数を下回る）は警告だけ。勝手に増額しない。増やして外すほうが害が大きい。
+//   ・二重掛け（比が申告係数を上回る）は過大なので、本体（材料・施工費）を引き直して下げる。
+//     仮設・経費は数量に比例しないので触らない。
+//
+// 係数は 1.4 決め打ちにしない。折板88mm=1.41 / 折板150mm=1.69 / スレート大波=1.1 / 平葺き=1.0 と
+// 屋根材で違うため、1.4 を基準にすると大波(1.1)が「掛け忘れ」に誤検知される。AIの申告値と比べる。
+const DEVELOP_TOLERANCE = 0.1;   // ±10%
+function enforceHeatshieldQuantity(result: any, context: string): string[] {
+  const roof = Number(result?.roofAreaM2) || 0;
+  const qty = Number(result?.quantityM2) || 0;
+  const df = Number(result?.developFactor) || 0;
+  // 展開係数の申告が無ければ、何が正解か分からない。黙って触らない
+  if (roof <= 0 || qty <= 0 || df < 1 || df > 2) return [];
+  const ratio = qty / roof;
+  if (Math.abs(ratio - df) <= df * DEVELOP_TOLERANCE) return [];
+
+  if (ratio < df) {
+    const msg = `見積数量 ${qty}㎡ ÷ 屋根面積 ${roof}㎡ = ${ratio.toFixed(2)} で、申告された展開係数 ${df} と合いません。掛け忘れなら数量は ${Math.round(roof * df)}㎡（約${Math.round((df / Math.max(ratio, 0.01) - 1) * 100)}%の過小見積）。金額は変更していません`;
+    console.warn(`[${context}] 展開係数の掛け忘れ疑い（自動修正しません） → ${msg}`);
+    return [msg];
+  }
+
+  // 二重掛けの疑い。本体だけを比 df に戻して下げる
+  const target = df;
+  const scale = target / ratio;
+  for (const b of result.breakdown || []) {
+    const cat = classifyBreakdownItem(b);
+    if (cat !== '材料' && cat !== '施工費') continue;   // 仮設・経費は数量に比例しない
+    if (Number(b.cost) > 0) b.cost = Math.round(Number(b.cost) * scale);
+    if (Number(b.costBase) > 0) b.costBase = Math.round(Number(b.costBase) * scale);
+    if (Number(b.quantity) > 0) b.quantity = Math.round(Number(b.quantity) * scale * 10) / 10;
+  }
+  const msg = `見積数量 ${qty}㎡ は屋根面積 ${roof}㎡ の${ratio.toFixed(2)}倍で、申告された展開係数 ${df} を超えています（二重掛け）。数量を ${Math.round(roof * target)}㎡ に引き直し、本体金額を${Math.round((1 - scale) * 100)}%下げました`;
+  console.warn(`[${context}] 展開係数の二重掛けを修正 → ${msg}`);
+  result.quantityM2 = Math.round(roof * target * 10) / 10;
+  return [msg];
+}
+
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
-  const repaired = repairDigitDrops(result, context);
-  if (repaired.length) result.digitDropWarnings = repaired;
+  // 縦計を出す前に、行の金額そのものを直す（合計はそのあとで積み直される）
+  const warns = [...repairDigitDrops(result, context), ...enforceHeatshieldQuantity(result, context)];
+  if (warns.length) result.estimateWarnings = warns;
   const sum = result.breakdown.reduce((s: number, b: any) => s + (Number(b?.cost) || 0), 0);
   if (sum <= 0) return result;
 
@@ -4728,8 +4772,12 @@ ${pages}</body></html>`;
   **見積数量 = 折板屋根面積 × 1.4（展開係数）**。自社の見積書に「折板屋根面積×1.4」と明記されている。
   実例: 森鉄筋(株)養老工場は屋根面積 33.8m² → 見積数量 47.3 ≒ **48m²**。この48m²に6,500円/m²を掛ける。
   ・ユーザーが入力した面積が「屋根面積」なのか「展開後の数量」なのかを見極めろ。
-    屋根の実測値・図面値・写真からの推定値は屋根面積なので、×1.4 して数量にすること。
+    「屋根面積」「実測」「図面」と明記されていれば屋根面積なので、×1.4 して数量にすること。
+  ・★★どちらか判断がつかないときは「展開後の数量」とみなし、×1.4 してはならない。★★
+    二重に1.4を掛けると4割の過大見積になる。迷ったら低い側に倒し、basis にその旨を書け。
   ・スレート大波は ×1.1、平葺き・瓦・シングルは ×1.0（補正なし）。
+  ・**roofAreaM2 と quantityM2 を必ず出力しろ**（この2つでこちらが検算する）。
+    ×1.4 しなかった場合は roofAreaM2 = quantityM2 として、同じ値を両方に入れろ。
 - ★★スカイ工法の単価は「自社実績」で確定している（推測するな・値引くな）★★
   実績: 森鉄筋(株)養老工場・折板屋根・屋根面積33.8m²・見積数量48m²（2026-06-25 見積書、税抜総額¥500,000）
   ① 本体「スカイ工法施工（折板屋根用）」＝ **6,500円/m²（材工共・お客様提示の売価）**。
@@ -5095,6 +5143,9 @@ ${categories}
   "breakdown": [
     {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "quantity": 数量（数値。式なら1）, "unit": "単位（m2/式/箇所 等）", "unitPrice": 売価の単価（数値、円。cost ÷ quantity に必ず一致させること）, "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい。**必ず quantity × unitPrice と一致させること。桁を落とすな**）, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
   ],
+  "roofAreaM2": ★遮熱シート工事で折板・波板屋根のときのみ★ 屋根面積(数値、㎡)。それ以外は null,
+  "quantityM2": ★遮熱シート工事で折板・波板屋根のときのみ★ 見積数量(数値、㎡。展開係数を掛けた後)。×1.4しなかったなら roofAreaM2 と同じ値。それ以外は null,
+  "developFactor": ★遮熱シート工事のときのみ★ 適用した展開係数(数値。折板88mm=1.41 / 折板150mm=1.69 / スレート大波=1.1 / 平葺き・瓦=1.0。掛けなかったなら 1.0)。それ以外は null,
   "recommendations": "画像から判断した追加提案（依頼内容以外で必要そうな工事や注意点。例:『外壁のひび割れも確認されます。外壁補修も検討をおすすめします（別途約○万円）』）",
   "installInstruction": "★遮熱シート（サーモバリア）工事の場合のみ記入・それ以外は必ずnull★ 現場の葺き師・建築板金職人がそのまま作業できる施工指示。工法（スカイ工法／屋根下工法／カバー工法）に合わせ、[石綿事前調査の要否(既存屋根がスレート等の場合)]→[下地確認・清掃]→[張り方向・順序・重ね代]→[固定方法(スペーサー/ビス/気密テープ)]→[通気層の確保]→[端部・棟・軒・ケラバの納まり・雨仕舞い]→[安全(墜落防止・フルハーネス・親綱・踏み抜き)] を現場目線の箇条書き6〜9行で具体的に。各行に該当する公的基準名（安衛則○条／JIS A 6514／石綿事前調査 等）を明記し、必要シート量など数量の目安も添える。",
   "imagePrompt": "この工事で施工した箇所の完成後の写真を生成するための英語プロンプト。80〜100語の英語で、工種に応じて以下の写真スタイルで記述する（フォトリアル・広告品質・photorealistic, professional real estate photography, natural lighting, high detail）。\n- 内装: 室内インテリア写真風（自然光・暖かい木の質感・モダンジャパニーズ・clean interior, warm wood floor, fresh wallpaper, soft daylight from window）\n- 塗装（外壁/屋根）: 塗り替え後の外壁・屋根がツヤと均一な発色で美しく仕上がった住宅外観（freshly painted exterior wall, even smooth finish, clean facade, blue sky, no scaffolding, crisp edges）\n- 外構: exterior/landscaping写真風（青空・ゴールデンアワー・植栽・コンクリート/タイルの質感・neat driveway, fence, greenery, paved approach）\n- 足場: 建物を覆って安全・整然と組まれた足場（well-erected wedge scaffolding around a house, mesh sheet, neat and safe, professional site, blue sky）。※足場は"撤去後"ではなく"綺麗に設置された状態"を描く。\n施工した部分にフォーカスし、美しい仕上がり・プロの現場感を表現。必ず英語で。"
