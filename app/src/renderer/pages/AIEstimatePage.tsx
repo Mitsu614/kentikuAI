@@ -1495,6 +1495,20 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </div>
           )}
 
+          {/* 金額の桁落ち。見逃すと売価がまるごと足りないまま提出される */}
+          {Array.isArray(result.digitDropWarnings) && result.digitDropWarnings.length > 0 && (
+            <div className="card" style={{ marginTop: 16, background: '#fdecea', border: '2px solid #c0392b' }}>
+              <h3 style={{ margin: '0 0 8px', color: '#c0392b' }}>⚠ 金額の桁がおかしい行があります</h3>
+              <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8 }}>
+                {result.digitDropWarnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
+              </ul>
+              <div style={{ fontSize: 12, color: '#7b241c', marginTop: 8 }}>
+                数量×単価が分かる行は自動で引き直しました。分からない行はそのままです。
+                <strong>提出前に必ず内訳の金額を確認してください。</strong>
+              </div>
+            </div>
+          )}
+
           {/* 葺き師への施工指示（遮熱シート工事のみ・現場用の指令ブロック） */}
           {result.installInstruction && (
             <div className="card" style={{ marginTop: 16, background: '#eef6ff', border: '2px solid #3a7bd5' }}>

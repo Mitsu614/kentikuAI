@@ -536,8 +536,64 @@ const HEATSHIELD_MARKUP = 1.11; // 粗利率 約10%
 // AIの申告値は内訳の施工費行とも Σ(人工×日額) とも一致していなかった（実測）。
 // 内訳が真実なので、総額も費目別の金額もすべて内訳から積み直す。
 // ai_total は実績アンカー・学習にも使われるため、ここでズレを残すと誤った金額を学習する。
+// AIは内訳の金額の桁を落とすことがある。実例（山下八起テナント / 早川鉄筋様 2026-07-10）:
+//   北棟 材料 ¥1,321,000（725.8㎡ = 1,820円/㎡）
+//   南棟 材料 ¥1,510   （830㎡ = 1.8円/㎡）  ← 正しくは 1,510,600。下3桁が消えた
+// 合計もその壊れた値で組み立てられるため、内訳の縦計は合ってしまい誰も気づかない。
+// 結果、売価が約151万円（14.7%）安く出た。そのまま提出すれば施工会社が丸ごと被る。
+//
+// 桁落ちは quantity × unitPrice と cost の乖離として必ず現れる。5倍以上ずれていたら
+// 掛け算のほうを信じて cost を引き直す。原価/売価の取り違え（1.1〜1.5倍）は誤検知しない。
+const DIGIT_DROP_FACTOR = 5;
+function repairDigitDrops(result: any, context: string): string[] {
+  const warnings: string[] = [];
+  for (const b of result.breakdown) {
+    const qty = Number(b?.quantity) || 0;
+    const up = Number(b?.unitPrice) || 0;
+    const cost = Number(b?.cost) || 0;
+    if (qty <= 0 || up <= 0 || cost <= 0) continue;
+    const expected = qty * up;
+    const ratio = expected / cost;
+    if (ratio < DIGIT_DROP_FACTOR && ratio > 1 / DIGIT_DROP_FACTOR) continue;
+
+    const msg = `${b.item}: ${cost.toLocaleString()}円 は ${qty}×${up.toLocaleString()}円=${Math.round(expected).toLocaleString()}円 と${ratio > 1 ? '桁が足りません' : '桁が多すぎます'}`;
+    console.warn(`[${context}] 桁落ち検出 → ${msg}。数量×単価で引き直します`);
+    warnings.push(msg);
+    if (Number(b.costBase) > 0 && cost > 0) {
+      b.costBase = Math.round(Number(b.costBase) * (expected / cost));   // 原価も同じ倍率で直す
+    }
+    b.cost = Math.round(expected);
+  }
+
+  // 数量・単価が無い行の保険。「…北棟」「…南棟」のように名前が揃っている行どうしで
+  // 金額が50倍以上ちがうのは、ほぼ確実に桁落ち。数量が分からないので直さず、警告だけ出す。
+  const key = (b: any) => String(b?.item || '').replace(/[（(].*$/, '').replace(/[北南東西]棟|\d+階/g, '').trim();
+  const groups = new Map<string, any[]>();
+  for (const b of result.breakdown) {
+    if (!(Number(b?.cost) > 0)) continue;
+    const k = key(b);
+    if (k.length < 4) continue;   // 「諸経費」のような短い名前で誤検知しない
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(b);
+  }
+  for (const [k, rows] of groups) {
+    if (rows.length < 2) continue;
+    const costs = rows.map(r => Number(r.cost));
+    const hi = Math.max(...costs), lo = Math.min(...costs);
+    if (lo > 0 && hi / lo >= 50 && !warnings.some(w => w.startsWith(rows.find(r => Number(r.cost) === lo)!.item))) {
+      const low = rows.find(r => Number(r.cost) === lo)!;
+      const msg = `${low.item}: ${lo.toLocaleString()}円 は同種の「${rows.find(r => Number(r.cost) === hi)!.item}」${hi.toLocaleString()}円 と${Math.round(hi / lo)}倍ちがいます。桁落ちの可能性`;
+      console.warn(`[${context}] 桁違いの疑い（自動修正しません） → ${msg}`);
+      warnings.push(msg);
+    }
+  }
+  return warnings;
+}
+
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
+  const repaired = repairDigitDrops(result, context);
+  if (repaired.length) result.digitDropWarnings = repaired;
   const sum = result.breakdown.reduce((s: number, b: any) => s + (Number(b?.cost) || 0), 0);
   if (sum <= 0) return result;
 
@@ -5033,7 +5089,7 @@ ${categories}
     {"trade": "職種名", "workers": 人数, "days": 日数, "manDays": 人工数, "dailyRate": 日額単価, "basis": "★なぜこの日数・人工になるのかの根拠を必ず記入。歩掛（1人が1日にこなす標準作業量）から算出した式で書く。例: '屋根400㎡ ÷ 2人 ÷ 約66㎡/人日 ≒ 3日' / 'コンセント30箇所 ÷ @15箇所/人日 = 2人工'。数量が無い管理系（現場管理・雑工）は '工期◯日に対し常駐0.5人' のように据え置き根拠を書く"}
   ],
   "breakdown": [
-    {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい）, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
+    {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "quantity": 数量（数値。式なら1）, "unit": "単位（m2/式/箇所 等）", "unitPrice": 売価の単価（数値、円。cost ÷ quantity に必ず一致させること）, "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい。**必ず quantity × unitPrice と一致させること。桁を落とすな**）, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
   ],
   "recommendations": "画像から判断した追加提案（依頼内容以外で必要そうな工事や注意点。例:『外壁のひび割れも確認されます。外壁補修も検討をおすすめします（別途約○万円）』）",
   "installInstruction": "★遮熱シート（サーモバリア）工事の場合のみ記入・それ以外は必ずnull★ 現場の葺き師・建築板金職人がそのまま作業できる施工指示。工法（スカイ工法／屋根下工法／カバー工法）に合わせ、[石綿事前調査の要否(既存屋根がスレート等の場合)]→[下地確認・清掃]→[張り方向・順序・重ね代]→[固定方法(スペーサー/ビス/気密テープ)]→[通気層の確保]→[端部・棟・軒・ケラバの納まり・雨仕舞い]→[安全(墜落防止・フルハーネス・親綱・踏み抜き)] を現場目線の箇条書き6〜9行で具体的に。各行に該当する公的基準名（安衛則○条／JIS A 6514／石綿事前調査 等）を明記し、必要シート量など数量の目安も添える。",
