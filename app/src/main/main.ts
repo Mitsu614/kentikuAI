@@ -4597,11 +4597,6 @@ ${pages}</body></html>`;
         const ocrAnchors: string[] = [];
         const seenDocs = new Set<string>();
         for (const r of ocrRows) {
-          // 同じ書類を複数回取り込んでいると、同じ金額が何度もアンカーに並んで重み付けが狂う
-          const docKey = `${(r.title || '').replace(/\s|㈱|株式会社|\(株\)/g, '')}|${Math.round(r.total || 0)}`;
-          if (seenDocs.has(docKey)) continue;
-          seenDocs.add(docKey);
-
           const bits: string[] = [`[${r.document_type || '書類'}] ${r.title || '（件名なし）'}`];
           if (r.total > 0) bits.push(`合計¥${Math.round(r.total).toLocaleString()}`);
           // 明細から単価付き項目を抽出。遮熱/特許/シート（＝この会社の唯一の正解データ）は
@@ -4612,12 +4607,26 @@ ${pages}</body></html>`;
             // AIが「本体は◯◯円/式」と誤学習するので、ここでも必ず落とす。
             const items = dropSummaryRows(Array.isArray(oj.items) ? oj.items : [], oj.subtotal);
             const priced = items.filter((it: any) => it && it.name && (it.unitPrice > 0 || it.amount > 0));
+
+            // 同じ書類を複数回取り込んでいると、同じ単価が何度もアンカーに並んで重み付けが狂う。
+            // 件名で照合していたが、OCRが工法名を読み違えると（スカイ工法／スカイエ法／スカイエ工法）
+            // 別書類とみなされ、森鉄筋様の1枚が3回並んでいた。金額の並びで同一性を判定する。
+            const docKey = `${Math.round(r.total || 0)}|${priced.map((it: any) => Math.round(it.amount || it.unitPrice || 0)).join(',')}`;
+            if (seenDocs.has(docKey)) continue;
+            seenDocs.add(docKey);
             const isCore = (it: any) => /(遮熱|特許|シート|工法|カバー|葺|内張|外張|吹付)/.test(it.name || '');
+            // ★数量は単価があるときも必ず載せる。
+            // 以前は単価があると数量を落としていた。その結果、森鉄筋様の実績が
+            //   「スカイ工法施工 折板屋根用 足場面積 33.8m(折板屋根面積×1.4) ¥6,500/㎡（金額¥312,000）」
+            // としてAIに渡り、見積数量の 48㎡ がどこにも現れなかった。AIに見える面積は
+            // 品名の中の 33.8 だけなので「6,500円/㎡ × 屋根面積」と読むしかない。
+            // 実際、早川鉄筋様の見積で屋根面積725.8㎡にそのまま単価を掛け、展開係数1.4を落とした。
             const fmt = (it: any) => {
               const u = it.unitPrice > 0 ? `¥${Math.round(it.unitPrice).toLocaleString()}${it.unit ? '/' + it.unit : ''}` : '';
-              const qty = it.quantity > 0 ? `×${it.quantity}${it.unit || ''}` : '';
-              const amt = it.amount > 0 ? `（金額¥${Math.round(it.amount).toLocaleString()}）` : '';
-              return `${it.name}${u ? ' ' + u : ''}${!u && qty ? ' ' + qty : ''}${amt}`;
+              const qty = it.quantity > 0 ? `数量${it.quantity}${it.unit || ''}` : '';
+              const amt = it.amount > 0 ? `金額¥${Math.round(it.amount).toLocaleString()}` : '';
+              const tail = [qty, u, amt].filter(Boolean).join(' × ').replace(' × 金額', ' ＝ 金額');
+              return `${it.name}${tail ? ' ' + tail : ''}`;
             };
             const core = priced.filter(isCore);          // 遮熱シート本体系は全部残す（打ち切らない）
             const others = priced.filter((it: any) => !isCore(it)).slice(0, 12); // その他は最大12件
