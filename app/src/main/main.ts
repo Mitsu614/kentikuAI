@@ -437,6 +437,10 @@ async function sendUsageNotification(operation: string, detail?: string, extras?
         `■ プラン: ${planDef?.name || usage.plan}`,
         `■ 今月の使用量: ${usage.used}/${usage.limit}回`,
         `■ 残ストック: ${usage.remaining}回`,
+        // デモは残クレジットだけでなく期限でも止まる。予告なく切れると商談中の顧客が事故る
+        usage.daysLeft !== null && usage.daysLeft !== undefined
+          ? `■ ★デモ期限: ${usage.expiresAt}（あと${usage.daysLeft}日）${usage.daysLeft <= 5 ? ' ← まもなく使えなくなります。プラン変更の要否を確認してください' : ''}`
+          : '',
         estimateDetail,
         '',
         '---',

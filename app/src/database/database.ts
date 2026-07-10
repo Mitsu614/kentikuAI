@@ -95,19 +95,35 @@ export const CREDIT_COSTS: Record<string, number> = {
   '一括登録':          0,
 };
 
+// デモ・トライアルの残り日数。期限切れは useCredits が黙って弾くだけで、
+// 事前の予告がどこにも出ていなかった（商談中の顧客が突然使えなくなる）。
+// plan_started_at + DEMO_PERIOD_DAYS を残日数として全経路（画面・利用通知メール）に流す。
+function demoDaysLeft(tenantRow: any): { expiresAt: string | null; daysLeft: number | null } {
+  const plan = tenantRow?.plan;
+  if ((plan !== 'demo' && plan !== 'trial') || !tenantRow?.plan_started_at) return { expiresAt: null, daysLeft: null };
+  const started = new Date(tenantRow.plan_started_at).getTime();
+  if (isNaN(started)) return { expiresAt: null, daysLeft: null };
+  const end = started + DEMO_PERIOD_DAYS * 86400000;
+  return {
+    expiresAt: new Date(end).toLocaleDateString('sv-SE'),
+    daysLeft: Math.ceil((end - Date.now()) / 86400000),
+  };
+}
+
 // ── クレジット管理（月次プラン制） ──
-export function getMonthlyUsage(tenantId?: number): { used: number; limit: number; plan: string; remaining: number } {
+export function getMonthlyUsage(tenantId?: number): { used: number; limit: number; plan: string; remaining: number; expiresAt?: string | null; daysLeft?: number | null } {
   const tid = tenantId ?? currentTenantId;
-  const tenant = queryOne('SELECT plan, plan_limit, credits FROM tenants WHERE id = ?', [tid]);
+  const tenant = queryOne('SELECT plan, plan_limit, credits, plan_started_at FROM tenants WHERE id = ?', [tid]);
   const plan = tenant?.plan || 'standard';
   const planDef = PLANS[plan];
   const limit = tenant?.plan_limit || planDef?.monthlyLimit || 50;
+  const expiry = demoDaysLeft(tenant);
 
   // creditsカラムが設定されている場合はそれを残量として使用（Supabase同期対応）
   if (tenant?.credits !== undefined && tenant?.credits !== null && tenant.credits >= 0) {
     const remaining = Math.max(0, tenant.credits);
     const used = Math.max(0, limit - remaining);
-    return { used, limit, plan, remaining };
+    return { used, limit, plan, remaining, ...expiry };
   }
 
   // フォールバック: 従来の月次計算
@@ -127,7 +143,7 @@ export function getMonthlyUsage(tenantId?: number): { used: number; limit: numbe
     );
   }
   const used = row?.used || 0;
-  return { used, limit, plan, remaining: Math.max(0, limit - used) };
+  return { used, limit, plan, remaining: Math.max(0, limit - used), ...expiry };
 }
 
 export function getCredits(tenantId?: number): number {
@@ -136,7 +152,9 @@ export function getCredits(tenantId?: number): number {
 }
 
 // デモ／トライアルの有効期間（日数）。使い切り＋この日数で終了。
-export const DEMO_PERIOD_DAYS = 14;
+// 2週間だと商談〜稟議の途中で切れて顧客が事故る（実例: 山下八起テナントが早川鉄筋様の
+// 見積作成中に残3日だった）。1ヶ月に延長。※顧客には非表示の隠し仕様。
+export const DEMO_PERIOD_DAYS = 30;
 
 export function useCredits(amount: number, operation: string, tenantId?: number): { success: boolean; limitReached?: boolean; expired?: boolean } {
   const tid = tenantId ?? currentTenantId;

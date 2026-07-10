@@ -14,7 +14,7 @@ export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onN
   const [invoices, setInvoices] = useState<any[]>([]);
   const [recentConstructions, setRecentConstructions] = useState<any[]>([]);
   const [allConstructions, setAllConstructions] = useState<any[]>([]);
-  const [usage, setUsage] = useState<{ used: number; limit: number; remaining: number; plan: string } | null>(null);
+  const [usage, setUsage] = useState<{ used: number; limit: number; remaining: number; plan: string; expiresAt?: string | null; daysLeft?: number | null } | null>(null);
   const [showDetail, setShowDetail] = useState<'material' | 'labor' | 'sales' | 'profit' | null>(null);
   const [outcomeStats, setOutcomeStats] = useState<{total: number; won: number; lost: number; pending: number; winRate: number} | null>(null);
 
@@ -81,6 +81,12 @@ export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onN
             <span style={{ fontSize: 22, fontWeight: 'bold' }}>{usage.used}</span>
             <span style={{ fontSize: 12, opacity: 0.8 }}>/ {usage.limit}</span>
             <span style={{ fontSize: 11, opacity: 0.7, marginLeft: 4 }}>（残{usage.remaining}）</span>
+            {/* デモは残ストックだけでなく期限でも止まる。予告なく切れると商談中に事故る */}
+            {typeof usage.daysLeft === 'number' && (
+              <span style={{ fontSize: 11, marginLeft: 6, paddingLeft: 10, borderLeft: '1px solid rgba(255,255,255,.4)' }}>
+                {usage.daysLeft > 0 ? `期限 ${usage.expiresAt}（あと${usage.daysLeft}日）` : '期限切れ'}
+              </span>
+            )}
           </div>
         ) : (
           <div style={{
