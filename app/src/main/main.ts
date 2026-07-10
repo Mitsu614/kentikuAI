@@ -637,6 +637,41 @@ function enforceHeatshieldQuantity(result: any, context: string): string[] {
   return [msg];
 }
 
+// 人件費が Σ(人工 × 日額) と合っているかを見る。
+// AIは施工費の売価を掛率で割り戻しただけの数字を「人件費」として返すことがある。
+// 実例（早川鉄筋様）: 施工費売価 6,902,000 ÷ 掛率1.45 = 4,760,000 が人件費として出た。
+// 人工も歩掛も積んでいないので、1,556㎡の折板屋根に対して㎡あたり3,059円という薄さになった。
+// 山下さんの過去の修正履歴でも「人件費がAI推定から +1,806,000円 修正」されている。
+//
+// 人件費は現場条件（高所・夜間・稼働中）で正当に動くため、機械的に書き換えない。警告だけ出す。
+// 増額も減額も自動でやらない ―― どちらに倒しても外したときの損害が大きい。
+//
+// ★限界: AIが人工のほうも辻褄合わせで作ると、両者が一致してこの検算をすり抜ける。
+//   検出できるのは「歩掛から人工を積んだのに、人件費は別途割り戻しで置いた」ケース。
+//   本当に人件費が妥当かは、歩掛（㎡/人日）の正解データが貯まるまで機械では判定できない。
+// ±10%。現場条件のブレを許すための値ではない。人件費も人工もAI自身が出した数字なので、
+// 本来は一致するはず。丸め誤差ぶんだけ見る。±30%だと139万円の不足を素通りした（実測）。
+const LABOR_TOLERANCE = 0.1;
+function checkLaborAgainstManDays(result: any, context: string): string | null {
+  const rows = Array.isArray(result?.manDaysBreakdown) ? result.manDaysBreakdown : [];
+  if (!rows.length) return null;
+  const fromManDays = rows.reduce((s: number, r: any) => {
+    const md = Number(r?.manDays) || (Number(r?.workers) || 0) * (Number(r?.days) || 0);
+    return s + md * (Number(r?.dailyRate) || 0);
+  }, 0);
+  const fromBreakdown = Number(result.estimatedLaborCost) || 0;
+  if (fromManDays <= 0 || fromBreakdown <= 0) return null;
+
+  const ratio = fromBreakdown / fromManDays;
+  if (Math.abs(ratio - 1) <= LABOR_TOLERANCE) return null;
+
+  const diff = Math.round(fromManDays - fromBreakdown);
+  const msg = `人件費 ¥${fromBreakdown.toLocaleString()} が、人工の積み上げ Σ(人工×日額) = ¥${Math.round(fromManDays).toLocaleString()} と合いません（${ratio.toFixed(2)}倍）。`
+    + `${diff > 0 ? `¥${diff.toLocaleString()} 不足している可能性` : `¥${Math.abs(diff).toLocaleString()} 過大の可能性`}があります。金額は変更していません`;
+  console.warn(`[${context}] 人件費と人工が不整合（自動修正しません） → ${msg}`);
+  return msg;
+}
+
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
   // 縦計を出す前に、行の金額そのものを直す（合計はそのあとで積み直される）
@@ -669,6 +704,9 @@ function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = D
   result.estimatedLaborCost = baseBy('施工費');
   // 仮設は材料費でも人件費でもないため画面から消えていた。経費としてまとめて表示する。
   result.estimatedExpenseCost = baseBy('仮設') + baseBy('経費');
+
+  const laborWarn = checkLaborAgainstManDays(result, context);
+  if (laborWarn) (result.estimateWarnings = result.estimateWarnings || []).push(laborWarn);
 
   // 材料費 + 人件費 + 経費 + 粗利 = 売上金額 が必ず成立するように、粗利は差分で置く。
   const costTotal = result.estimatedMaterialCost + result.estimatedLaborCost + result.estimatedExpenseCost;
@@ -947,7 +985,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.1';
+const CURRENT_VERSION = '3.4.2';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
