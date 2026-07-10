@@ -368,7 +368,7 @@ async function sendLimitNotification(operation: string) {
 }
 
 // AI利用時のメール通知（誰が何をいつ使ったか）
-async function sendUsageNotification(operation: string, detail?: string, extras?: { images?: { filename: string; content: string }[]; estimateResult?: any; comment?: string }) {
+async function sendUsageNotification(operation: string, detail?: string, extras?: { images?: { filename: string; content: string }[]; estimateResult?: any; comment?: string; ocrResult?: any; ocrMeta?: any }) {
   try {
     const tid = getCurrentTenant();
     // 管理者（テナントID=1）の操作は通知しない
@@ -399,6 +399,35 @@ async function sendUsageNotification(operation: string, detail?: string, extras?
         r.breakdown ? `■ 内訳: ${r.breakdown.map((b: any) => `${b.item}: ¥${Math.round(b.cost || 0).toLocaleString()}`).join(' / ')}` : '',
         r.description ? `■ 説明: ${r.description}` : '',
         r.recommendations ? `■ 推奨事項: ${r.recommendations}` : '',
+      ].filter(Boolean).join('\n');
+    }
+    // OCR取り込みの全情報。読み取った明細を1行も落とさずに送る（原本と現場写真は添付）
+    if (extras?.ocrResult) {
+      const o = extras.ocrResult;
+      const m = extras.ocrMeta || {};
+      const items = Array.isArray(o.items) ? o.items : [];
+      const yen = (v: any) => `¥${Math.round(Number(v) || 0).toLocaleString()}`;
+      estimateDetail += [
+        '', '【読み取った書類】',
+        `■ 書類種別: ${o.documentType || '不明'}`,
+        `■ 件名: ${o.title || '（なし）'}`,
+        `■ 発行元: ${o.issuerName || '（なし）'}　／　宛先: ${o.clientName || '（なし）'}`,
+        `■ 発行日: ${o.issueDate || '（なし）'}`,
+        o.subtotal ? `■ 小計(税抜): ${yen(o.subtotal)}` : '',
+        `■ 合計: ${yen(o.total)}`,
+        o.notes ? `■ 備考: ${o.notes}` : '',
+        '', `【明細 ${items.length}行（1行も省略していません）】`,
+        ...items.map((it: any, i: number) => {
+          const q = Number(it.quantity) || 0, up = Number(it.unitPrice) || 0, am = Number(it.amount) || 0;
+          const calc = q > 0 && up !== 0 ? `${q}${it.unit || ''} × ${yen(up)} = ${yen(am || q * up)}` : yen(am || up);
+          return `${String(i + 1).padStart(2)}. ${it.name || '（品名不明）'}  ${calc}${it.category ? `  [${it.category}]` : ''}`;
+        }),
+        '', '【取り込み結果】',
+        `■ 紐づけ: ${m.linked ? `既存工事に紐づけ（工事ID ${m.constructionId}：${m.linkedTitle || ''}）` : '★新規案件として登録'}`,
+        m.constructionId ? `■ 工事ID: ${m.constructionId}　／　物件ID: ${m.propertyId}` : '',
+        `■ 材料費: ${yen(m.materialTotal)}　／　人件費: ${yen(m.laborCost)}　／　売価(税抜): ${yen(m.sellingPrice)}　／　掛率: ${m.markupRate ?? '-'}`,
+        m.comment ? `■ コメント（紐づけ情報・学習に反映）: ${m.comment}` : '■ コメント: （なし）',
+        `■ 添付: ${m.attachedNames || '（なし）'}`,
       ].filter(Boolean).join('\n');
     }
     if (extras?.comment) {
@@ -4078,6 +4107,15 @@ ${pages}</body></html>`;
     const tid = getCurrentTenant();
     const linkConstructionId = data._linkConstructionId || null;
 
+    // ★紐づけ絶対★
+    // 既存工事に紐づけないOCR取り込みは「新規案件」になる。新規案件は現場写真が無いと、
+    // どの建物の・どの屋根の金額なのかが永久に分からなくなり、実績として使えない。
+    // 画面側でも止めているが、ここでも必ず弾く（画面の実装漏れやIPC直叩きを許さない）。
+    const siteImages: string[] = Array.isArray(data._siteImages) ? data._siteImages.filter((s: any) => typeof s === 'string' && s.length > 100) : [];
+    if (!linkConstructionId && siteImages.length === 0) {
+      throw new Error('ERROR: 既存の工事に紐づけるか、新規案件として現場写真を1枚以上添付してください。写真の無い新規案件は登録できません。');
+    }
+
     // 金額計算（税抜に統一）
     const taxRate = data.taxRate || 0.1;
     let laborCost = 0;
@@ -4160,6 +4198,14 @@ ${pages}</body></html>`;
          `OCR取り込み\n発行元: ${data.issuerName || ''}`, tid, materialTotal, laborCost, sellingPrice]
       );
 
+      // 新規案件の現場写真を物件に保存（ディスク退避。DBには画像を入れない）
+      try {
+        const first = offloadImageIfLarge(siteImages[0], 'property');
+        runSql('UPDATE properties SET floor_plan_image = ?, floor_plan_image_path = ? WHERE id = ?',
+          [first.thumb, first.filePath, propertyId]);
+        for (let i = 1; i < siteImages.length; i++) saveImageToDiskWithThumb(siteImages[i], 'property');
+      } catch (e) { console.error('新規案件の現場写真の保存に失敗:', e); }
+
       // 材料明細（見出し行を除いた明細を使う。見出し行を入れると原価が2倍になる）
       for (const item of items) {
         if (item.name && (item.name.includes('人件費') || item.name.includes('施工費') || item.name.includes('労務費'))) continue;
@@ -4224,6 +4270,39 @@ ${pages}</body></html>`;
     } catch (e) { console.error('ocr_log更新失敗:', e); }
 
     logAudit('create', 'ocr_import', conId, `${data.documentType}: ${data.title}${linkConstructionId ? ' (実績紐付け)' : ''}`);
+
+    // 取り込んだ書類の全情報をオーナーへ通知。原本と現場写真も添付する。
+    // 取り込みは「実績が確定した瞬間」であり、ここを見落とすと誤った実績が学習に入る。
+    try {
+      const attach: { filename: string; content: string }[] = [];
+      // 原本（OCRにかけたPDF/画像そのもの）
+      try {
+        const src = data._ocrLogId ? queryOne('SELECT pdf_path FROM ocr_log WHERE id = ? AND tenant_id = ?', [data._ocrLogId, tid]) : null;
+        if (src?.pdf_path && fs.existsSync(src.pdf_path)) {
+          attach.push({ filename: `原本_${path.basename(src.pdf_path)}`, content: fs.readFileSync(src.pdf_path).toString('base64') });
+        }
+      } catch (_) {}
+      siteImages.forEach((img, i) => attach.push({ filename: `現場写真_${i + 1}.jpg`, content: img }));
+
+      const linkedTitle = linkConstructionId
+        ? queryOne('SELECT title FROM constructions WHERE id = ?', [linkConstructionId])?.title
+        : null;
+      sendUsageNotification(
+        'OCR取り込み（実績確定）',
+        `${data.documentType || '書類'}「${data.title || '（件名なし）'}」を${linkConstructionId ? '既存工事に紐づけ' : '新規案件として登録'}`,
+        {
+          ocrResult: data,
+          ocrMeta: {
+            linked: !!linkConstructionId, constructionId: conId, propertyId, linkedTitle,
+            materialTotal, laborCost, sellingPrice, markupRate,
+            comment: data._comment || '',
+            attachedNames: attach.map(a => a.filename).join(' / ') || '（なし）',
+          },
+          images: attach,
+        }
+      );
+    } catch (e) { console.error('OCR取り込み通知の送信に失敗:', e); }
+
     return { propertyId, constructionId: conId, invoiceId: invId, itemCount: data.items?.length || 0, linked: !!linkConstructionId };
   });
 

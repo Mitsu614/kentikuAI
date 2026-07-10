@@ -102,6 +102,18 @@ export default function OcrPage() {
   const [constructions, setConstructions] = useState<any[]>([]);
   const [linkMap, setLinkMap] = useState<Record<number, number | null>>({});
   const [commentMap, setCommentMap] = useState<Record<number, string>>({});
+  // 新規案件（既存工事に紐づけない）で登録するときの現場写真。紐づけが無い実績は
+  // どの建物の金額なのか後から分からなくなるため、写真を必須にする。
+  const [siteImageMap, setSiteImageMap] = useState<Record<number, string[]>>({});
+
+  const addSiteImages = (index: number, files: FileList | null) => {
+    if (!files?.length) return;
+    Array.from(files).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = () => setSiteImageMap(prev => ({ ...prev, [index]: [...(prev[index] || []), String(reader.result)] }));
+      reader.readAsDataURL(file);
+    });
+  };
   const [ocrLogs, setOcrLogs] = useState<any[]>([]);
   const [logComments, setLogComments] = useState<Record<number, string>>({});
   const [showGuide, setShowGuide] = useState(() => {
@@ -178,9 +190,14 @@ export default function OcrPage() {
   const importOne = async (index: number) => {
     const r = results[index];
     if (!r || r._error) return;
+    const linkedId = linkMap[index] || null;
+    const photos = siteImageMap[index] || [];
+    if (!linkedId && photos.length === 0) {
+      setError('新規案件として取り込むには、現場写真を1枚以上添付してください。既存の工事に紐づける場合は写真は不要です。');
+      return;
+    }
     try {
-      const linkedId = linkMap[index] || null;
-      await (window as any).api.importOcrResult({ ...r, _linkConstructionId: linkedId, _comment: commentMap[index] || '', _ocrLogId: r._ocrLogId });
+      await (window as any).api.importOcrResult({ ...r, _linkConstructionId: linkedId, _comment: commentMap[index] || '', _ocrLogId: r._ocrLogId, _siteImages: photos });
       setImported(prev => new Set(prev).add(index));
       window.api.listConstructions().then(setConstructions);
       loadLogs();
@@ -367,7 +384,7 @@ export default function OcrPage() {
                         onChange={e => setLinkMap(prev => ({ ...prev, [i]: e.target.value ? Number(e.target.value) : null }))}
                         style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #ccc', fontSize: 13 }}
                       >
-                        <option value="">新規作成（紐づけなし）</option>
+                        <option value="">新規案件として登録（現場写真が必要）</option>
                         {constructions.map(c => (
                           <option key={c.id} value={c.id}>
                             {c.title || c.property_name || `施工#${c.id}`}
@@ -382,6 +399,33 @@ export default function OcrPage() {
                           ・AI見積の金額と実際の請求額（税抜）を比較<br/>
                           ・差分データをクラウドに送信<br/>
                           ・全ユーザーの見積精度が向上
+                        </div>
+                      )}
+                      {/* 新規案件は現場写真を必須にする。写真の無い実績は、どの建物の金額なのか
+                          後から誰にも分からなくなり、単価だけが一人歩きする */}
+                      {!linkMap[i] && (
+                        <div style={{ marginTop: 10, padding: 10, background: (siteImageMap[i]?.length ? '#e8f5e9' : '#fdecea'), border: `1px solid ${siteImageMap[i]?.length ? '#a5d6a7' : '#e57373'}`, borderRadius: 6 }}>
+                          <div style={{ fontSize: 13, fontWeight: 'bold', color: siteImageMap[i]?.length ? '#2e7d32' : '#c0392b', marginBottom: 6 }}>
+                            {siteImageMap[i]?.length ? `📷 現場写真 ${siteImageMap[i].length}枚を添付しました` : '📷 現場写真が必要です（新規案件）'}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#555', marginBottom: 8 }}>
+                            どの建物・どの屋根の金額なのかが残らないと、この実績は次の見積に使えません。
+                            外観が分かる写真を1枚以上お願いします。
+                          </div>
+                          <input type="file" accept="image/*" multiple onChange={e => { addSiteImages(i, e.target.files); e.target.value = ''; }} style={{ fontSize: 12 }} />
+                          {!!siteImageMap[i]?.length && (
+                            <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                              {siteImageMap[i].map((src, k) => (
+                                <div key={k} style={{ position: 'relative' }}>
+                                  <img src={src} style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 4, border: '1px solid #ccc' }} />
+                                  <button
+                                    onClick={() => setSiteImageMap(prev => ({ ...prev, [i]: prev[i].filter((_, x) => x !== k) }))}
+                                    style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: '#c0392b', color: '#fff', cursor: 'pointer', fontSize: 12, lineHeight: '20px', padding: 0 }}
+                                  >×</button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -410,12 +454,16 @@ export default function OcrPage() {
                       </span>
                     ) : (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <button className="btn btn-primary btn-sm" onClick={() => importOne(i)}>
-                          {linkMap[i] ? '🔗 紐づけて取り込む（学習に反映）' : 'この書類を取り込む'}
+                        <button
+                          className="btn btn-primary btn-sm"
+                          disabled={!linkMap[i] && !siteImageMap[i]?.length}
+                          onClick={() => importOne(i)}
+                        >
+                          {linkMap[i] ? '🔗 紐づけて取り込む（学習に反映）' : siteImageMap[i]?.length ? '📷 新規案件として取り込む' : '現場写真を添付してください'}
                         </button>
                         <Help text={linkMap[i]
                           ? '施工に紐づけて取り込みます。AI見積と実績の差分が学習データとして送信され、今後の見積精度向上に貢献します。'
-                          : '新しい物件・施工・請求書として登録します。紐づけなしの場合、学習データは送信されません。'} />
+                          : '新しい物件・施工・請求書として登録します。どの建物の金額かを残すため、現場写真が1枚以上必要です。'} />
                       </div>
                     )}
                   </div>
