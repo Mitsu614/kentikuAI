@@ -1,0 +1,112 @@
+[
+ {
+  "id": "chibachuo-galvalume-126",
+  "statedAreaM2": 126,
+  "buildingType": "戸建て住宅",
+  "roofType": "ガルバリウム",
+  "viewType": "oblique",
+  "coversWholeRoof": true,
+  "comment": "戸建て住宅の屋根カバー工法。屋根面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\chibachuo-galvalume-126.jpg"
+ },
+ {
+  "id": "kobenishi-slate-110",
+  "statedAreaM2": 110,
+  "buildingType": "戸建て住宅",
+  "roofType": "化粧スレート",
+  "viewType": "onroof",
+  "coversWholeRoof": false,
+  "comment": "戸建て住宅の屋根カバー工法。屋根面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\kobenishi-slate-110.jpg"
+ },
+ {
+  "id": "kobenishi-kawara-70",
+  "statedAreaM2": 70,
+  "buildingType": "戸建て住宅",
+  "roofType": "和瓦",
+  "viewType": "oblique",
+  "coversWholeRoof": true,
+  "comment": "戸建て住宅の屋根葺き替え。屋根面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\kobenishi-kawara-70.jpg"
+ },
+ {
+  "id": "kobenishi-kawara-180",
+  "statedAreaM2": 180,
+  "buildingType": "戸建て住宅",
+  "roofType": "和瓦",
+  "viewType": "ground",
+  "coversWholeRoof": false,
+  "comment": "戸建て住宅の屋根葺き替え。屋根面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\kobenishi-kawara-180.jpg"
+ },
+ {
+  "id": "teigaku-toride-118",
+  "statedAreaM2": 118,
+  "buildingType": "戸建て住宅",
+  "roofType": "化粧スレート",
+  "viewType": "oblique",
+  "coversWholeRoof": false,
+  "comment": "戸建て住宅の屋根カバー工法。屋根面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\teigaku-toride-118.jpg"
+ },
+ {
+  "id": "teigaku-noda-92",
+  "statedAreaM2": 92,
+  "buildingType": "戸建て住宅",
+  "roofType": "化粧スレート",
+  "viewType": "onroof",
+  "coversWholeRoof": false,
+  "comment": "戸建て住宅の屋根カバー工法。屋根面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\teigaku-noda-92.jpg"
+ },
+ {
+  "id": "teigaku-asaka-68",
+  "statedAreaM2": 68,
+  "buildingType": "戸建て住宅",
+  "roofType": "化粧スレート",
+  "viewType": "oblique",
+  "coversWholeRoof": false,
+  "comment": "戸建て住宅の屋根カバー工法。屋根面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\teigaku-asaka-68.jpg"
+ },
+ {
+  "id": "wkcover-slate-1350",
+  "statedAreaM2": 1350,
+  "buildingType": "工場",
+  "roofType": "スレート大波",
+  "viewType": "oblique",
+  "coversWholeRoof": false,
+  "comment": "工場の屋根改修。施工面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\wkcover-slate-1350.jpg"
+ },
+ {
+  "id": "wkcover-slate-2000",
+  "statedAreaM2": 2000,
+  "buildingType": "工場",
+  "roofType": "スレート大波",
+  "viewType": "oblique",
+  "coversWholeRoof": false,
+  "comment": "工場の屋根改修。施工面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\wkcover-slate-2000.jpg"
+ },
+ {
+  "id": "zephan-seppan-950",
+  "statedAreaM2": 950,
+  "buildingType": "倉庫",
+  "roofType": "折板屋根",
+  "viewType": "oblique",
+  "coversWholeRoof": true,
+  "comment": "倉庫の折板屋根カバー工事。施工面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\zephan-seppan-950.jpg"
+ },
+ {
+  "id": "miracool-seppan-2200",
+  "statedAreaM2": 2200,
+  "buildingType": "倉庫",
+  "roofType": "折板屋根",
+  "viewType": "oblique",
+  "coversWholeRoof": false,
+  "comment": "倉庫の折板屋根の遮熱塗装。屋根面積を知りたい",
+  "file": "C:\\Users\\mitsu\\OneDrive\\Desktop\\kentikuAI\\app\\tools\\harness-roof\\imgs\\miracool-seppan-2200.jpg"
+ }
+]

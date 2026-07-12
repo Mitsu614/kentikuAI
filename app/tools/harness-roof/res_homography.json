@@ -1,0 +1,96 @@
+[
+ {
+  "id": "chibachuo-galvalume-126",
+  "truth": 126,
+  "got": 81.11111111111111,
+  "ratio": 0.6437389770723104,
+  "refFrac": 0.7194026226323454,
+  "usable": true,
+  "view": "oblique"
+ },
+ {
+  "id": "kobenishi-slate-110",
+  "truth": 110,
+  "got": 134,
+  "ratio": 1.2181818181818183,
+  "refFrac": 0.35294117647058826,
+  "usable": true,
+  "view": "onroof"
+ },
+ {
+  "id": "kobenishi-kawara-70",
+  "truth": 70,
+  "got": 152.4,
+  "ratio": 2.177142857142857,
+  "refFrac": 0.8261758691206543,
+  "usable": true,
+  "view": "oblique"
+ },
+ {
+  "id": "kobenishi-kawara-180",
+  "skipped": true
+ },
+ {
+  "id": "teigaku-toride-118",
+  "truth": 118,
+  "got": 99.2,
+  "ratio": 0.840677966101695,
+  "refFrac": 1,
+  "usable": true,
+  "view": "oblique"
+ },
+ {
+  "id": "teigaku-noda-92",
+  "truth": 92,
+  "got": 77.2,
+  "ratio": 0.8391304347826087,
+  "refFrac": 0.525974025974026,
+  "usable": true,
+  "view": "onroof"
+ },
+ {
+  "id": "teigaku-asaka-68",
+  "truth": 68,
+  "got": 47.714285714285715,
+  "ratio": 0.7016806722689076,
+  "refFrac": 0.5820105820105821,
+  "usable": true,
+  "view": "oblique"
+ },
+ {
+  "id": "wkcover-slate-1350",
+  "truth": 1350,
+  "got": 198.66,
+  "ratio": 0.14715555555555554,
+  "refFrac": 0.7960784313725487,
+  "usable": true,
+  "view": "oblique"
+ },
+ {
+  "id": "wkcover-slate-2000",
+  "truth": 2000,
+  "got": 792.0000000000001,
+  "ratio": 0.3960000000000001,
+  "refFrac": 1,
+  "usable": true,
+  "view": "oblique"
+ },
+ {
+  "id": "zephan-seppan-950",
+  "truth": 950,
+  "got": 902.88,
+  "ratio": 0.9504,
+  "refFrac": 0.7797910075735788,
+  "usable": true,
+  "view": "oblique"
+ },
+ {
+  "id": "miracool-seppan-2200",
+  "truth": 2200,
+  "got": 787.626,
+  "ratio": 0.35801181818181815,
+  "refFrac": 0.8056265984654732,
+  "usable": true,
+  "view": "oblique"
+ }
+]

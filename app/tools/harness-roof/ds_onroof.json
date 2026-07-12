@@ -1,0 +1,56 @@
+[
+ {
+  "id": "nishii-slate-1700",
+  "file": "C:\\Users\\mitsu\\AppData\\Local\\Temp\\claude\\C--Users-mitsu-OneDrive-Desktop-kentikuAI\\9fc375fa-9120-4219-aac2-27ba374b7029\\scratchpad\\roofs\\nishii-slate-1700.jpg",
+  "statedAreaM2": 1700,
+  "roofType": "スレート",
+  "comment": "工場屋根の遮熱塗装。屋根面積を知りたい",
+  "viewType": "onroof",
+  "buildingType": "工場"
+ },
+ {
+  "id": "nishii-seppan-410",
+  "file": "C:\\Users\\mitsu\\AppData\\Local\\Temp\\claude\\C--Users-mitsu-OneDrive-Desktop-kentikuAI\\9fc375fa-9120-4219-aac2-27ba374b7029\\scratchpad\\roofs\\nishii-seppan-410.jpg",
+  "statedAreaM2": 410,
+  "roofType": "折板",
+  "comment": "工場屋根の遮熱塗装。屋根面積を知りたい",
+  "viewType": "onroof",
+  "buildingType": "工場"
+ },
+ {
+  "id": "nishii-seppan-1000",
+  "file": "C:\\Users\\mitsu\\AppData\\Local\\Temp\\claude\\C--Users-mitsu-OneDrive-Desktop-kentikuAI\\9fc375fa-9120-4219-aac2-27ba374b7029\\scratchpad\\roofs\\nishii-seppan-1000.jpg",
+  "statedAreaM2": 1000,
+  "roofType": "折板",
+  "comment": "工場屋根の遮熱塗装。屋根面積を知りたい",
+  "viewType": "onroof",
+  "buildingType": "工場"
+ },
+ {
+  "id": "yuuki-seppan-4000",
+  "file": "C:\\Users\\mitsu\\AppData\\Local\\Temp\\claude\\C--Users-mitsu-OneDrive-Desktop-kentikuAI\\9fc375fa-9120-4219-aac2-27ba374b7029\\scratchpad\\roofs\\yuuki-seppan-4000.jpg",
+  "statedAreaM2": 4000,
+  "roofType": "折板",
+  "comment": "工場屋根の防水・遮熱工事。屋根面積を知りたい",
+  "viewType": "onroof",
+  "buildingType": "工場"
+ },
+ {
+  "id": "lifetech-factory-692",
+  "file": "C:\\Users\\mitsu\\AppData\\Local\\Temp\\claude\\C--Users-mitsu-OneDrive-Desktop-kentikuAI\\9fc375fa-9120-4219-aac2-27ba374b7029\\scratchpad\\roofs\\lifetech-factory-692.png",
+  "statedAreaM2": 692,
+  "roofType": "折板",
+  "comment": "工場の折板屋根に遮熱シート（スカイ工法）",
+  "viewType": "onroof",
+  "buildingType": "工場"
+ },
+ {
+  "id": "lifetech-warehouse-1404",
+  "file": "C:\\Users\\mitsu\\AppData\\Local\\Temp\\claude\\C--Users-mitsu-OneDrive-Desktop-kentikuAI\\9fc375fa-9120-4219-aac2-27ba374b7029\\scratchpad\\roofs\\lifetech-warehouse-1404.png",
+  "statedAreaM2": 1404,
+  "roofType": "折板",
+  "comment": "倉庫の折板屋根に遮熱シート（スカイ工法）",
+  "viewType": "onroof",
+  "buildingType": "工場"
+ }
+]
