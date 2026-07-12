@@ -6016,7 +6016,11 @@ ${pastWork || 'まだ実績なし'}`;
     }
 
     // チャット見積の結果をestimate_logに記録（写真見積とは別ログ・由来を明示）
-    // 既存見積についての「後からの相談」なら chat_followup として元ログIDを紐づける
+    // 既存見積についての「後からの相談」なら chat_followup として元ログIDを紐づける。
+    // ★construction_id は付けない（=別案件扱い）。既存案件を開いて相談したとき、
+    //   相談で出た別価格の見積が元案件にぶら下がって「値段がごっちゃ」になるのを防ぐ。
+    //   どの案件について相談したかは source_log_id（元見積ログID）で辿れる。
+    //   登録したいときは一括登録で独立した新規案件として作成される。
     if (estimate) {
       try {
         const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
@@ -6025,7 +6029,7 @@ ${pastWork || 'まだ実績なし'}`;
           'INSERT INTO estimate_log (tenant_id, construction_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, source, source_log_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             tid,
-            data.constructionId || null,
+            null,
             estimate.workType || '',
             estimate.estimatedMaterialCost || 0,
             estimate.estimatedLaborCost || 0,
