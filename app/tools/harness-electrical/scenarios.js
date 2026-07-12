@@ -115,6 +115,49 @@ const SCENARIOS = [
       { type: 'cvt60_m', qty: 30 },
     ],
   },
+  {
+    id: 'e9-wifi-office',
+    title: 'オフィスの無線LAN新規工事',
+    spec: `オフィス（1フロア）の無線LAN(Wi-Fi)新規構築。
+- 業務用アクセスポイント(AP) 4台（本体＋設置・設定、PoE給電）
+- AP用LAN配線 CAT6 4本（天井裏配線）
+- サイトサーベイ（電波調査）1式
+※既設スイッチにPoEポートあり。設定は標準（VPN連携なし）。`,
+    items: [
+      { type: 'wifi_ap', qty: 4 },
+      { type: 'wifi_ap_install', qty: 4 },
+      { type: 'lan_cat6', qty: 4 },
+      { type: 'site_survey', qty: 1 },
+    ],
+  },
+  {
+    id: 'e10-trans-swap',
+    title: '変圧器（トランス）単体交換',
+    spec: `キュービクル内の変圧器を更新（6,600V→三相210V）。
+- 油入変圧器 500kVA級 本体交換 1台（PCB非含有を確認済み）
+- 交換工事一式（据付・一次/二次結線・旧機撤去・受電試験・停電作業半日）
+※高圧盤・幹線側の改修は無し。基礎はそのまま流用。`,
+    items: [
+      { type: 'trans_500_body', qty: 1 },
+      { type: 'trans_swap_work', qty: 1 },
+    ],
+  },
+  {
+    id: 'e11-trans-pcb',
+    title: '変圧器交換（既設がPCB含有）',
+    spec: `キュービクル内の変圧器を更新（6,600V→三相210V）。
+- 油入変圧器 500kVA級 本体交換 1台
+- 交換工事一式（据付・一次/二次結線・旧機撤去・受電試験・停電作業）
+- ★既設変圧器は1975年製で、PCB含有が判明している。
+  含有分析・PCB処分費・収集運搬を別途計上すること。`,
+    items: [
+      { type: 'trans_500_body', qty: 1 },
+      { type: 'trans_swap_work', qty: 1 },
+      { type: 'pcb_analysis', qty: 1 },
+      { type: 'pcb_disposal_trans', qty: 1 },
+      { type: 'pcb_transport', qty: 1 },
+    ],
+  },
 ];
 
 module.exports = { SCENARIOS };

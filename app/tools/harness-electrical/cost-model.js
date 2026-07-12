@@ -44,6 +44,17 @@ const UNIT = {
   // 受変電（総額）
   cubicle_100:     { label: 'キュービクル100kVA級', low: 3500000, high: 5000000 },
   cubicle_200:     { label: 'キュービクル200kVA級', low: 4500000, high: 10000000 },
+  // 無線LAN（Wi-Fi）
+  wifi_ap:         { label: '業務用AP本体', low: 20000, high: 80000 },
+  wifi_ap_install: { label: 'AP設置・設定', low: 15000, high: 40000 },
+  site_survey:     { label: 'サイトサーベイ(電波調査)', low: 50000, high: 110000 },
+  // 変圧器（トランス）単体
+  trans_500_body:  { label: '変圧器300〜500kVA本体(油入)', low: 1500000, high: 2500000 },
+  trans_swap_work: { label: 'トランス交換工事(据付・結線・撤去・試験)', low: 500000, high: 1000000 },
+  // PCB廃棄物 処分（撤去時の別途費用）
+  pcb_analysis:      { label: 'PCB含有分析', low: 20000, high: 30000 },
+  pcb_disposal_trans:{ label: 'PCB処分費(変圧器)', low: 400000, high: 800000 },
+  pcb_transport:     { label: 'PCB収集運搬', low: 50000, high: 100000 },
 };
 
 // シナリオ（items:[{type,qty}]）から正解の直接工事費レンジを計算
