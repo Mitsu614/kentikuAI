@@ -29,6 +29,12 @@ function apiKey() {
 const client = new Anthropic({ apiKey: apiKey() });
 const SYSTEM = 'あなたは建築の積算担当者です。写真から工事対象の面積・数量だけを推定します。金額は一切出しません。';
 
+// モデルを --model= で差し替え可能に。新世代(opus-4-7/4-8, sonnet-5, fable-5)は
+// temperature を受け付けない(400)ので送らない。旧世代は従来どおり temperature を送る。
+const MODEL = (process.argv.find(a => a.startsWith('--model=')) || '--model=claude-sonnet-4-6').split('=')[1];
+const NEWGEN = /opus-4-[78]|sonnet-5|fable-5|mythos-5/.test(MODEL);
+const THINK = process.argv.includes('--think'); // 新世代のみ: adaptive thinking を有効化
+
 const GRID_DIR = path.join(__dirname, 'grid');
 function gridImage(file) {
   if (!fs.existsSync(GRID_DIR)) fs.mkdirSync(GRID_DIR, { recursive: true });
@@ -45,17 +51,19 @@ function mediaTypeOf(f) {
 
 async function callOnce(strategy, item, file) {
   const buf = fs.readFileSync(file);
-  const r = await client.messages.create({
-    model: 'claude-sonnet-4-6',
+  const req = {
+    model: MODEL,
     max_tokens: strategy.maxTokens,
-    temperature: strategy.temperature ?? 0,
     system: SYSTEM,
     messages: [{ role: 'user', content: [
       { type: 'image', source: { type: 'base64', media_type: mediaTypeOf(file), data: buf.toString('base64') } },
       { type: 'text', text: strategy.prompt(item) },
     ]}],
-  });
-  const text = r.content[0]?.text || '';
+  };
+  if (!NEWGEN) req.temperature = strategy.temperature ?? 0;
+  if (NEWGEN && THINK) { req.thinking = { type: 'adaptive' }; req.max_tokens = Math.max(req.max_tokens, 6000); }
+  const r = await client.messages.create(req);
+  const text = (r.content.find(b => b.type === 'text') || {}).text || '';
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) throw new Error('no-json');
   let j = JSON.parse(m[0]);
@@ -149,6 +157,7 @@ function summarize(rows, label) {
 
   const ds = JSON.parse(fs.readFileSync(dsPath, 'utf8')).filter(d => fs.existsSync(d.file));
   const list = strategies.filter(s => !only || only.includes(s.id));
+  console.log(`モデル ${MODEL}${NEWGEN ? ' (新世代/temperature送らず)' : ''}`);
   console.log(`データ ${ds.length}件 × 戦略 ${list.length}個  (並列${conc})`);
 
   const all = [];
@@ -180,6 +189,7 @@ function summarize(rows, label) {
     const sub = all.filter(r => r.buildingType === b);
     if (sub.length) summarize(sub, b);
   }
-  fs.writeFileSync(dsPath.replace(/\.json$/, '.harness.json'), JSON.stringify(all, null, 2));
-  console.log(`\n結果を保存: ${dsPath.replace(/\.json$/, '.harness.json')}`);
+  const outPath = dsPath.replace(/\.json$/, `.${MODEL}${THINK ? '-think' : ''}.harness.json`);
+  fs.writeFileSync(outPath, JSON.stringify(all, null, 2));
+  console.log(`\n結果を保存: ${outPath}`);
 })();

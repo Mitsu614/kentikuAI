@@ -1074,7 +1074,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.5';
+const CURRENT_VERSION = '3.4.6';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -5643,9 +5643,15 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
   // ※限界要因は中央バイアスでなく1枚ごとのバラつき（生比0.37〜1.91）。定数では消せないので、
   //   これ以上の精度は実寸入力（実績棟寸法・図面・ユーザー入力）に依存する。
   //
-  // 基準値は対象ごとに違う。1.30 は「屋根」11件で決めた値であって、外壁・内装には根拠がない。
+  // 2026-07-14 モデル切替に伴う再フィット: ビジョンモデルを sonnet-4-6 → opus-4-8 + adaptive thinking に
+  // 変更（app/tools/harness-roof で3モデル比較）。opus+thinking は生比の幾何平均が 0.66（sonnet は
+  // 0.72前後）と、より系統的に過小に答えるため、無バイアス補正は 1/0.66≒1.51。屋根の基準値を
+  // 1.30 → 1.50 に上げた。thinking により大屋根の壊滅的な過小見積（miracool-2200: 生比0.29→0.52 等）が
+  // 救済され、赤字方向の暴走が小さくなったのが採用理由。※限界要因は依然1枚ごとのバラつきで、定数では消せない。
+  //
+  // 基準値は対象ごとに違う。1.50 は「屋根」11件で決めた値であって、外壁・内装には根拠がない。
   // 検証していないものに勝手な係数を置くほうが有害なので、外壁・内装は 1.00 から始めて実測で学ぶ。
-  const AREA_CALIBRATION_BASE: Record<string, number> = { roof: 1.30, wall: 1.00, floor: 1.00 };
+  const AREA_CALIBRATION_BASE: Record<string, number> = { roof: 1.50, wall: 1.00, floor: 1.00 };
   const AREA_CAL_PRIOR = 5;   // 事前分布の重み。実測5件で基準値と学習値が半々になる
   const AREA_CAL_MIN = 0.60;
   const AREA_CAL_MAX = 2.50;
@@ -5742,10 +5748,14 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     const Anthropic = require('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey: config.anthropicKey });
 
+    // 正解付き11件のハーネスで sonnet-4-6 / opus-4-8 / sonnet-5 を比較した結果（app/tools/harness-roof）、
+    // opus-4-8 + adaptive thinking を採用。sonnet-4-6 は1350㎡で回答拒否・最悪較正後2.67倍だったが、
+    // opus-4-8 は全11件回答・較正後の暴走が小さく、thinking で大屋根の過小見積（＝赤字）を救済できる。
+    // temperature は新世代モデルでは400になるため送らない。
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1500,
-      temperature: 0,
+      model: 'claude-opus-4-8',
+      max_tokens: 6000,
+      thinking: { type: 'adaptive' },
       system: 'あなたは建築の積算担当者です。写真から工事対象の面積・数量だけを推定します。金額は一切出しません。',
       messages: [{
         role: 'user',
@@ -5809,7 +5819,8 @@ ${FLOOR_SCALE_GUIDE}
       }],
     });
 
-    const text = (response.content[0] as any)?.text || '';
+    // adaptive thinking では content[0] が thinking ブロックになるため、text ブロックを拾う
+    const text = ((response.content as any[]).find((b) => b?.type === 'text') || {}).text || '';
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) throw new Error('面積の読み取りに失敗しました。面積を直接入力してください。');
     const result = parseLenientJson(match[0]);
