@@ -1920,74 +1920,91 @@ app.whenReady().then(async () => {
   });
 
   // 施工の売価・請求書を自動更新 + 学習ループのフィードバック自動蓄積
+  //
+  // ★重複学習の防止（2026-07-13）:
+  //   金額を保存すると材料明細を1行ずつ更新するため、その都度 recalcConstruction が呼ばれ、
+  //   1回の保存で学習(Supabase送信＋係数更新＝重いAI呼び出し)が何度も、しかも直しかけの
+  //   中間状態でも発火していた。→ 価格・請求書の更新は毎回やるが、学習は編集の連打を
+  //   まとめて「最後の状態で1回だけ」走らせる（デバウンス）。修正でも予実でも学習は行う。
+  const learnTimers = new Map<number, ReturnType<typeof setTimeout>>();
+
   function recalcConstruction(constructionId: number) {
     const c = queryOne('SELECT * FROM constructions WHERE id = ?', [constructionId]);
     if (!c) return;
     const mat = queryOne('SELECT SUM(quantity * unit_price) as total FROM construction_materials WHERE construction_id = ?', [constructionId]);
     const matCost = mat?.total || 0;
     const laborCost = c.labor_cost || 0;
-    const totalCost = matCost + laborCost;
     const markupRate = c.markup_rate || 1.3;
-    const sellingPrice = Math.ceil(totalCost * markupRate);
-    // fixed_selling_priceを更新
+    const sellingPrice = Math.ceil((matCost + laborCost) * markupRate);
+    // 価格・請求書は毎回すぐ更新（表示のため）
     runSql('UPDATE constructions SET fixed_selling_price = ? WHERE id = ?', [sellingPrice, constructionId]);
-    // 紐づく請求書のamountも更新
     runSql('UPDATE invoices SET amount = ? WHERE construction_id = ?', [sellingPrice, constructionId]);
+    // 学習は連打をまとめて最後に1回だけ
+    const prev = learnTimers.get(constructionId);
+    if (prev) clearTimeout(prev);
+    learnTimers.set(constructionId, setTimeout(() => {
+      learnTimers.delete(constructionId);
+      try { learnFromConstruction(constructionId); } catch (e) { console.error('Learning loop trigger failed:', e); }
+    }, 1500));
+  }
 
-    // ── 学習ループ: estimate_logに実績値を自動フィードバック ──
-    try {
-      const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type, actual_material_cost, actual_labor_cost, actual_selling_price FROM estimate_log WHERE construction_id = ?', [constructionId]);
-      if (log) {
-        // 実績値が変わっていない場合はスキップ（重複送信防止）
-        const prevMat = log.actual_material_cost || 0;
-        const prevLab = log.actual_labor_cost || 0;
-        const prevSell = log.actual_selling_price || 0;
-        const changed = Math.abs(prevMat - matCost) > 1 || Math.abs(prevLab - laborCost) > 1 || Math.abs(prevSell - sellingPrice) > 1;
+  // 学習ループ本体: 施工の最終状態を実績値として estimate_log に記録し、変化があればSupabase送信＋係数更新。
+  // recalcConstruction からデバウンスして呼ぶ（＝1回の保存で1回だけ）。
+  function learnFromConstruction(constructionId: number) {
+    const c = queryOne('SELECT * FROM constructions WHERE id = ?', [constructionId]);
+    if (!c) return;
+    const mat = queryOne('SELECT SUM(quantity * unit_price) as total FROM construction_materials WHERE construction_id = ?', [constructionId]);
+    const matCost = mat?.total || 0;
+    const laborCost = c.labor_cost || 0;
+    const markupRate = c.markup_rate || 1.3;
+    const sellingPrice = Math.ceil((matCost + laborCost) * markupRate);
 
-        const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
-        runSql(
-          'UPDATE estimate_log SET actual_material_cost=?, actual_labor_cost=?, actual_selling_price=?, actual_markup_rate=?, feedback_at=? WHERE id=?',
-          [matCost, laborCost, sellingPrice, markupRate, now, log.id]
-        );
+    const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type, actual_material_cost, actual_labor_cost, actual_selling_price FROM estimate_log WHERE construction_id = ?', [constructionId]);
+    if (!log) return;
+    // 実績値が変わっていない場合はスキップ（重複送信防止）
+    const prevMat = log.actual_material_cost || 0;
+    const prevLab = log.actual_labor_cost || 0;
+    const prevSell = log.actual_selling_price || 0;
+    const changed = Math.abs(prevMat - matCost) > 1 || Math.abs(prevLab - laborCost) > 1 || Math.abs(prevSell - sellingPrice) > 1;
 
-        // 実績値が変わった場合のみ学習（重複防止）
-        if (changed) {
-          const config = loadApiConfig();
-          const learnTid = getCurrentTenant();
-          const learnWorkType = log.work_type || '不明';
-          if (isHeatshieldWork(learnWorkType)) {
-            // 特許の遮熱シートが絡む工事のみ隔離: 全国共有プールには送らず自社実績だけで学習
-            try { runSql('UPDATE estimate_log SET synced_at = ? WHERE id = ?', [now, log.id]); } catch (_) {}
-            console.log('学習ループ: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
-            sendLearningCompleteNotification(learnTid, learnWorkType);
-          } else {
-            // 学習(実績記録)完了を通知 — クラウド分析の成否に依存させない
-            sendLearningCompleteNotification(learnTid, learnWorkType);
-            sendFeedbackToSupabase([{
-              work_type: learnWorkType,
-              ai_material_cost: log.ai_material_cost,
-              ai_labor_cost: log.ai_labor_cost,
-              ai_total: log.ai_total,
-              actual_material_cost: matCost,
-              actual_labor_cost: laborCost,
-              actual_selling_price: sellingPrice,
-              actual_markup_rate: markupRate,
-              accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
-            }]).then(() => {
-              // 送信成功 → synced_at記録（起動時の重複送信を防止）
-              try { runSql('UPDATE estimate_log SET synced_at = ? WHERE id = ?', [now, log.id]); } catch (_) {}
-              return analyzeAndUpdateCoefficients(config.anthropicKey);
-            }).then(() => {
-              console.log('学習ループ即時: 係数更新完了 — 次回見積から反映されます');
-            }).catch((e: any) => {
-              console.error('学習ループ即時エラー:', e);
-            });
-          }
-        } else {
-          console.log('学習ループ: 実績値に変更なし — Supabase送信スキップ');
-        }
-      }
-    } catch (e) { console.error('Learning loop trigger failed:', e); }
+    const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+    runSql(
+      'UPDATE estimate_log SET actual_material_cost=?, actual_labor_cost=?, actual_selling_price=?, actual_markup_rate=?, feedback_at=? WHERE id=?',
+      [matCost, laborCost, sellingPrice, markupRate, now, log.id]
+    );
+
+    if (!changed) { console.log('学習ループ: 実績値に変更なし — Supabase送信スキップ'); return; }
+
+    const config = loadApiConfig();
+    const learnTid = getCurrentTenant();
+    const learnWorkType = log.work_type || '不明';
+    if (isHeatshieldWork(learnWorkType)) {
+      // 特許の遮熱シートが絡む工事のみ隔離: 全国共有プールには送らず自社実績だけで学習
+      try { runSql('UPDATE estimate_log SET synced_at = ? WHERE id = ?', [now, log.id]); } catch (_) {}
+      console.log('学習ループ: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
+      sendLearningCompleteNotification(learnTid, learnWorkType);
+    } else {
+      // 学習(実績記録)完了を通知 — クラウド分析の成否に依存させない
+      sendLearningCompleteNotification(learnTid, learnWorkType);
+      sendFeedbackToSupabase([{
+        work_type: learnWorkType,
+        ai_material_cost: log.ai_material_cost,
+        ai_labor_cost: log.ai_labor_cost,
+        ai_total: log.ai_total,
+        actual_material_cost: matCost,
+        actual_labor_cost: laborCost,
+        actual_selling_price: sellingPrice,
+        actual_markup_rate: markupRate,
+        accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
+      }]).then(() => {
+        try { runSql('UPDATE estimate_log SET synced_at = ? WHERE id = ?', [now, log.id]); } catch (_) {}
+        return analyzeAndUpdateCoefficients(config.anthropicKey);
+      }).then(() => {
+        console.log('学習ループ: 係数更新完了 — 次回見積から反映されます');
+      }).catch((e: any) => {
+        console.error('学習ループエラー:', e);
+      });
+    }
   }
 
   // ── 施工材料明細 ──
