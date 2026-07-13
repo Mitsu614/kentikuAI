@@ -645,8 +645,19 @@ function enforceHeatshieldQuantity(result: any, context: string): string[] {
   if (Math.abs(ratio - df) <= df * DEVELOP_TOLERANCE) return [];
 
   if (ratio < df) {
-    const msg = `見積数量 ${qty}㎡ ÷ 屋根面積 ${roof}㎡ = ${ratio.toFixed(2)} で、申告された展開係数 ${df} と合いません。掛け忘れなら数量は ${Math.round(roof * df)}㎡（約${Math.round((df / Math.max(ratio, 0.01) - 1) * 100)}%の過小見積）。金額は変更していません`;
+    const newQty = Math.round(roof * df);
+    const deltaPct = Math.round((df / Math.max(ratio, 0.01) - 1) * 100);
+    const msg = `見積数量 ${qty}㎡ ÷ 屋根面積 ${roof}㎡ = ${ratio.toFixed(2)} で、申告された展開係数 ${df} と合いません。掛け忘れなら数量は ${newQty}㎡（約${deltaPct}%の過小見積）。金額は変更していません`;
     console.warn(`[${context}] 展開係数の掛け忘れ疑い（自動修正しません） → ${msg}`);
+    // 過小は勝手に増額しない方針だが、ユーザーが「こちらに変更する」を押したら適用できるよう
+    // 補正内容を構造化して持たせる（材料+施工費を df/ratio 倍・数量を newQty に引き直す）。
+    (result.estimateFixes = result.estimateFixes || []).push({
+      kind: 'develop',
+      factor: Math.round((df / ratio) * 1000) / 1000,
+      newQuantity: newQty,
+      deltaPct,
+      label: `数量を ${newQty}㎡ に直す（材料・施工費を約+${deltaPct}%）`,
+    });
     return [msg];
   }
 
@@ -698,11 +709,21 @@ function checkLaborAgainstManDays(result: any, context: string): string | null {
   const msg = `人件費 ¥${fromBreakdown.toLocaleString()} が、人工の積み上げ Σ(人工×日額) = ¥${Math.round(fromManDays).toLocaleString()} と合いません（${ratio.toFixed(2)}倍）。`
     + `${diff > 0 ? `¥${diff.toLocaleString()} 不足している可能性` : `¥${Math.abs(diff).toLocaleString()} 過大の可能性`}があります。金額は変更していません`;
   console.warn(`[${context}] 人件費と人工が不整合（自動修正しません） → ${msg}`);
+  // 「こちらに変更する」で人件費を人工の積み上げ（Σ人工×日額）に合わせられるよう補正内容を持たせる。
+  // 施工費の行だけを factor 倍する（材料・仮設・経費は人件費と無関係なので触らない）。
+  (result.estimateFixes = result.estimateFixes || []).push({
+    kind: 'labor',
+    factor: Math.round((fromManDays / fromBreakdown) * 1000) / 1000,
+    targetLabor: Math.round(fromManDays),
+    label: `人件費を ¥${Math.round(fromManDays).toLocaleString()}（人工の積み上げ）に直す`,
+  });
   return msg;
 }
 
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
+  // 「こちらに変更する」候補は毎回作り直す（補正を当てて積み直すと、解消した警告は再出しない）
+  result.estimateFixes = [];
   // 縦計を出す前に、行の金額そのものを直す（合計はそのあとで積み直される）
   const warns = [...repairDigitDrops(result, context), ...enforceHeatshieldQuantity(result, context)];
   if (warns.length) result.estimateWarnings = warns;
@@ -743,6 +764,45 @@ function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = D
   result.profitRate = sum > 0 ? Math.round((result.grossProfit / sum) * 1000) / 10 : 0;
   result.markupRate = costTotal > 0 ? Math.round((sum / costTotal) * 100) / 100 : 1;
   return result;
+}
+
+// 「こちらに変更する」= 掛け忘れ警告(estimateFix)の補正をユーザー承認で適用する。
+// 二重掛けの自動修正と同じ要領で、材料+施工費だけを factor 倍し（仮設・経費は数量に比例しないので触らない）、
+// 数量を引き直してから積み直す。過小の増額は自動ではやらない方針なので、ここは必ず人の承認を経る。
+function applyEstimateFix(result: any, fix: any, context: string): any {
+  if (!result || !fix || !Array.isArray(result.breakdown)) return result;
+  const factor = Number(fix.factor) || 0;
+  if (factor <= 0) return result;
+
+  if (fix.kind === 'develop') {
+    // 掛け忘れ: 材料+施工費を factor 倍し、数量を引き直す（仮設・経費は数量に比例しないので触らない）
+    for (const b of result.breakdown) {
+      const cat = classifyBreakdownItem(b);
+      if (cat !== '材料' && cat !== '施工費') continue;
+      if (Number(b.cost) > 0) b.cost = Math.round(Number(b.cost) * factor);
+      if (Number(b.costBase) > 0) b.costBase = Math.round(Number(b.costBase) * factor);
+      if (Number(b.quantity) > 0) b.quantity = Math.round(Number(b.quantity) * factor * 10) / 10;
+    }
+    if (fix.newQuantity) result.quantityM2 = Number(fix.newQuantity);
+    // 施工費を増やしたぶん人工明細も同率で伸ばす。据え置くと今度は人件費警告が新たに出て堂々巡りになる。
+    if (Array.isArray(result.manDaysBreakdown)) {
+      for (const r of result.manDaysBreakdown) {
+        if (Number(r?.manDays) > 0) r.manDays = Math.round(Number(r.manDays) * factor * 100) / 100;
+        if (Number(r?.days) > 0) r.days = Math.round(Number(r.days) * factor * 100) / 100;
+      }
+    }
+  } else if (fix.kind === 'labor') {
+    // 人件費不整合: 施工費の行だけを factor 倍して、人件費を人工の積み上げに合わせる
+    for (const b of result.breakdown) {
+      if (classifyBreakdownItem(b) !== '施工費') continue;
+      if (Number(b.cost) > 0) b.cost = Math.round(Number(b.cost) * factor);
+      if (Number(b.costBase) > 0) b.costBase = Math.round(Number(b.costBase) * factor);
+    }
+  } else {
+    return result;
+  }
+  // 積み直す。reconcile が estimateFixes を作り直すので、解消した警告のボタンは自然に消える。
+  return reconcileEstimateTotal(result, context);
 }
 
 function parseLenientJson(raw: string): any {
@@ -4529,7 +4589,7 @@ ${pages}</body></html>`;
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
   // AI見積もりのコア処理。デスクトップ(IPC)とスマホ(内蔵Webサーバー)の両方から呼ぶ
   const analyzeImageCore = async (data: any) => {
-    let { imageBase64, beforeImage, afterImage, comment, location, area, clientAttrs } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null } : data;
+    let { imageBase64, beforeImage, afterImage, comment, location, area, clientAttrs, roofType } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null } : data;
     // スマホ写真は数MBあり、Anthropicの5MB上限で400になるため送信前に縮小する
     imageBase64 = shrinkImageForAI(imageBase64);
     beforeImage = shrinkImageForAI(beforeImage);
@@ -5094,6 +5154,7 @@ ${COST_REFERENCE}
 ${hasLocation ? `## 現場場所\n${location}\n\n★重要: 上記の場所に基づいて「全国 地域別 工事費係数」テーブルから該当する都道府県の係数を適用し、金額を補正すること。大阪以外の場合は必ず地域係数を掛けて算出すること。\n` : ''}
 ${comment ? `## ユーザーが依頼した工事内容（★最重要★）\n${comment}\n` : ''}
 ${(area && String(area).trim()) ? `## ★実測値（面積・数量）— 最優先で使用★\n${String(area).trim()}\n★重要: これはユーザーが現場で測った/把握している確定値です。写真・図面・航空写真からの推定より必ずこの実測値を優先し、この数量で材料費・施工費を算出すること。推定でずらさないこと。実測値が与えられた項目は信頼度(confidence)を高めに扱い、recommendationsに「面積は推定です」等の断り書きを書かないこと。\n` : ''}
+${(roofType && roofType.developFactor > 0) ? `## ★屋根種別（お客様確認済み — 展開係数を必ずこれで）★\n屋根種別: ${roofType.label}。展開係数 = ×${roofType.developFactor}。\n★重要: 折板・波板の材料工事（遮熱シート・カバー工法など、材料が波形に沿って張るもの）では「見積数量 = 屋根面積 × ${roofType.developFactor}」で必ず拾い、developFactor には ${roofType.developFactor} を出力すること。これはお客様が確認した確定値なので、写真からの種別判定より優先する。塗装・葺き替えなど材料が波形に沿わない工事では、この係数は掛けず数量は屋根面積のままにすること。\n` : ''}
 ${droneInfo}${droneCSVInfo}${industryPrompt}
 ## ★★★ 最重要ルール（絶対に守れ）★★★
 1. breakdownには「ユーザーが依頼した工事内容」に直接関係する項目だけを入れろ
@@ -6263,6 +6324,10 @@ ${pastWork || 'まだ実績なし'}`;
   };
   ipcMain.handle('ai:autoCreate', (_e, data: any) => autoCreateFromEstimateCore(data));
   setAutoCreateHandler(autoCreateFromEstimateCore);
+
+  // 「こちらに変更する」= 掛け忘れ警告の補正を適用して補正後の見積を返す（保存は呼び出し側）
+  ipcMain.handle('ai:applyEstimateFix', (_e, data: { result: any; fix: any }) =>
+    applyEstimateFix(data?.result, data?.fix, 'apply-fix'));
 
   // ── 顧客プロフィール（職業・趣味）— 見積提案のパーソナライズ用 ──
   // 顧客名（テナント内で一意）をキーに職業・趣味を保存/読込する。

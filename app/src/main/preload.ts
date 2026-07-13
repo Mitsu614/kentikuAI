@@ -144,6 +144,7 @@ contextBridge.exposeInMainWorld('api', {
   importDroneCSV: () => ipcRenderer.invoke('drone:importCSV'),
   generateImage: (data: any) => ipcRenderer.invoke('ai:generateImage', data),
   autoCreateFromEstimate: (data: any) => ipcRenderer.invoke('ai:autoCreate', data),
+  applyEstimateFix: (data: any) => ipcRenderer.invoke('ai:applyEstimateFix', data),
 
   // データエクスポート/インポート
   exportData: () => ipcRenderer.invoke('data:export'),

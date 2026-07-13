@@ -41,6 +41,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [location, setLocation] = useState('');
   const [comment, setComment] = useState('');
   const [area, setArea] = useState(''); // 面積・数量の実測値（AIの推定より優先させる）
+  const [roofType, setRoofType] = useState(''); // 屋根種別（お客様確認）→ 展開係数をAIに強制する
   // お客様(施主)の情報 — 提案(recommendations)のパーソナライズにのみ使う。金額には影響させない。
   const [clientName, setClientName] = useState('');
   const [clientJob, setClientJob] = useState('');
@@ -73,6 +74,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [error, setError] = useState('');
   const [autoCreated, setAutoCreated] = useState<any>(null);
   const [creating, setCreating] = useState(false);
+  const [applyingFix, setApplyingFix] = useState(false);
   const [estimateLog, setEstimateLog] = useState<any[]>([]);
   const [selectedLog, setSelectedLog] = useState<number | null>(null);
   const [logPO, setLogPO] = useState<any>(null);
@@ -326,9 +328,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       if (clientName.trim() && (clientJob.trim() || clientHobby.trim())) {
         try { await (window as any).api.upsertCustomerProfile({ name: clientName.trim(), job: clientJob, hobby: clientHobby }); } catch (_) {}
       }
+      // 屋根種別（お客様確認）→ 展開係数をAIに強制するための構造化データ
+      const roof = roofType ? { label: roofType.split('|')[0], developFactor: Number(roofType.split('|')[1]) || 0 } : null;
       const payload = mode === 'beforeafter'
-        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs }
-        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs };
+        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof }
+        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof };
       const res = await (window as any).api.analyzeImage(payload);
       setResult(res);
       setReArea(res?.assumedArea || ''); // 「AIが前提にした面積」を修正欄の初期値に
@@ -842,6 +846,25 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               }}
             />
             <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>実測値を入れると、写真・航空写真からの推定を使わず正確に計算します（信頼度アップ）。</div>
+          </div>
+
+          {/* 屋根種別 — 展開係数（材料面積÷屋根面積）は種別で変わる。お客様に聞いて選べば、AIの写真判定より確実。 */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>🏠 屋根種別（折板・波板の材料工事のとき — お客様に確認）</label>
+            <select
+              value={roofType}
+              onChange={e => setRoofType(e.target.value)}
+              style={{ width: '100%', padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit', background: '#fff' }}
+            >
+              <option value="">自動（AIが写真から判定）</option>
+              <option value="折板88mm|1.41">折板 88mm（一般）… 展開係数 ×1.41</option>
+              <option value="折板150mm|1.69">折板 150mm（大スパン）… 展開係数 ×1.69</option>
+              <option value="スレート大波|1.1">スレート大波 … 展開係数 ×1.1</option>
+              <option value="平葺き・瓦・シングル|1.0">平葺き・瓦・シングル … 補正なし ×1.0</option>
+            </select>
+            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+              折板は山谷のぶん材料面積が増えます。<strong>お客様に屋根種別を聞いて選ぶと、AIの判定より確実に展開係数が当たります。</strong>（塗装・葺き替えなど材料が波形に沿わない工事は「自動」でOK）
+            </div>
           </div>
 
           {/* お客様(施主)の情報 — 提案のパーソナライズ専用。金額には一切影響させない。 */}
@@ -1506,6 +1529,61 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 金額が過大になる誤りは自動で下げました。過小になる誤りは、勝手に増額せず警告だけにしています。
                 <strong>提出前に必ず内訳の数量と金額を確認してください。</strong>
               </div>
+              {/* 各警告の「正しい値」に、人の承認を経て1クリックで直す＋上書き保存する */}
+              {Array.isArray(result.estimateFixes) && result.estimateFixes.length > 0 && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px dashed #e0a0a0', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {result.estimateFixes.map((fix: any, i: number) => (
+                    <div key={i}>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={applyingFix}
+                        onClick={async () => {
+                          if (applyingFix) return;
+                          if (!confirm(`${fix.label}\n\nこの内容に変更して保存しますか？`)) return;
+                          setApplyingFix(true);
+                          try {
+                            const fixed = await (window as any).api.applyEstimateFix({ result, fix });
+                            if (fixed) {
+                              setResult({ ...fixed });
+                              if (autoCreated?.constructionId) {
+                                const mats = await (window as any).api.listConstructionMaterials(autoCreated.constructionId);
+                                const currentTotal = mats.reduce((s: number, m: any) => s + m.quantity * m.unit_price, 0);
+                                const newTotal = fixed.estimatedTotal || currentTotal;
+                                if (currentTotal > 0 && newTotal > 0 && Math.abs(newTotal - currentTotal) >= 1) {
+                                  const ratio = newTotal / currentTotal;
+                                  for (const m of mats) {
+                                    await (window as any).api.updateConstructionMaterial({
+                                      id: m.id, materialId: m.material_id, name: m.material_name,
+                                      quantity: m.quantity, unit: m.unit || '式',
+                                      unitPrice: Math.round(m.unit_price * ratio),
+                                    });
+                                  }
+                                }
+                                await (window as any).api.updateConstruction({
+                                  id: autoCreated.constructionId, propertyId: autoCreated.propertyId,
+                                  title: fixed.workType || '工事', constructionDate: new Date().toISOString().split('T')[0],
+                                  laborCost: 0, markupRate: 1, notes: '', status: '見積中',
+                                });
+                                alert('金額を直して上書き保存しました。AIの学習にも反映されます。');
+                              } else {
+                                alert('金額を直しました。一括登録すると保存されます。');
+                              }
+                            }
+                          } catch (e: any) {
+                            alert('変更に失敗しました: ' + (e.message || e));
+                          }
+                          setApplyingFix(false);
+                        }}
+                      >
+                        {applyingFix ? '変更中…' : `✔ こちらに変更する（${fix.label}）`}
+                      </button>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 11, color: '#7b241c' }}>
+                    ※押すと該当の費目だけを補正します（仮設・経費は数量に比例しないため変わりません）。金額に直結するので内容を確認のうえどうぞ。
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
