@@ -1546,25 +1546,30 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                             if (fixed) {
                               setResult({ ...fixed });
                               if (autoCreated?.constructionId) {
+                                // 材料明細 = 補正後 breakdown の1対1対応（listはcm.id順=登録順=breakdown順）。
+                                // 補正後の各行 cost をそのまま単価に反映する（数量は1のまま／単価に総額が乗る設計）。
+                                // 旧実装は total 比で全行を一律スケールしていたが、それだと applyEstimateFix が
+                                // 据え置いた仮設・経費まで膨らみ、画面の内訳と保存値がズレていた。
+                                // 掛率・人件費・備考(施工指示)には触らない（updateConstruction を呼ぶと notes が消える）。
                                 const mats = await (window as any).api.listConstructionMaterials(autoCreated.constructionId);
-                                const currentTotal = mats.reduce((s: number, m: any) => s + m.quantity * m.unit_price, 0);
-                                const newTotal = fixed.estimatedTotal || currentTotal;
-                                if (currentTotal > 0 && newTotal > 0 && Math.abs(newTotal - currentTotal) >= 1) {
-                                  const ratio = newTotal / currentTotal;
-                                  for (const m of mats) {
-                                    await (window as any).api.updateConstructionMaterial({
-                                      id: m.id, materialId: m.material_id, name: m.material_name,
-                                      quantity: m.quantity, unit: m.unit || '式',
-                                      unitPrice: Math.round(m.unit_price * ratio),
-                                    });
+                                const bd = Array.isArray(fixed.breakdown) ? fixed.breakdown : [];
+                                if (bd.length > 0 && mats.length === bd.length) {
+                                  for (let i = 0; i < mats.length; i++) {
+                                    const m = mats[i];
+                                    const newCost = Math.round(Number(bd[i].cost) || 0);
+                                    if (newCost > 0 && newCost !== m.unit_price) {
+                                      await (window as any).api.updateConstructionMaterial({
+                                        id: m.id, materialId: m.material_id, name: m.material_name,
+                                        quantity: m.quantity, unit: m.unit || '式',
+                                        unitPrice: newCost,
+                                      });
+                                    }
                                   }
+                                  alert('金額を直して上書き保存しました。AIの学習にも反映されます。');
+                                } else {
+                                  // 内訳の行数が変わっている（手編集など）→ 一律補正だと壊すので保存は一括登録に委ねる
+                                  alert('金額を直しました。内訳の行数が変わっているため、「一括登録」で保存し直してください。');
                                 }
-                                await (window as any).api.updateConstruction({
-                                  id: autoCreated.constructionId, propertyId: autoCreated.propertyId,
-                                  title: fixed.workType || '工事', constructionDate: new Date().toISOString().split('T')[0],
-                                  laborCost: 0, markupRate: 1, notes: '', status: '見積中',
-                                });
-                                alert('金額を直して上書き保存しました。AIの学習にも反映されます。');
                               } else {
                                 alert('金額を直しました。一括登録すると保存されます。');
                               }

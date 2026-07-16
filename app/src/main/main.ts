@@ -720,12 +720,148 @@ function checkLaborAgainstManDays(result: any, context: string): string | null {
   return msg;
 }
 
+// 山下さん（遮熱シート）専用: スカイ工法の㎡単価は「材工共＋運搬・現場管理・養生・法定福利までコミ」の
+// 一式単価であり、人件費も施工費行に内包されている（本人談・自社実績の建て方）。AIがこれらを別行で
+// 積むと二重計上になる。実例（2026-07-16 山下さんの工場屋根案件・約500㎡）:
+//   資材運搬費16万・現場管理費16.7万・下部養生費12万・福利厚生費4.75万 = 計約49万を余計に積み、
+//   本来300万台の見積が344.7万に膨れた（約44万過大）。プロンプトで禁止しているがAIが従わないことが
+//   あるため、決定論的に除去する。★遮熱シート工事のときだけ効かせる（他テナントの通常見積には触らない）。
+const HEATSHIELD_BAKED_IN = /資材運搬|運搬費|現場管理|下部養生|養生費|福利厚生|法定福利/;
+function stripHeatshieldDoubleCounted(result: any, context: string): string[] {
+  if (!isHeatshieldWork(result?.workType) || !Array.isArray(result.breakdown)) return [];
+  const removed: string[] = [];
+  result.breakdown = result.breakdown.filter((b: any) => {
+    const name = String(b?.item || '');
+    if (HEATSHIELD_BAKED_IN.test(name)) {
+      removed.push(`${name}（¥${(Number(b?.cost) || 0).toLocaleString()}）`);
+      return false;
+    }
+    return true;
+  });
+  if (!removed.length) return [];
+  console.warn(`[${context}] 遮熱シート: スカイ工法の㎡単価にコミ済みの費目を別行から除去（二重計上防止）→ ${removed.join(' / ')}`);
+  return [`スカイ工法の㎡単価に含まれる費目を別行から除外しました（二重計上防止）: ${removed.join('、')}`];
+}
+
+// 山下さん（遮熱シート）専用: スカイ工法の単価は材工共（人件費コミ）。本人が「人工の人件費は別立て不要」と
+// 明言。AIは breakdown を「材料行＋施工費行」に分けて出すため、画面に人件費が別途立つ。これを避けるため、
+// 材料・施工費の行を「材工共」1行にまとめ、人件費（施工費）行を消す。金額は㎡単価の中に残るので総額は不変。
+// ★遮熱シート工事のときだけ効かせる（他テナントの通常見積は材料/人件費を分けて表示したままにする）。
+function collapseHeatshieldRoofToMatKou(result: any, context: string): string[] {
+  if (!isHeatshieldWork(result?.workType) || !Array.isArray(result.breakdown)) return [];
+  const isBody = (b: any) => { const c = classifyBreakdownItem(b); return c === '材料' || c === '施工費'; };
+  const body = result.breakdown.filter(isBody);
+  if (body.length < 2) return [];   // 既に1行以下なら何もしない（＝人件費の別行が無い）
+  const cost = body.reduce((s: number, b: any) => s + (Number(b?.cost) || 0), 0);
+  const base = body.reduce((s: number, b: any) => s + (Number(b?.costBase) || 0), 0);
+  const qty = Number(result?.quantityM2) || 0;
+  const merged = {
+    category: '材料',
+    item: '遮熱シート スカイ工法（材工共）',
+    quantity: qty > 0 ? qty : 1,
+    unitPrice: qty > 0 ? Math.round(cost / qty) : cost,
+    cost,
+    costBase: (base > 0 && base < cost) ? base : Math.round(cost / HEATSHIELD_MARKUP),
+    note: '材料・施工（人件費）を含む材工共単価。人件費は別行にしない（山下さん仕様）',
+  };
+  result.breakdown = [merged, ...result.breakdown.filter((b: any) => !isBody(b))];
+  console.warn(`[${context}] 遮熱シート: 材料・施工費(人件費)を材工共1行にまとめた（¥${cost.toLocaleString()}／${qty || '?'}㎡）`);
+  return ['スカイ工法の材料・施工費（人件費）を材工共1行にまとめました（人件費は別立てしません）'];
+}
+
+// 山下さん（遮熱シート）専用: 諸経費は「現場固定 約10万円」。プロンプトの「総額の約12%」だと、大面積
+// （508㎡＝約328万）で諸経費が32万に膨らむ（本人の建て方は固定10万）。総額に比例させず10万で頭打ちにする。
+// ★上限方式: 既に10万以下（小規模で6万等）ならそのまま。10万を超えたぶんだけ10万に補正する。
+const HEATSHIELD_OVERHEAD_CAP = 100000;
+function fixHeatshieldOverhead(result: any, context: string): string[] {
+  if (!isHeatshieldWork(result?.workType) || !Array.isArray(result.breakdown)) return [];
+  const exp = result.breakdown.filter((b: any) => classifyBreakdownItem(b) === '経費');
+  const before = exp.reduce((s: number, b: any) => s + (Number(b?.cost) || 0), 0);
+  if (before <= HEATSHIELD_OVERHEAD_CAP) return [];   // 上限内なら触らない
+  const merged = {
+    category: '経費', item: '諸経費', quantity: 1,
+    unitPrice: HEATSHIELD_OVERHEAD_CAP, cost: HEATSHIELD_OVERHEAD_CAP,
+    costBase: Math.round(HEATSHIELD_OVERHEAD_CAP / HEATSHIELD_MARKUP),
+    note: '現場固定10万（山下さん仕様・総額に比例させない）',
+  };
+  result.breakdown = [...result.breakdown.filter((b: any) => classifyBreakdownItem(b) !== '経費'), merged];
+  console.warn(`[${context}] 遮熱シート: 諸経費を¥${before.toLocaleString()}→固定¥${HEATSHIELD_OVERHEAD_CAP.toLocaleString()}に補正`);
+  return [`諸経費を現場固定¥${HEATSHIELD_OVERHEAD_CAP.toLocaleString()}に補正しました（元¥${before.toLocaleString()}／総額比例をやめ）`];
+}
+
+// 山下さん（遮熱シート）専用: 規模別アンカー。AIが㎡単価・安全・足場を範囲内で毎回バラバラに選ぶと
+// 見積が振り子になる（実例2026-07-16: 344万→287万）。数量(屋根面積×展開係数)だけAIに任せ、単価と
+// 固定費はこのアンカーで決め打ちにして安定させる。実績2点（48㎡級/504㎡級）が根拠。学習で精緻化する。
+function heatshieldUnitPrice(qty: number): number {   // 材工共の㎡単価（山下さんの見積書の帯）
+  if (qty <= 100) return 6500;
+  if (qty <= 300) return 6000;
+  if (qty <= 1000) return 5500;
+  return 4800;
+}
+function heatshieldSafety(qty: number): number { return qty <= 100 ? 50000 : 100000; }              // 安全対策（親綱）
+function heatshieldScaffold(qty: number): number { return qty <= 100 ? 80000 : (qty <= 1000 ? 120000 : 180000); } // 昇降足場
+function heatshieldOverhead(qty: number): number { return qty <= 100 ? 60000 : 100000; }            // 諸経費（現場固定）
+const HEATSHIELD_ROUND_UNIT = 100000;   // 端数調整: 税抜総額を10万円単位で切り捨てて顧客提示（山下さん仕様）
+// スカイ工法の標準構成 = 材工共 ＋ 安全 ＋ 足場 ＋ 諸経費 の4費目。AIがどう出しても（1行に潰しても・
+// 費目を落としても）この4費目を規模アンカーで"必ず"組み直す。→ 振り子も費目落ちも同時に止まる。
+// 下地補修・石綿調査など標準4費目以外の行はそのまま残す。★遮熱シート工事のときだけ。
+function pinHeatshieldScalePrices(result: any, context: string): string[] {
+  if (!isHeatshieldWork(result?.workType) || !Array.isArray(result.breakdown)) return [];
+  // 展開係数: 普通の折板屋根は1.4に統一（AIが1.41等でブレて数量→総額がずれるのを止める）。
+  // 150mm大スパン(1.69)・スレート大波(1.1)・平葺き/瓦(1.0)は特殊なのでそのまま尊重する。
+  const roof = Number(result?.roofAreaM2) || 0;
+  let df = Number(result?.developFactor) || 0;
+  if (roof > 0 && df >= 1.35 && df <= 1.45) { df = 1.4; result.developFactor = 1.4; }
+  let qty = Number(result?.quantityM2) || 0;
+  if (roof > 0 && df >= 1) { qty = Math.round(roof * df); result.quantityM2 = qty; }   // 屋根面積×展開係数で数量を確定
+  if (qty <= 0) return [];
+  const unit = heatshieldUnitPrice(qty);
+  const line = (item: string, cost: number, category: string): any => ({
+    category, item, quantity: category === '材料' ? qty : 1,
+    unitPrice: category === '材料' ? unit : cost, cost,
+    costBase: Math.round(cost / HEATSHIELD_MARKUP), note: '規模アンカー（山下さん仕様）',
+  });
+  // 標準4費目を決定論で作る（数量はAI由来、金額はアンカー）
+  const roofCost = Math.round(qty * unit);
+  const std = [
+    line('遮熱シート スカイ工法（材工共）', roofCost, '材料'),
+    line('安全対策費（親綱設置・墜落防止）', heatshieldSafety(qty), '仮設'),
+    line('昇降用足場（外部昇降階段）', heatshieldScaffold(qty), '仮設'),
+    line('諸経費', heatshieldOverhead(qty), '経費'),
+  ];
+  // ★山下さん指示: 出すのは「材工共・安全・足場・諸経費」の4行だけ（下地補修等の追加行も出さない）。
+  //   端数調整は"別行を作らず"、税抜総額を10万円単位で切り捨てた差額を材工共にこっそり吸収する（値引きは勝手にOK）。
+  //   例: 504㎡ 積上3,092,000 → 3,000,000（税込330万ちょうど）。材工共 2,772,000→2,680,000 に自動値引き。
+  const rawTotal = std.reduce((s: number, b: any) => s + (Number(b.cost) || 0), 0);
+  const rounded = Math.floor(rawTotal / HEATSHIELD_ROUND_UNIT) * HEATSHIELD_ROUND_UNIT;
+  const remainder = rawTotal - rounded;
+  if (remainder > 0) {
+    std[0].cost = Math.round(Number(std[0].cost) - remainder);        // 材工共に端数値引きを吸収
+    std[0].unitPrice = qty > 0 ? Math.round(std[0].cost / qty) : std[0].cost;
+    std[0].costBase = Math.round(std[0].cost / HEATSHIELD_MARKUP);
+  }
+  result.breakdown = std;   // 4行のみ
+  console.warn(`[${context}] 遮熱シート: 4費目のみで再構成（${qty}㎡帯 / 材工共¥${(Number(std[0].cost)).toLocaleString()} / 端数-¥${remainder.toLocaleString()} → 税抜¥${rounded.toLocaleString()}）`);
+  return [`スカイ工法を4費目（材工共＋安全＋足場＋諸経費）で確定・税抜¥${rounded.toLocaleString()}（10万円単位で端数調整、材工共に吸収）`];
+}
+
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
   // 「こちらに変更する」候補は毎回作り直す（補正を当てて積み直すと、解消した警告は再出しない）
   result.estimateFixes = [];
   // 縦計を出す前に、行の金額そのものを直す（合計はそのあとで積み直される）
-  const warns = [...repairDigitDrops(result, context), ...enforceHeatshieldQuantity(result, context)];
+  // ★遮熱シート(山下さん)専用の正規化を先に当てる（順番: 二重計上除去→材工共1行化→諸経費固定）。
+  //   ①スカイ工法の㎡単価コミの費目（運搬・現場管理・養生・法定福利）を別行から除去
+  //   ②材料+施工費を「材工共」1行にまとめ、人件費を別立てしない
+  //   ③諸経費を現場固定10万に補正（総額の12%で膨らませない）
+  const warns = [
+    ...stripHeatshieldDoubleCounted(result, context),
+    ...collapseHeatshieldRoofToMatKou(result, context),
+    ...fixHeatshieldOverhead(result, context),
+    ...pinHeatshieldScalePrices(result, context),   // ★最後: 標準4費目を規模アンカーで確定（費目落ち・振り子を止める）
+    ...repairDigitDrops(result, context),
+    ...enforceHeatshieldQuantity(result, context),
+  ];
   if (warns.length) result.estimateWarnings = warns;
   const sum = result.breakdown.reduce((s: number, b: any) => s + (Number(b?.cost) || 0), 0);
   if (sum <= 0) return result;
@@ -888,6 +1024,14 @@ async function sendLearningCompleteNotification(tenantId: number, workType?: str
     // 同じ日に既に通知済みならスキップ（メール過多防止）
     if (tenant?.learning_notified_date === today) return;
 
+    // ★1日1通ガードのレース対策（2026-07-16）:
+    //   送信済みフラグを await(sendMail) の"後"で立てていたため、予実の一括入力等で
+    //   学習イベントが同時多発すると、全員が上のチェックを未送信で通過して大量送信になっていた。
+    //   単一スレッドなので、await に入る前にフラグを立てて当日枠を確保すれば、後続の同時呼び出しは
+    //   自分の queryOne で today を読んで弾かれる。送信に失敗したら下で元の値に戻して再送を許す。
+    const prevNotified = tenant?.learning_notified_date ?? null;
+    try { runSql('UPDATE tenants SET learning_notified_date = ? WHERE id = ?', [today, tenantId]); } catch (_) {}
+
     const ownerEmail = 'mitsuakinakano0215@gmail.com';
     // 両社（実績を入力した顧客＋自社=建築ブースト）の両方に宛先(To)で送る
     const recipients = Array.from(new Set([tenant?.contact_email, ownerEmail].filter(Boolean)));
@@ -899,28 +1043,31 @@ async function sendLearningCompleteNotification(tenantId: number, workType?: str
       auth: { user: ownerEmail, pass: 'cmlz usad gycg sbem' },
     });
 
-    await transporter.sendMail({
-      from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-      to: recipients.join(', '),
-      subject: '【建築ブースト】AIが御社の実績を学習しました 🎓',
-      text: [
-        `${tenant?.contact_company || tenant?.name || 'お客様'} 様`,
-        '',
-        'いつも建築ブーストをご利用いただきありがとうございます。',
-        '本日ご入力いただいた実績データをAIが学習し、見積もりの精度が向上しました。',
-        workType ? `\n■ 今回学習した工事: ${workType}` : '',
-        `■ 学習日時: ${now.toLocaleString('ja-JP')}`,
-        '',
-        '使えば使うほど、御社の金額感に近い見積もりが自動で出せるようになります。',
-        '引き続きご活用ください。',
-        '',
-        '---',
-        '建築ブースト 自動通知',
-      ].filter(Boolean).join('\n'),
-    });
-
-    // 当日分は送信済みフラグを更新
-    try { runSql('UPDATE tenants SET learning_notified_date = ? WHERE id = ?', [today, tenantId]); } catch (_) {}
+    try {
+      await transporter.sendMail({
+        from: '建築ブースト <mitsuakinakano0215@gmail.com>',
+        to: recipients.join(', '),
+        subject: '【建築ブースト】AIが御社の実績を学習しました 🎓',
+        text: [
+          `${tenant?.contact_company || tenant?.name || 'お客様'} 様`,
+          '',
+          'いつも建築ブーストをご利用いただきありがとうございます。',
+          '本日ご入力いただいた実績データをAIが学習し、見積もりの精度が向上しました。',
+          workType ? `\n■ 今回学習した工事: ${workType}` : '',
+          `■ 学習日時: ${now.toLocaleString('ja-JP')}`,
+          '',
+          '使えば使うほど、御社の金額感に近い見積もりが自動で出せるようになります。',
+          '引き続きご活用ください。',
+          '',
+          '---',
+          '建築ブースト 自動通知',
+        ].filter(Boolean).join('\n'),
+      });
+    } catch (e) {
+      // 送信失敗なら当日枠を解放（元の値に戻す）して、後続の学習イベントで再送できるようにする
+      try { runSql('UPDATE tenants SET learning_notified_date = ? WHERE id = ?', [prevNotified, tenantId]); } catch (_) {}
+      throw e;
+    }
   } catch (e: any) {
     console.error('Learning notification email failed:', e?.message || e);
   }
@@ -1074,7 +1221,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.6';
+const CURRENT_VERSION = '3.4.7';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -4995,13 +5142,20 @@ ${pages}</body></html>`;
      大面積はスケールメリットで逓減するが、**自社実績が無いのは100m²超だけ**。逓減させるときは
      confidenceを「中」以下にし、recommendationsに「大面積の実績が無いため㎡単価は暫定です。
      実績を入れていただくほど御社の金額帯に合います」と必ず添えろ。4,000円/m²は下回るな。
-  ② 安全対策費（親綱設置）＝ ¥50,000/現場（式・固定）。屋根上作業なら必ず計上する。→ category "仮設"
-  ③ 昇降用足場（外部昇降階段）＝ ¥80,000/現場（式・固定）。→ category "仮設"
-  ④ 諸経費 ＝ 税抜総額の約12%（48m²の実績では¥60,000）。→ category "経費"
+  ② 安全対策費（親綱設置・墜落防止）＝ 現場固定。★規模で動く: 〜100m² ¥50,000 / 300〜700m²級 ¥100,000。屋根上作業なら必ず計上。→ category "仮設"
+  ③ 昇降用足場（外部昇降階段）＝ 現場固定。★規模で動く: 〜100m² ¥80,000 / 300〜700m²級 ¥120,000（大規模・高所ほど増える）。→ category "仮設"
+  ④ 諸経費 ＝ 現場固定。★上限 ¥100,000（総額の12%で膨らませるな）。小規模(〜100m²)は¥60,000程度。→ category "経費"
+     ※②③④は「山下八起テナントの実績アンカー」: 48m²級=安全5万/足場8万/諸経費6万、504m²級=安全10万/足場12万/諸経費10万。
+       間の規模はこの2点から補間し、実績が増えるほど学習で精緻化する（決め打ちにこだわりすぎない）。
   ・この構成で 48m² のオールイン単価は ¥10,417/m²（＝総額¥500,000 ÷ 48m²）。
   ★面積が変わっても構成を守れ。**面積に比例させるのは①の本体だけ**（㎡単価は上の帯で選ぶ）。
   ②③は現場あたりの固定費、④は総額の約12%。
   総額が「本体㎡単価×面積 ＋ ¥130,000 ＋ 諸経費」から大きく外れたら計算し直せ。
+  ★★★スカイ工法で"別行にしてはいけない"費目（すべて本体㎡単価・諸経費にコミ済み。別行＝二重計上）★★★
+     資材運搬費／現場管理費／下部養生費・養生費／福利厚生費・法定福利費 は、本体の材工共㎡単価と
+     諸経費(総額の約12%)に既に含まれている。これらを別行(breakdown)で立てるな。人件費もスカイ工法の
+     施工費行に内包されているので、別に人件費行を作るな。構成は「本体(材料行＋施工費行)＋親綱＋昇降足場
+     ＋諸経費」だけ。これ以外の諸経費系の行を足すと総額が水増しされる（実例2026-07-16: 上記4費目=約49万の過大）。
   ⑤★★粗利は1割★★ 上の①〜④の金額はすべて **cost（お客様に提示する売価）** だ。原価ではない。
      各行の costBase（原価）は **cost ÷ 1.11**（粗利率 約10%）で置け。
      ・costBase と cost を同じ数字にするな。同額にすると粗利がゼロになり見積として成立しない。
