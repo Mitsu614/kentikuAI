@@ -275,9 +275,11 @@ async function sendStatsToSupabase() {
         actual_material_cost, actual_labor_cost, actual_selling_price, actual_markup_rate, feedback_at
       FROM estimate_log
       WHERE synced_at IS NULL
+      -- 隔離学習: 隔離テナントの行は work_type に関わらず全除外（AND→OR）。
+      -- 併せて工種名が遮熱/特許の行も除外。リアルタイム側 shouldIsolateLearning と同一基準。
       AND NOT (
         tenant_id IN (SELECT id FROM tenants WHERE isolated_learning = 1)
-        AND (work_type LIKE '%遮熱%' OR work_type LIKE '%特許%')
+        OR work_type LIKE '%遮熱%' OR work_type LIKE '%特許%'
       )
       AND (
         (actual_material_cost IS NOT NULL AND feedback_at IS NOT NULL)
@@ -513,6 +515,15 @@ function getTenantProfile(tid: number): { industryType: string | null; isolated:
   } catch (_) {
     return { industryType: null, isolated: false };
   }
+}
+
+// 学習を全国共有プールに送らず自社内に隔離すべきか判定する。
+// 一次判定は「テナントの隔離フラグ（isolated_learning）」。工種名が遮熱/特許の場合も隔離する。
+// ※ work_type 文字列だけで判定していた頃は、隔離テナント(山下さん)でも図面タイトルが
+//   「工場屋根」等で遮熱を含まないと匿名データが共有プールに漏れ、遮熱の特殊価格帯が
+//   全国係数を汚染しうる穴があった。テナントの隔離フラグを一次判定にして塞ぐ。
+function shouldIsolateLearning(tid: number, workType?: string): boolean {
+  return getTenantProfile(tid).isolated || isHeatshieldWork(workType);
 }
 
 export interface ClientAttrs { job?: string; hobby?: string; age?: string; priorities?: string[] }
@@ -804,7 +815,7 @@ function heatshieldOverhead(qty: number): number { return qty <= 100 ? 60000 : 1
 const HEATSHIELD_ROUND_UNIT = 100000;   // 端数調整: 税抜総額を10万円単位で切り捨てて顧客提示（山下さん仕様）
 // スカイ工法の標準構成 = 材工共 ＋ 安全 ＋ 足場 ＋ 諸経費 の4費目。AIがどう出しても（1行に潰しても・
 // 費目を落としても）この4費目を規模アンカーで"必ず"組み直す。→ 振り子も費目落ちも同時に止まる。
-// 下地補修・石綿調査など標準4費目以外の行はそのまま残す。★遮熱シート工事のときだけ。
+// ★山下さん指示: 見積書は「材工共・安全・足場・諸経費」の4行だけ。下地補修・石綿調査等の追加行も出さない。★遮熱シート工事のときだけ。
 function pinHeatshieldScalePrices(result: any, context: string): string[] {
   if (!isHeatshieldWork(result?.workType) || !Array.isArray(result.breakdown)) return [];
   // 展開係数: 普通の折板屋根は1.4に統一（AIが1.41等でブレて数量→総額がずれるのを止める）。
@@ -833,7 +844,13 @@ function pinHeatshieldScalePrices(result: any, context: string): string[] {
   //   端数調整は"別行を作らず"、税抜総額を10万円単位で切り捨てた差額を材工共にこっそり吸収する（値引きは勝手にOK）。
   //   例: 504㎡ 積上3,092,000 → 3,000,000（税込330万ちょうど）。材工共 2,772,000→2,680,000 に自動値引き。
   const rawTotal = std.reduce((s: number, b: any) => s + (Number(b.cost) || 0), 0);
-  const rounded = Math.floor(rawTotal / HEATSHIELD_ROUND_UNIT) * HEATSHIELD_ROUND_UNIT;
+  // ★端数値引きは「税抜100万円以上」の案件だけに適用する。
+  //   remainder(0〜99,999)を材工共1行から丸ごと引くため、材工共の元値が小さい＝小面積だと
+  //   引ききれず材工共がマイナス/極端安値になる（例: 14㎡→材工共¥10,000, 数㎡→マイナス）。
+  //   固定費(安全+足場+諸経費)だけで19〜38万あるので、総額100万未満は切下げず積上額をそのまま出す。
+  //   山下さんの実案件(数百㎡=数百万)は必ず100万超なので、従来どおり10万円ちょうどに着地する。
+  const canRound = rawTotal >= 1000000;
+  const rounded = canRound ? Math.floor(rawTotal / HEATSHIELD_ROUND_UNIT) * HEATSHIELD_ROUND_UNIT : rawTotal;
   const remainder = rawTotal - rounded;
   if (remainder > 0) {
     std[0].cost = Math.round(Number(std[0].cost) - remainder);        // 材工共に端数値引きを吸収
@@ -841,8 +858,8 @@ function pinHeatshieldScalePrices(result: any, context: string): string[] {
     std[0].costBase = Math.round(std[0].cost / HEATSHIELD_MARKUP);
   }
   result.breakdown = std;   // 4行のみ
-  console.warn(`[${context}] 遮熱シート: 4費目のみで再構成（${qty}㎡帯 / 材工共¥${(Number(std[0].cost)).toLocaleString()} / 端数-¥${remainder.toLocaleString()} → 税抜¥${rounded.toLocaleString()}）`);
-  return [`スカイ工法を4費目（材工共＋安全＋足場＋諸経費）で確定・税抜¥${rounded.toLocaleString()}（10万円単位で端数調整、材工共に吸収）`];
+  console.warn(`[${context}] 遮熱シート: 4費目のみで再構成（${qty}㎡帯 / 材工共¥${(Number(std[0].cost)).toLocaleString()} / 端数-¥${remainder.toLocaleString()} → 税抜¥${rounded.toLocaleString()}${canRound ? '' : '（100万未満は端数調整なし）'}）`);
+  return [`スカイ工法を4費目（材工共＋安全＋足場＋諸経費）で確定・税抜¥${rounded.toLocaleString()}${canRound ? '（10万円単位で端数調整、材工共に吸収）' : ''}`];
 }
 
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
@@ -1037,13 +1054,13 @@ async function sendLearningCompleteNotification(tenantId: number, workType?: str
     const recipients = Array.from(new Set([tenant?.contact_email, ownerEmail].filter(Boolean)));
     const now = new Date();
 
-    const nodemailer = require('nodemailer');
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: ownerEmail, pass: 'cmlz usad gycg sbem' },
-    });
-
     try {
+      // require/createTransport も try 内に入れる: ここで失敗しても当日枠を解放して再送を許すため
+      const nodemailer = require('nodemailer');
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: ownerEmail, pass: 'cmlz usad gycg sbem' },
+      });
       await transporter.sendMail({
         from: '建築ブースト <mitsuakinakano0215@gmail.com>',
         to: recipients.join(', '),
@@ -1221,7 +1238,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.7';
+const CURRENT_VERSION = '3.4.8';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -2125,10 +2142,10 @@ app.whenReady().then(async () => {
     const config = loadApiConfig();
     const learnTid = getCurrentTenant();
     const learnWorkType = log.work_type || '不明';
-    if (isHeatshieldWork(learnWorkType)) {
-      // 特許の遮熱シートが絡む工事のみ隔離: 全国共有プールには送らず自社実績だけで学習
+    if (shouldIsolateLearning(learnTid, learnWorkType)) {
+      // 隔離テナント または 特許の遮熱シート工事: 全国共有プールには送らず自社実績だけで学習
       try { runSql('UPDATE estimate_log SET synced_at = ? WHERE id = ?', [now, log.id]); } catch (_) {}
-      console.log('学習ループ: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
+      console.log('学習ループ: 隔離学習のため共有プール送信をスキップ（自社実績のみで学習）');
       sendLearningCompleteNotification(learnTid, learnWorkType);
     } else {
       // 学習(実績記録)完了を通知 — クラウド分析の成否に依存させない
@@ -3595,9 +3612,9 @@ ${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;b
       const config = loadApiConfig();
       const learnTid = getCurrentTenant();
       const learnWorkType = log.work_type || '不明';
-      if (isHeatshieldWork(learnWorkType)) {
-        // 特許の遮熱シートが絡む工事のみ隔離: 共有プールに送らず自社実績だけで学習
-        console.log('学習ループ（出面）: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
+      if (shouldIsolateLearning(learnTid, learnWorkType)) {
+        // 隔離テナント または 特許の遮熱シート工事: 共有プールに送らず自社実績だけで学習
+        console.log('学習ループ（出面）: 隔離学習のため共有プール送信をスキップ（自社実績のみで学習）');
         sendLearningCompleteNotification(learnTid, learnWorkType);
       } else {
         sendLearningCompleteNotification(learnTid, learnWorkType);
@@ -3833,8 +3850,8 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
         //   他の送信箇所（estimate_log 経由・実績入力画面）と同じゲートをここにも掛ける。
         const config = loadApiConfig();
         const budgetWorkType = log.work_type || '不明';
-        if (isHeatshieldWork(budgetWorkType)) {
-          console.log('学習ループ（予実管理）: 遮熱シート（特許）工事のため共有プール送信をスキップ（自社実績のみで学習）');
+        if (shouldIsolateLearning(tid, budgetWorkType)) {
+          console.log('学習ループ（予実管理）: 隔離学習のため共有プール送信をスキップ（自社実績のみで学習）');
         } else {
           sendFeedbackToSupabase([{
             work_type: budgetWorkType,
@@ -4391,9 +4408,9 @@ ${pages}</body></html>`;
 
       // Supabaseに送信（非同期で）
       const ocrLearnTid = getCurrentTenant();
-      if (isHeatshieldWork(workType)) {
-        // 特許の遮熱シートが絡む工事のみ隔離: 共有プールに送らず自社実績だけで学習
-        console.log('学習ループ（OCR紐付け）: 遮熱シート（特許）工事のため共有プール送信をスキップ');
+      if (shouldIsolateLearning(ocrLearnTid, workType)) {
+        // 隔離テナント または 特許の遮熱シート工事: 共有プールに送らず自社実績だけで学習
+        console.log('学習ループ（OCR紐付け）: 隔離学習のため共有プール送信をスキップ');
         sendLearningCompleteNotification(ocrLearnTid, workType);
       } else {
         sendLearningCompleteNotification(ocrLearnTid, workType);
@@ -4443,9 +4460,9 @@ ${pages}</body></html>`;
       if (materialTotal > 0 || laborCost > 0) {
         const workType = data.title || 'OCR取込';
         const ocrNewTid = getCurrentTenant();
-        if (isHeatshieldWork(workType)) {
-          // 特許の遮熱シートが絡む工事のみ隔離: 共有プールに送らず自社実績だけで学習
-          console.log('学習ループ（OCR新規）: 遮熱シート（特許）工事のため共有プール送信をスキップ');
+        if (shouldIsolateLearning(ocrNewTid, workType)) {
+          // 隔離テナント または 特許の遮熱シート工事: 共有プールに送らず自社実績だけで学習
+          console.log('学習ループ（OCR新規）: 隔離学習のため共有プール送信をスキップ');
           sendLearningCompleteNotification(ocrNewTid, workType);
         } else {
           sendLearningCompleteNotification(ocrNewTid, workType);
