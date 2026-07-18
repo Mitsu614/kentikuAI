@@ -1234,17 +1234,22 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 const rate = total > 0 ? Math.round((profit / total) * 1000) / 10 : 0;
                 const tile = { background: '#fff', borderRadius: 8, padding: 10, border: '1px solid #bbf7d0' };
                 const num = { width: '100%', padding: 6, fontSize: 15, fontWeight: 'bold', border: '1px solid #d1d5db', borderRadius: 6, textAlign: 'right' as const };
+                // ★遮熱シート(山下さん)は材工共に人件費が込み。人件費タイルは出さず2タイル（材工共・経費）にする。
+                //   生成直後は main の isHeatshield フラグ、過去ログ再表示時は workType からフォールバック判定。
+                const isHs = !!result.isHeatshield || /遮熱|特許/.test(String(result.workType || ''));
                 return (
                   <>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: isHs ? '1fr 1fr' : '1fr 1fr 1fr', gap: 10 }}>
                       <div style={tile}>
-                        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>材料費（原価）</div>
+                        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>{isHs ? '材工共（原価・人件費込み）' : '材料費（原価）'}</div>
                         <NumInput value={mat} onValue={n => setResult({ ...result, estimatedMaterialCost: n })} style={num} />
                       </div>
-                      <div style={tile}>
-                        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>人件費（原価）</div>
-                        <NumInput value={labor} onValue={n => setResult({ ...result, estimatedLaborCost: n })} style={num} />
-                      </div>
+                      {!isHs && (
+                        <div style={tile}>
+                          <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>人件費（原価）</div>
+                          <NumInput value={labor} onValue={n => setResult({ ...result, estimatedLaborCost: n })} style={num} />
+                        </div>
+                      )}
                       <div style={tile}>
                         <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>経費（仮設・現場管理・福利厚生）</div>
                         <NumInput value={exp} onValue={n => setResult({ ...result, estimatedExpenseCost: n })} style={num} />
@@ -1266,7 +1271,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       </div>
                     </div>
                     <div style={{ fontSize: 11, color: profit < 0 ? '#dc2626' : '#64748b', marginTop: 8, textAlign: 'center' }}>
-                      材料費 {fmt(mat)} ＋ 人件費 {fmt(labor)} ＋ 経費 {fmt(exp)} ＋ 粗利 {fmt(profit)} ＝ 売上金額 {fmt(total)}（税込 {fmt(Math.floor(total * (1 + TAX_RATE)))}）
+                      {isHs
+                        ? <>材工共 {fmt(mat)} ＋ 経費 {fmt(exp)} ＋ 粗利 {fmt(profit)} ＝ 売上金額 {fmt(total)}（税込 {fmt(Math.floor(total * (1 + TAX_RATE)))}）</>
+                        : <>材料費 {fmt(mat)} ＋ 人件費 {fmt(labor)} ＋ 経費 {fmt(exp)} ＋ 粗利 {fmt(profit)} ＝ 売上金額 {fmt(total)}（税込 {fmt(Math.floor(total * (1 + TAX_RATE)))}）</>}
                       {profit < 0 && '　※原価が売上を超えています。金額を見直してください'}
                     </div>
                   </>
@@ -1396,8 +1403,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </div>
           )}
 
-          {/* 人工内訳 */}
-          {result.manDaysBreakdown && result.manDaysBreakdown.length > 0 && (
+          {/* 人工内訳（遮熱シート=山下さんは材工共に人件費込みのため工数内訳は出さない） */}
+          {!result.isHeatshield && result.manDaysBreakdown && result.manDaysBreakdown.length > 0 && (
             <div className="card" style={{ marginTop: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <h3 style={{ margin: 0 }}>工数内訳</h3>

@@ -874,6 +874,9 @@ function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = D
   //   ①スカイ工法の㎡単価コミの費目（運搬・現場管理・養生・法定福利）を別行から除去
   //   ②材料+施工費を「材工共」1行にまとめ、人件費を別立てしない
   //   ③諸経費を現場固定10万に補正（総額の12%で膨らませない）
+  // ★遮熱シート(山下さん)は材工共に人件費が込みで、別立ての人件費は出さない仕様。
+  //   画面の「人件費」タイル（¥0表示）を隠すためのフラグを源泉で立てる（renderer が参照）。
+  result.isHeatshield = isHeatshieldWork(result?.workType);
   const warns = [
     ...stripHeatshieldDoubleCounted(result, context),
     ...collapseHeatshieldRoofToMatKou(result, context),
@@ -1244,7 +1247,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.11';
+const CURRENT_VERSION = '3.4.12';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
