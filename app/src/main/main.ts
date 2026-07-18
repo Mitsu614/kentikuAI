@@ -1247,63 +1247,36 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.13';
+const CURRENT_VERSION = '3.4.14';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
   try {
     const { autoUpdater } = require('electron-updater');
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    // ★通知のみ方式（2026-07-18）: electron-builder #9593 の in-place更新バグを踏まないよう、
+    //   自動ダウンロード・自動インストール(quitAndInstall)は使わない。新版が出たら通知だけ出し、
+    //   ダウンロードは顧客がブラウザから行い、手動でインストールする（新規インストールは確実に成功）。
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
 
+    // 新版が出たら「通知だけ」出す（自動DL・自動インストールはしない）。
     autoUpdater.on('update-available', (info: any) => {
-      console.log('アップデートあり:', info.version);
+      console.log('アップデートあり(通知のみ):', info.version);
       if (mainWindow) {
         mainWindow.webContents.executeJavaScript(`
           (function(){
             let d=document.getElementById('update-overlay');if(d)d.remove();
             d=document.createElement('div');d.id='update-overlay';document.body.appendChild(d);
-            d.style.cssText='position:fixed;bottom:20px;right:20px;z-index:99999;pointer-events:none';
-            d.innerHTML='<div style="background:#3a7bd5;color:#fff;padding:14px 20px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.3);font-size:14px;pointer-events:auto">'
-              +'🔄 v${info.version} をダウンロード中...</div>';
-          })()
-        `).catch(() => {});
-      }
-    });
-
-    autoUpdater.on('download-progress', (progress: any) => {
-      const pct = Math.round(progress.percent);
-      if (mainWindow && pct % 10 === 0) {
-        mainWindow.webContents.executeJavaScript(`
-          (function(){
-            const d=document.getElementById('update-overlay');
-            if(d) d.innerHTML='<div style="background:#3a7bd5;color:#fff;padding:14px 20px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.3);font-size:14px;pointer-events:auto">'
-              +'🔄 ダウンロード中... ${pct}%</div>';
-          })()
-        `).catch(() => {});
-      }
-    });
-
-    autoUpdater.on('update-downloaded', (info: any) => {
-      console.log('アップデートDL完了:', info.version);
-      if (mainWindow) {
-        mainWindow.webContents.executeJavaScript(`
-          (function(){
-            let d=document.getElementById('update-overlay');if(d)d.remove();
-            d=document.createElement('div');d.id='update-overlay';document.body.appendChild(d);
-            d.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:99999';
-            d.innerHTML='<div style="background:#fff;border-radius:16px;padding:36px;width:420px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.3)">'
-              +'<h2 style="margin-bottom:12px;color:#1a2332">アップデート準備完了</h2>'
-              +'<p style="color:#555;font-size:15px;margin-bottom:20px">v${CURRENT_VERSION} → <strong style="color:#27ae60">v${info.version}</strong></p>'
-              +'<button id="update-now" style="width:100%;padding:14px;background:#27ae60;color:#fff;border:none;border-radius:10px;font-size:16px;font-weight:bold;cursor:pointer;min-height:48px;margin-bottom:10px">今すぐ再起動して更新</button>'
-              +'<button id="update-later" style="width:100%;padding:12px;background:none;border:2px solid #ddd;border-radius:10px;font-size:14px;cursor:pointer;color:#888">次回起動時に更新</button>'
-              +'</div>';
-            document.getElementById('update-now').onclick=()=>{
-              window.api?.installUpdate?.();
-            };
-            document.getElementById('update-later').onclick=()=>{
-              document.getElementById('update-overlay')?.remove();
-            };
+            d.style.cssText='position:fixed;bottom:20px;right:20px;z-index:99999;max-width:320px';
+            d.innerHTML='<div style="background:#fff;border:1px solid #d1d5db;border-radius:12px;padding:16px 18px;box-shadow:0 8px 28px rgba(0,0,0,0.18)">'
+              +'<div style="font-size:14px;font-weight:700;color:#1a2332;margin-bottom:6px">🆕 新しいバージョン v${info.version} があります</div>'
+              +'<div style="font-size:12px;color:#666;margin-bottom:12px">ダウンロードして最新版をインストールしてください。</div>'
+              +'<div style="display:flex;gap:8px">'
+              +'<button id="update-dl" style="flex:1;padding:10px;background:#27ae60;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer">ダウンロード</button>'
+              +'<button id="update-close" style="padding:10px 14px;background:none;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;color:#888">閉じる</button>'
+              +'</div></div>';
+            document.getElementById('update-dl').onclick=()=>{ window.api?.installUpdate?.(); };
+            document.getElementById('update-close').onclick=()=>{ document.getElementById('update-overlay')?.remove(); };
           })()
         `).catch(() => {});
       }
@@ -1314,9 +1287,9 @@ function setupAutoUpdater() {
       try { mainWindow?.webContents.executeJavaScript(`document.getElementById('update-overlay')?.remove()`); } catch (_) {}
     });
 
-    // 「今すぐ再起動」のIPC
+    // 「ダウンロード」ボタン: 最新リリースページをブラウザで開く（自動インストールはしない＝#9593回避）。
     ipcMain.handle('update:install', () => {
-      autoUpdater.quitAndInstall(false, true);
+      shell.openExternal('https://github.com/Mitsu614/kentikuAI/releases/latest');
     });
 
   // ── リモート登録申請管理（Supabase） ──
