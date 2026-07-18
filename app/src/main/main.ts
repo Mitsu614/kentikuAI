@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin, normalizeWorkType } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 
@@ -1031,6 +1031,9 @@ function buildClientAttrsPrompt(attrs: ClientAttrs | null | undefined): string {
 async function sendLearningCompleteNotification(tenantId: number, workType?: string) {
   try {
     if (!tenantId) return;
+    // ★AI学習POP: 学習イベント（OCR紐付け・OCR新規・予実／隔離・共有すべて）のたびに画面へ通知。
+    //   メールの「1日1通」ガードより前に出すので、POPは学習のたびに毎回表示される。
+    try { mainWindow?.webContents.send('learning:done', { workType: normalizeWorkType(workType) }); } catch (_) {}
     // 管理者テナント(id=1)も学習時は通知する（動作確認・監視用）。
     // 宛先は顧客メール＋自社、顧客メールが無ければ自社のみに届く。
     const tenant = queryOne(
@@ -1238,7 +1241,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.8';
+const CURRENT_VERSION = '3.4.9';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -3852,7 +3855,9 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
         const budgetWorkType = log.work_type || '不明';
         if (shouldIsolateLearning(tid, budgetWorkType)) {
           console.log('学習ループ（予実管理）: 隔離学習のため共有プール送信をスキップ（自社実績のみで学習）');
+          sendLearningCompleteNotification(tid, budgetWorkType);   // 隔離でも学習イベント＝POP/メール通知
         } else {
+          sendLearningCompleteNotification(tid, budgetWorkType);   // 学習イベント＝POP/メール通知
           sendFeedbackToSupabase([{
             work_type: budgetWorkType,
             ai_material_cost: log.ai_material_cost, ai_labor_cost: log.ai_labor_cost, ai_total: log.ai_total,

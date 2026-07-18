@@ -57,6 +57,7 @@ export default function App() {
   const [showNewTenant, setShowNewTenant] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [showOnlineToast, setShowOnlineToast] = useState(false);
+  const [learnedToast, setLearnedToast] = useState<{ workType?: string } | null>(null);
   const [newTenantName, setNewTenantName] = useState('');
   const [showOnboarding, setShowOnboarding] = useState(() => !localStorage.getItem('onboarding_done'));
   const [onboardingStep, setOnboardingStep] = useState(0);
@@ -172,6 +173,19 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     return () => { window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
+  }, []);
+
+  // AIが実績を学習したら「学習しました！」POPを表示（OCR取込・予実入力どちらでも出る）
+  useEffect(() => {
+    const api = (window as any).api;
+    if (!api?.onLearningDone) return;
+    let hideTimer: any;
+    const off = api.onLearningDone((payload: { workType?: string }) => {
+      setLearnedToast(payload || {});
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => setLearnedToast(null), 4200);
+    });
+    return () => { clearTimeout(hideTimer); if (typeof off === 'function') off(); };
   }, []);
 
   const loadTenants = async () => {
@@ -545,6 +559,17 @@ export default function App() {
       {showOnlineToast && (
         <div className="online-banner">
           ✓ オンラインに復帰しました — データを同期中...
+        </div>
+      )}
+      {learnedToast && (
+        <div className="toast-learning" role="status">
+          <span className="learn-icon">🎓</span>
+          <div>
+            <div className="learn-title">AIが学習しました！</div>
+            <div className="learn-sub">
+              {learnedToast.workType ? `${learnedToast.workType}の精度が向上` : '見積もりの精度が向上しました'}
+            </div>
+          </div>
         </div>
       )}
       <main className="main-content">

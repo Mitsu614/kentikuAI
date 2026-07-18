@@ -13,8 +13,14 @@ const UNIT_PRICE = 5500;
 // 正解 = 積み上げ（材工共＋安全＋足場＋諸経費）を10万円単位で切り捨て（顧客提示の切りのいい額）。
 // 例: 504㎡ → 3,092,000 → 3,000,000（税込330万ちょうど）。
 function truth(quantityM2, ashiba = 120000, anzen = 100000, shokei = 100000) {
-  const raw = quantityM2 * UNIT_PRICE + anzen + ashiba + shokei;
-  return Math.floor(raw / 100000) * 100000;
+  // 小面積(qty<=100)は㎡単価が上がる帯なので、正解側もアンカーに合わせる。
+  const unit = quantityM2 <= 100 ? 6500 : quantityM2 <= 300 ? 6000 : quantityM2 <= 1000 ? UNIT_PRICE : 4800;
+  const anz = quantityM2 <= 100 ? 50000 : anzen;
+  const scaf = quantityM2 <= 100 ? 80000 : ashiba;
+  const shk = quantityM2 <= 100 ? 60000 : shokei;
+  const raw = quantityM2 * unit + anz + scaf + shk;
+  // 端数調整(10万円切下げ)は税抜100万円以上の案件だけ。100万未満は積上額のまま（材工共の破綻防止）。
+  return raw >= 1000000 ? Math.floor(raw / 100000) * 100000 : raw;
 }
 
 const SCENARIOS = [
@@ -49,6 +55,20 @@ const SCENARIOS = [
       { category: '仮設',  item: '安全対策費（親綱設置・屋根上墜落防止）', cost: 65000 },
       { category: '仮設',  item: '昇降用足場（外部昇降階段）', cost: 104000 },
       { category: '経費',  item: '諸経費', cost: 324000 },
+    ],
+  },
+  {
+    // 小面積の回帰: 修正前は10万円切下げで材工共がマイナス/極端安値(¥10,000等)に破綻していた。
+    // 100万未満は端数調整せず積上額をそのまま出す→材工共が健全に残ることを確認する。
+    id: 'case-small-roof',
+    label: '10㎡級 小屋根（回帰：端数調整で材工共が破綻しないこと）',
+    roofAreaM2: 10, quantityM2: 14, developFactor: 1.4,
+    targetYen: 14 * 6500 + 50000 + 80000 + 60000,   // 100万未満=切下げなし=積上そのまま(¥281,000)
+    rawBreakdown: [
+      { category: '材料', item: '遮熱シート スカイ工法（材工共）', cost: 91000 },
+      { category: '仮設', item: '安全対策費', cost: 50000 },
+      { category: '仮設', item: '昇降用足場', cost: 80000 },
+      { category: '経費', item: '諸経費', cost: 60000 },
     ],
   },
   {

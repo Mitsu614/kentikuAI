@@ -76,7 +76,9 @@ function normalizeHeatshield(rawBreakdown, quantityM2) {
       { category: '経費', item: '諸経費', quantity: 1, unitPrice: overhead(q), cost: overhead(q) },
     ];
     const raw = bd.reduce((s, b) => s + (+b.cost || 0), 0);
-    const rem = raw - Math.floor(raw / overheadCap) * overheadCap;   // overheadCap(=10万)を丸め単位に流用
+    // ★端数値引きは税抜100万円以上の案件だけ（小面積だと材工共がマイナス/極端安値になるのを防ぐ）。main.ts と同じガード。
+    const canRound = raw >= 1000000;
+    const rem = canRound ? raw - Math.floor(raw / overheadCap) * overheadCap : 0;   // overheadCap(=10万)を丸め単位に流用
     if (rem > 0) { bd[0].cost = bd[0].cost - rem; bd[0].unitPrice = Math.round(bd[0].cost / q); }   // 材工共に端数吸収
     steps.push({ step: '④4費目で確定', detail: `材工共¥${bd[0].cost.toLocaleString()}(${q}×約¥${bd[0].unitPrice.toLocaleString()})・安全¥${safety(q).toLocaleString()}・足場¥${scaffold(q).toLocaleString()}・諸経費¥${overhead(q).toLocaleString()}／端数-¥${rem.toLocaleString()}を材工共に吸収` });
   }

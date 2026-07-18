@@ -144,9 +144,50 @@ function isReasonableFeedback(fb: FeedbackData): boolean {
   return true;
 }
 
+// 学習キー(work_type)の正規化。
+// OCR取込・予実は施工タイトル(例「森鉄筋㈱養老工場事務所 屋根遮熱工事…」)をそのまま
+// work_type にしていたため、共有係数テーブルが会社名込みで1件ずつ乱立し、同じ工事なのに
+// material_adjustment が 0.37〜3.35 とバラけて実質使い物にならない係数が量産されていた。
+// → 送信直前に「標準工種の語彙」へ丸め、同種の実績を必ず同じバケツに集約する。
+// ★隔離判定(shouldIsolateLearning)は呼び出し側で"生タイトル"のまま先に済んでいるので、ここで
+//   正規化しても遮熱・特許の隔離は壊れない（この関数に届く時点で既に共有プール送信が確定した分だけ）。
+// キーワード分類は「より特定的なものを先に」判定する（遮熱→屋根 の順）。canonical値は自分自身に
+// マップされるので冪等（例「新築工事」⊃「新築」→「新築工事」）。
+const WORKTYPE_RULES: { re: RegExp; canon: string }[] = [
+  { re: /遮熱|サーモバリア|スカイ工法|特許シート/, canon: '屋根遮熱工事（サーモバリア スカイ工法）' }, // 既存8件バケツに合わせる（通常は隔離で届かない）
+  { re: /耐震/,                                    canon: '耐震補強工事' },
+  { re: /新築/,                                    canon: '新築工事' },
+  { re: /電気|照明|配線|コンセント|分電盤|幹線/,   canon: '電気工事' },
+  { re: /給排水|水道|配管|衛生|給湯|設備/,         canon: '設備工事' },
+  { re: /外壁|サイディング|塗装|吹付/,             canon: '外壁・塗装工事' },
+  { re: /屋根|葺|ルーフィング|板金|防水/,          canon: '屋根工事' },
+  { re: /内装|クロス|床|天井|建具|造作/,           canon: '内装工事' },
+  { re: /解体/,                                    canon: '解体工事' },
+  { re: /基礎|土間|コンクリート|杭/,               canon: '基礎工事' },
+  { re: /足場|仮設|養生|仮囲/,                     canon: '仮設工事' },
+  { re: /外構|造園|舗装|植栽/,                     canon: '外構工事' },
+  { re: /リフォーム|改修|リノベ|補修|修繕/,        canon: 'リフォーム工事' },
+];
+export function normalizeWorkType(raw?: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return 'その他工事';
+  for (const r of WORKTYPE_RULES) if (r.re.test(s)) return r.canon;
+  // どの語彙にも当たらない場合は、会社名・敬称ノイズだけ落として汎用バケツへ（案件名での乱立を防ぐ）。
+  return 'その他工事';
+}
+
 // 実績データをSupabaseに送信（匿名化 - テナントIDや案件名は含まない）
 export async function sendFeedbackToSupabase(feedbackList: FeedbackData[]): Promise<number> {
   if (!feedbackList || feedbackList.length === 0) return 0;
+
+  // 学習キーを標準工種へ正規化（会社名込みタイトルによる係数テーブルの乱立を防ぐ）
+  for (const fb of feedbackList) {
+    const canon = normalizeWorkType(fb.work_type);
+    if (canon !== fb.work_type) {
+      console.log(`学習ループ: 工種名を正規化「${fb.work_type}」→「${canon}」`);
+      fb.work_type = canon;
+    }
+  }
 
   // バリデーション: あり得ない値を除外
   const valid = feedbackList.filter(fb => isReasonableFeedback(fb));

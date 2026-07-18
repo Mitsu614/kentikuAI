@@ -269,4 +269,12 @@ contextBridge.exposeInMainWorld('api', {
   // スマホ承認の信頼端末
   getTrustedDevice: () => ipcRenderer.invoke('admin:getTrustedDevice'),
   resetTrustedDevice: () => ipcRenderer.invoke('admin:resetTrustedDevice'),
+
+  // AI学習完了イベント（main→renderer push）。学習のたびに画面へPOPを出すための購読。
+  // 戻り値の関数を呼ぶと購読解除できる（useEffectのクリーンアップ用）。
+  onLearningDone: (callback: (payload: { workType?: string }) => void) => {
+    const listener = (_e: any, payload: any) => callback(payload || {});
+    ipcRenderer.on('learning:done', listener);
+    return () => ipcRenderer.removeListener('learning:done', listener);
+  },
 });
