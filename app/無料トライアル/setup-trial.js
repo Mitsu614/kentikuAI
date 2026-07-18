@@ -56,7 +56,7 @@ async function main() {
 
     console.log(`  新テーブル: ${added}件追加`);
     console.log('\n  クレジット・データはそのまま引き継がれました。');
-    console.log('  「建築ブースト.exe」を起動してください。');
+    console.log('  「建築ブースト」を起動してください。');
     console.log('========================================\n');
     return;
   }
@@ -244,7 +244,7 @@ async function main() {
   console.log('  - 見積比較表・写真台帳');
   console.log('  - AI見積もり→請求書・発注書の一括自動作成');
   console.log('  - 予実管理の実績編集→学習ループ連携');
-  console.log('\n  次に「建築ブースト.exe」をダブルクリックして起動してください。');
+  console.log('\n  次に「建築ブースト」のアイコンをダブルクリックして起動してください。');
   console.log('========================================\n');
 }
 
