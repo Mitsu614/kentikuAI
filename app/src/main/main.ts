@@ -183,17 +183,20 @@ function useCreditsSynced(amount: number, operation: string): { success: boolean
 
 // ── 画像メディアタイプ検出 ──
 function detectMediaType(b64: string): 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' {
-  // data URLプレフィックスから判定
+  // ★base64のマジックバイト（実体）を最優先で判定する。
+  //   data URLプレフィックスは上流で誤ラベルされることがある（PNG実体なのに
+  //   data:image/jpeg 等）。プレフィックスを信じると Anthropic API が
+  //   「宣言はjpegだが実体はpng」で400を返す。実体は嘘をつかないので実体を優先。
+  const raw = String(b64 || '').replace(/^data:[^;]+;base64,/, '');
+  if (raw.startsWith('iVBOR')) return 'image/png';      // PNG  (\x89PNG)
+  if (raw.startsWith('/9j/'))  return 'image/jpeg';      // JPEG (\xFF\xD8\xFF)
+  if (raw.startsWith('UklGR')) return 'image/webp';      // WebP (RIFF....WEBP)
+  if (raw.startsWith('R0lGO')) return 'image/gif';       // GIF  (GIF8)
+  // マジックバイトで判定できない場合のみ、データURLプレフィックスを信じる
   if (b64.startsWith('data:image/png')) return 'image/png';
   if (b64.startsWith('data:image/webp')) return 'image/webp';
   if (b64.startsWith('data:image/gif')) return 'image/gif';
   if (b64.startsWith('data:image/jpeg') || b64.startsWith('data:image/jpg')) return 'image/jpeg';
-  // プレフィックスがない場合、base64のマジックバイトで判定
-  const raw = b64.replace(/^data:image\/\w+;base64,/, '');
-  if (raw.startsWith('iVBOR')) return 'image/png';      // PNG
-  if (raw.startsWith('/9j/'))  return 'image/jpeg';      // JPEG
-  if (raw.startsWith('UklGR')) return 'image/webp';      // WebP
-  if (raw.startsWith('R0lGO')) return 'image/gif';       // GIF
   return 'image/jpeg'; // デフォルト
 }
 
@@ -1241,7 +1244,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.9';
+const CURRENT_VERSION = '3.4.10';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
