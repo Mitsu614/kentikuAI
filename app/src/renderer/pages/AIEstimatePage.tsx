@@ -42,6 +42,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [comment, setComment] = useState('');
   const [area, setArea] = useState(''); // 面積・数量の実測値（AIの推定より優先させる）
   const [roofType, setRoofType] = useState(''); // 屋根種別（お客様確認）→ 展開係数をAIに強制する
+  const [structure, setStructure] = useState(''); // 建物構造（木造/鉄骨/RC/SRC）。未選択ならAIが推察する
+  const [buildingAge, setBuildingAge] = useState(''); // 築年数（年）。改修・解体時のコストに反映させる
   // お客様(施主)の情報 — 提案(recommendations)のパーソナライズにのみ使う。金額には影響させない。
   const [clientName, setClientName] = useState('');
   const [clientJob, setClientJob] = useState('');
@@ -331,8 +333,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       // 屋根種別（お客様確認）→ 展開係数をAIに強制するための構造化データ
       const roof = roofType ? { label: roofType.split('|')[0], developFactor: Number(roofType.split('|')[1]) || 0 } : null;
       const payload = mode === 'beforeafter'
-        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof }
-        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof };
+        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge }
+        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge };
       const res = await (window as any).api.analyzeImage(payload);
       setResult(res);
       setReArea(res?.assumedArea || ''); // 「AIが前提にした面積」を修正欄の初期値に
@@ -864,6 +866,36 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </select>
             <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
               折板は山谷のぶん材料面積が増えます。<strong>お客様に屋根種別を聞いて選ぶと、AIの判定より確実に展開係数が当たります。</strong>（塗装・葺き替えなど材料が波形に沿わない工事は「自動」でOK）
+            </div>
+          </div>
+
+          {/* 建物構造＋築年数 — 解体・撤去の手間、下地・躯体、耐震・石綿の前提が変わる。
+              未選択でもAIが写真・図面・内外装の年代感から推察して逆算する。 */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>🏗️ 建物構造・築年数（改修・解体のとき — わかれば選ぶと精度アップ）</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <select
+                value={structure}
+                onChange={e => setStructure(e.target.value)}
+                style={{ flex: 1, padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit', background: '#fff' }}
+              >
+                <option value="">構造：AIが推察（未選択）</option>
+                <option value="木造">木造（W造）</option>
+                <option value="鉄骨造">鉄骨造（S造）</option>
+                <option value="鉄筋コンクリート造">鉄筋コンクリート造（RC造）</option>
+                <option value="鉄骨鉄筋コンクリート造">鉄骨鉄筋コンクリート造（SRC造）</option>
+              </select>
+              <input
+                type="number"
+                min={0}
+                value={buildingAge}
+                onChange={e => setBuildingAge(e.target.value)}
+                placeholder="築年数（例: 30）"
+                style={{ width: 150, padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit' }}
+              />
+            </div>
+            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+              未選択・未入力でもOK。<strong>写真・図面・内外装の年代感（サッシ・外壁材・タイル・設備の意匠）から築年帯を推察して逆算します。</strong>改修・解体では築年数が古いほど既存撤去・下地補修・石綿調査・基礎点検の余裕を織り込みます（新築工事では無視）。
             </div>
           </div>
 
