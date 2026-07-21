@@ -44,6 +44,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [roofType, setRoofType] = useState(''); // 屋根種別（お客様確認）→ 展開係数をAIに強制する
   const [structure, setStructure] = useState(''); // 建物構造（木造/鉄骨/RC/SRC）。未選択ならAIが推察する
   const [buildingAge, setBuildingAge] = useState(''); // 築年数（年）。改修・解体時のコストに反映させる
+  // 現場条件 — 足場・搬入・アクセス・居ながら施工。写真では分からないが金額を直撃する。未選択ならAIが写真から推察。
+  const [siteAccess, setSiteAccess] = useState(''); // 前面道路・重機搬入
+  const [siteAdjacency, setSiteAdjacency] = useState(''); // 隣地との距離・足場の組みやすさ
+  const [siteOccupied, setSiteOccupied] = useState(''); // 居ながら施工か空き家か
+  const [siteStories, setSiteStories] = useState(''); // 階数・高さ（足場㎡・危険手当）
   // お客様(施主)の情報 — 提案(recommendations)のパーソナライズにのみ使う。金額には影響させない。
   const [clientName, setClientName] = useState('');
   const [clientJob, setClientJob] = useState('');
@@ -332,9 +337,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       }
       // 屋根種別（お客様確認）→ 展開係数をAIに強制するための構造化データ
       const roof = roofType ? { label: roofType.split('|')[0], developFactor: Number(roofType.split('|')[1]) || 0 } : null;
+      // 現場条件（足場・搬入・アクセス・居ながら）→ 一つでも入っていれば構造化して渡す。未入力はAIが写真から推察。
+      const site = { access: siteAccess, adjacency: siteAdjacency, occupied: siteOccupied, stories: siteStories };
       const payload = mode === 'beforeafter'
-        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge }
-        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge };
+        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site }
+        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site };
       const res = await (window as any).api.analyzeImage(payload);
       setResult(res);
       setReArea(res?.assumedArea || ''); // 「AIが前提にした面積」を修正欄の初期値に
@@ -899,6 +906,58 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </div>
           </div>
 
+          {/* 現場条件 — 足場・搬入・アクセス・居ながら。写真に写らないが足場代・運搬・段取り・危険手当を直撃する。
+              未選択でもAIが写真から推察するが、わかれば選ぶと精度が大きく上がる。 */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>🚧 現場条件（足場・搬入・居ながら — 写真に写らないが金額を左右）</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <select
+                value={siteAccess}
+                onChange={e => setSiteAccess(e.target.value)}
+                style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit', background: '#fff' }}
+              >
+                <option value="">搬入・道路：AIが推察（未選択）</option>
+                <option value="前面道路が広く重機・トラック横付け可">重機・トラック横付け可（搬入良好）</option>
+                <option value="前面道路が狭くトラックは可だが重機は不可">道路狭め（トラック可／重機不可）</option>
+                <option value="車両進入困難で人力小運搬が必要（旗竿地・狭小・階段等）">車両進入困難・人力小運搬（旗竿地/狭小）</option>
+              </select>
+              <select
+                value={siteAdjacency}
+                onChange={e => setSiteAdjacency(e.target.value)}
+                style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit', background: '#fff' }}
+              >
+                <option value="">隣地・足場：AIが推察（未選択）</option>
+                <option value="四周に余裕があり足場は組みやすい">四周に余裕あり（足場組みやすい）</option>
+                <option value="隣地が近く足場・養生に制約あり（狭あい）">隣地が近い（足場・養生に制約）</option>
+                <option value="越境・借地・特殊足場が必要な近接状況">越境/借地/特殊足場が必要</option>
+              </select>
+              <select
+                value={siteOccupied}
+                onChange={e => setSiteOccupied(e.target.value)}
+                style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit', background: '#fff' }}
+              >
+                <option value="">居住状況：AIが推察（未選択）</option>
+                <option value="空き家・無人で施工の制約が少ない">空き家・無人（制約少）</option>
+                <option value="居ながら施工。養生・時間帯配慮・近隣対応で手間増">居ながら施工（養生・時間帯・近隣配慮）</option>
+                <option value="店舗・施設の営業中施工で夜間・区画割りが必要">営業中施工（夜間/区画割り）</option>
+              </select>
+              <select
+                value={siteStories}
+                onChange={e => setSiteStories(e.target.value)}
+                style={{ padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit', background: '#fff' }}
+              >
+                <option value="">階数・高さ：AIが推察（未選択）</option>
+                <option value="平屋">平屋</option>
+                <option value="2階建て">2階建て</option>
+                <option value="3階建て">3階建て</option>
+                <option value="4階建て以上（高所・危険手当・特殊足場）">4階建て以上（高所・危険手当）</option>
+              </select>
+            </div>
+            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+              未選択でもOK。<strong>写真・地図・図面から現場条件を推察して足場・小運搬・養生・危険手当を積算します。</strong>選んでおくと「写真に写らない現場の手間」がブレずに金額へ反映されます（過剰計上はしません）。
+            </div>
+          </div>
+
           {/* お客様(施主)の情報 — 提案のパーソナライズ専用。金額には一切影響させない。 */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>
@@ -1432,6 +1491,49 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   </tr>
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* 松竹梅 — 施主が選べる3グレード提案。竹＝この見積(ベース)、松梅は差分。表示専用で保存見積は竹のまま。 */}
+          {Array.isArray(result.gradeOptions) && result.gradeOptions.length > 0 && (
+            <div className="card" style={{ marginTop: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <h3 style={{ margin: 0 }}>松竹梅プラン（お客様への提案用）</h3>
+                <span style={{ fontSize: 11, color: '#888' }}>竹＝この見積。保存されるのは竹です</span>
+              </div>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>予算に応じて3案を提示できます。松＝グレードアップ／竹＝標準／梅＝コスト重視。</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                {['松', '竹', '梅'].map(g => {
+                  const opt = result.gradeOptions.find((o: any) => o.grade === g);
+                  if (!opt) return null;
+                  const isBase = g === '竹';
+                  const diff = Number(opt.diff) || 0;
+                  const accent = g === '松' ? '#c0392b' : g === '竹' ? '#27ae60' : '#2980b9';
+                  return (
+                    <div key={g} style={{
+                      border: `2px solid ${isBase ? accent : '#e5e7eb'}`, borderRadius: 12, padding: 14,
+                      background: isBase ? '#f0fbf4' : '#fff', position: 'relative', display: 'flex', flexDirection: 'column'
+                    }}>
+                      {isBase && (
+                        <div style={{ position: 'absolute', top: -10, right: 10, background: accent, color: '#fff', fontSize: 10, fontWeight: 'bold', padding: '2px 8px', borderRadius: 10 }}>この見積</div>
+                      )}
+                      <div style={{ fontSize: 22, fontWeight: 'bold', color: accent }}>{g}</div>
+                      <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>{opt.label}</div>
+                      <div style={{ fontSize: 20, fontWeight: 'bold', color: '#222' }}>{fmt(opt.total)}</div>
+                      <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>
+                        税込 {fmt(Math.floor((Number(opt.total) || 0) * (1 + TAX_RATE)))}
+                      </div>
+                      <div style={{ fontSize: 12, fontWeight: 'bold', color: diff > 0 ? '#c0392b' : diff < 0 ? '#2980b9' : '#888', marginBottom: 8 }}>
+                        {diff === 0 ? '基準' : (diff > 0 ? '＋' : '−') + fmt(Math.abs(diff))}
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: '#444', lineHeight: 1.5, flex: 1 }}>
+                        {(Array.isArray(opt.spec) ? opt.spec : []).map((s: string, i: number) => <li key={i}>{s}</li>)}
+                      </ul>
+                      {opt.note && <div style={{ fontSize: 11, color: '#777', marginTop: 8, borderTop: '1px dashed #ddd', paddingTop: 6 }}>{opt.note}</div>}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
