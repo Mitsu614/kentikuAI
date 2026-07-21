@@ -1247,7 +1247,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.16';
+const CURRENT_VERSION = '3.4.17';
 APP_VERSION = CURRENT_VERSION;
 
 function setupAutoUpdater() {
@@ -1998,6 +1998,32 @@ app.whenReady().then(async () => {
     runSql('DELETE FROM materials WHERE id=?', [id]);
   });
 
+  // 工事の原価・売価・粗利を算出する共通ロジック。
+  // ★AI自動作成の工事は、内訳が"売価(粗利込み)"のまま construction_materials に入っている
+  //   （autoCreateFromEstimateCore の仕様。labor_cost=0・markup=1）。そのため materials の合計を
+  //   原価とみなすと 原価=売価 になり粗利が0に化ける。よってAI工事は estimate_log に保存された
+  //   実原価（材料・人件費・経費）から算出する。人件費が分かれる普通のテナントも、材工共で
+  //   ai_labor_cost=0になる山下さん(遮熱)も、同じ計算で正しく出る。
+  //   手動作成の工事は従来どおり materials 合計(=原価入力)＋labor_cost で算出。
+  function computeConstructionEconomics(c: any): { matCost: number; laborCost: number; expenseCost: number; cost: number; selling: number; profit: number } {
+    const est = queryOne('SELECT ai_material_cost, ai_labor_cost, ai_total, ai_json FROM estimate_log WHERE construction_id = ? ORDER BY id DESC LIMIT 1', [c.id]);
+    let matCost = 0, laborCost = 0, expenseCost = 0, selling = 0;
+    if (est && ((est.ai_material_cost || 0) > 0 || (est.ai_labor_cost || 0) > 0)) {
+      matCost = est.ai_material_cost || 0;
+      laborCost = est.ai_labor_cost || 0;
+      try { const j = JSON.parse(est.ai_json || '{}'); expenseCost = Number(j.estimatedExpenseCost) || 0; } catch (_) {}
+      selling = c.fixed_selling_price || est.ai_total || 0;
+    } else {
+      const mat = queryOne('SELECT COALESCE(SUM(quantity * unit_price),0) as total FROM construction_materials WHERE construction_id = ?', [c.id]);
+      matCost = mat?.total || 0;
+      laborCost = c.labor_cost || 0;
+      const baseCost = matCost + laborCost;
+      selling = c.fixed_selling_price || Math.ceil(baseCost * (c.markup_rate || 1.3));
+    }
+    const cost = matCost + laborCost + expenseCost;
+    return { matCost, laborCost, expenseCost, cost, selling, profit: selling - cost };
+  }
+
   // ── 施工履歴 CRUD（経費・売上付き）──
   ipcMain.handle('constructions:list', () => {
     const rows = queryAll(`
@@ -2009,12 +2035,8 @@ app.whenReady().then(async () => {
       ORDER BY c.construction_date DESC
     `, [getCurrentTenant()]);
     return rows.map((r: any) => {
-      const matCost = r.material_cost || 0;
-      const laborCost = r.labor_cost || 0;
-      const totalCost = matCost + laborCost;
-      const selling = r.fixed_selling_price || Math.ceil(totalCost * (r.markup_rate || 1.3));
-      const profit = selling - totalCost;
-      return { ...r, total_cost: totalCost, selling_price: selling, gross_profit: profit };
+      const e = computeConstructionEconomics(r);
+      return { ...r, total_cost: e.cost, selling_price: e.selling, gross_profit: e.profit };
     });
   });
 
@@ -2693,29 +2715,23 @@ app.whenReady().then(async () => {
     const constructions = queryAll('SELECT id, labor_cost, markup_rate, fixed_selling_price FROM constructions WHERE tenant_id = ?', [getCurrentTenant()]);
     let totalMaterialCost = 0;
     let totalLaborCost = 0;
+    let totalExpenseCost = 0;
     let totalSelling = 0;
     let totalGrossProfit = 0;
 
     for (const c of constructions) {
-      const mat = queryOne(
-        'SELECT SUM(quantity * unit_price) as total FROM construction_materials WHERE construction_id=?',
-        [c.id]
-      );
-      const matCost = mat?.total || 0;
-      const laborCost = c.labor_cost || 0;
-      const cost = matCost + laborCost;
-      const selling = c.fixed_selling_price || Math.ceil(cost * (c.markup_rate || 1.3));
-      const profit = selling - cost;
-
-      totalMaterialCost += matCost;
-      totalLaborCost += laborCost;
-      totalSelling += selling;
-      totalGrossProfit += profit;
+      const e = computeConstructionEconomics(c);
+      totalMaterialCost += e.matCost;
+      totalLaborCost += e.laborCost;
+      totalExpenseCost += e.expenseCost;
+      totalSelling += e.selling;
+      totalGrossProfit += e.profit;
     }
 
     return {
       totalMaterialCost,
       totalLaborCost,
+      totalExpenseCost,
       totalSelling,
       totalGrossProfit,
       profitRate: totalSelling > 0 ? Math.round((totalGrossProfit / totalSelling) * 1000) / 10 : 0,
@@ -4754,7 +4770,7 @@ ${pages}</body></html>`;
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
   // AI見積もりのコア処理。デスクトップ(IPC)とスマホ(内蔵Webサーバー)の両方から呼ぶ
   const analyzeImageCore = async (data: any) => {
-    let { imageBase64, beforeImage, afterImage, comment, location, area, clientAttrs, roofType, structure, buildingAge, siteConditions } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null, structure: '', buildingAge: '', siteConditions: null } : data;
+    let { imageBase64, beforeImage, afterImage, comment, location, area, clientAttrs, roofType, structure, buildingAge, siteConditions, desiredDeadline } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null, structure: '', buildingAge: '', siteConditions: null, desiredDeadline: '' } : data;
     // スマホ写真は数MBあり、Anthropicの5MB上限で400になるため送信前に縮小する
     imageBase64 = shrinkImageForAI(imageBase64);
     beforeImage = shrinkImageForAI(beforeImage);
@@ -5360,6 +5376,14 @@ ${sc.access && String(sc.access).trim() ? `- 搬入・道路: ${String(sc.access
   return `## 現場条件（未指定 → 写真・地図・図面から推察せよ）
 現場条件（搬入・道路付け／隣地との距離・足場の組みやすさ／居ながらか空き家か／階数・高さ）が指定されていない。画像・現場場所（地図）・図面から推察し、足場・小運搬・養生・高所/危険手当を積算に織り込め。判断材料が皆無なら標準的な現場条件を前提とし、その旨を note に一言添えろ。過剰計上はするな。`;
 })()}
+${(desiredDeadline && String(desiredDeadline).trim()) ? `## ★希望納期・工期（お客様の希望 — 推定工期と比較して提案・相談せよ）★
+希望納期/工期: ${String(desiredDeadline).trim()}。
+★重要: まず通常の推定工期（estimatedDuration）を出したうえで、上記の希望と比較しろ。
+- 希望が推定工期以上（余裕がある）なら scheduleProposal は null でよい。
+- 希望が推定工期より短い（急ぎ）なら scheduleProposal に工期短縮の提案・相談を書け:
+  ・詰められる場合: 増員（例 職人◯人→◯人）・残業・応援・材料の急ぎ手配などで「△日に短縮可能」と示し、それに伴う割増費用の概算（応援日当・残業手当・特急手配料等の内訳と合計 約◯円）を書け。
+  ・物理的に厳しい場合: 「最短◯日を推奨。1日は乾燥待ち・検査・段取り・安全確保の点で無理」と正直に相談し、無理な短縮が品質不良・事故・赤字につながる旨を職人目線で伝えろ。
+★本体の見積金額（breakdown・estimatedTotal）は変えるな。短縮に伴う割増は scheduleProposal 内の"別途"提案として書き、本体には混ぜるな。` : ''}
 ${droneInfo}${droneCSVInfo}${industryPrompt}
 ## ★★★ 最重要ルール（絶対に守れ）★★★
 1. breakdownには「ユーザーが依頼した工事内容」に直接関係する項目だけを入れろ
@@ -5534,6 +5558,7 @@ ${categories}
   "profitRate": 適用した粗利率（数値、%、例: 30）,
   "confidence": "高/中/低",
   "estimatedDuration": "推定工期（例: '約5日', '約2週間', '約1.5ヶ月'）。全工程の着工から完了までの暦日数。並行作業を考慮して算出",
+  "scheduleProposal": "★希望納期が入力され、かつ推定工期より短い（急ぎ）ときのみ記入・それ以外は必ずnull★ 工期短縮の提案または相談。詰められるなら『増員・残業・応援で△日に短縮可能。割増費用 約◯円（内訳）』、厳しいなら『最短◯日を推奨。1日は品質・安全・段取り上おすすめしない理由』を、職人目線で具体的に3〜5行。本体金額には含めない別途提案として書く。",
   "totalManDays": 総人工数（数値。全職種の延べ人工合計。例: 設備工2人×3日+大工1人×2日=8）,
   "manDaysBreakdown": [
     {"trade": "職種名", "workers": 人数, "days": 日数, "manDays": 人工数, "dailyRate": 日額単価, "basis": "★なぜこの日数・人工になるのかの根拠を必ず記入。歩掛（1人が1日にこなす標準作業量）から算出した式で書く。例: '屋根400㎡ ÷ 2人 ÷ 約66㎡/人日 ≒ 3日' / 'コンセント30箇所 ÷ @15箇所/人日 = 2人工'。数量が無い管理系（現場管理・雑工）は '工期◯日に対し常駐0.5人' のように据え置き根拠を書く"}

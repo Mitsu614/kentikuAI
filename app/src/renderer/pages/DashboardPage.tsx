@@ -10,7 +10,7 @@ const STATUS_CONFIG: Record<string, { label: string; bg: string; color: string; 
 
 export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onNavigate?: (page: string) => void; onNavigateToInvoice?: (constructionId: number) => void }) {
   const [stats, setStats] = useState({ properties: 0, materials: 0, constructions: 0, invoices: 0 });
-  const [summary, setSummary] = useState({ totalMaterialCost: 0, totalLaborCost: 0, totalSelling: 0, totalGrossProfit: 0, profitRate: 0 });
+  const [summary, setSummary] = useState({ totalMaterialCost: 0, totalLaborCost: 0, totalExpenseCost: 0, totalSelling: 0, totalGrossProfit: 0, profitRate: 0 });
   const [invoices, setInvoices] = useState<any[]>([]);
   const [recentConstructions, setRecentConstructions] = useState<any[]>([]);
   const [allConstructions, setAllConstructions] = useState<any[]>([]);
@@ -206,7 +206,7 @@ export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onN
                 <tr style={{ fontWeight: 'bold', borderTop: '2px solid #333' }}>
                   <td colSpan={3}>合計</td>
                   {showDetail === 'profit' && <td style={{ textAlign: 'right' }}>{fmt(summary.totalSelling)}</td>}
-                  {showDetail === 'profit' && <td style={{ textAlign: 'right' }}>{fmt(summary.totalMaterialCost + summary.totalLaborCost)}</td>}
+                  {showDetail === 'profit' && <td style={{ textAlign: 'right' }}>{fmt(summary.totalMaterialCost + summary.totalLaborCost + (summary.totalExpenseCost || 0))}</td>}
                   <td style={{ textAlign: 'right', color: cfg.color }}>{fmt(cfg.total)}</td>
                   {showDetail === 'profit' && <td style={{ textAlign: 'right' }}>{summary.profitRate}%</td>}
                 </tr>

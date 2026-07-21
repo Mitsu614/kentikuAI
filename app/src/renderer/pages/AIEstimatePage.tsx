@@ -49,6 +49,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [siteAdjacency, setSiteAdjacency] = useState(''); // 隣地との距離・足場の組みやすさ
   const [siteOccupied, setSiteOccupied] = useState(''); // 居ながら施工か空き家か
   const [siteStories, setSiteStories] = useState(''); // 階数・高さ（足場㎡・危険手当）
+  const [desiredDeadline, setDesiredDeadline] = useState(''); // 希望納期/工期。推定工期より短ければAIが短縮提案・相談する
   // お客様(施主)の情報 — 提案(recommendations)のパーソナライズにのみ使う。金額には影響させない。
   const [clientName, setClientName] = useState('');
   const [clientJob, setClientJob] = useState('');
@@ -340,8 +341,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       // 現場条件（足場・搬入・アクセス・居ながら）→ 一つでも入っていれば構造化して渡す。未入力はAIが写真から推察。
       const site = { access: siteAccess, adjacency: siteAdjacency, occupied: siteOccupied, stories: siteStories };
       const payload = mode === 'beforeafter'
-        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site }
-        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site };
+        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline }
+        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline };
       const res = await (window as any).api.analyzeImage(payload);
       setResult(res);
       setReArea(res?.assumedArea || ''); // 「AIが前提にした面積」を修正欄の初期値に
@@ -955,6 +956,21 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </div>
             <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
               未選択でもOK。<strong>写真・地図・図面から現場条件を推察して足場・小運搬・養生・危険手当を積算します。</strong>選んでおくと「写真に写らない現場の手間」がブレずに金額へ反映されます（過剰計上はしません）。
+            </div>
+          </div>
+
+          {/* 希望納期/工期 — 推定工期より短い時にAIが「増員・残業・応援で詰める案＋割増費用」or「最短◯日を推奨」を提案・相談する。 */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>⏱️ 希望納期・工期（急ぎのとき — AIが短縮案を提案）</label>
+            <input
+              type="text"
+              value={desiredDeadline}
+              onChange={e => setDesiredDeadline(e.target.value)}
+              placeholder="例: 1日で / 3日以内 / 今週末まで / ◯月◯日まで"
+              style={{ width: '100%', padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, fontFamily: 'inherit' }}
+            />
+            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+              未入力でOK。<strong>希望が推定工期より短いと、AIが「増員・残業・応援でこう詰められます（割増費用◯円）」or「最短◯日を推奨（無理な短縮は品質・安全リスク）」を提案・相談します。</strong>金額（本体）は変えず、短縮に伴う割増だけ別提案します。
             </div>
           </div>
 
@@ -1748,6 +1764,15 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 {result.installInstruction}
               </div>
               <div style={{ fontSize: 11, color: '#888', marginTop: 6 }}>そのまま現場の職人へ共有できます（施工案件の備考にも自動で入ります）。</div>
+            </div>
+          )}
+
+          {/* 希望納期の短縮提案・相談（推定工期より短いときのみAIが返す） */}
+          {result.scheduleProposal && (
+            <div className="card" style={{ marginTop: 16, background: '#fff4f0', border: '1px solid #e08060' }}>
+              <h3 style={{ marginBottom: 8, color: '#c0392b' }}>⏱️ 急ぎ工期の提案・相談</h3>
+              <div style={{ fontSize: 11, color: '#a55', marginBottom: 6 }}>推定工期{result.estimatedDuration ? `（${result.estimatedDuration}）` : ''}より短いご希望への提案です。割増費用は本体金額とは別です。</div>
+              <p style={{ fontSize: 14, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{result.scheduleProposal}</p>
             </div>
           )}
 
