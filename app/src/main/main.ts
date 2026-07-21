@@ -1247,8 +1247,11 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.17';
+const CURRENT_VERSION = '3.4.18';
 APP_VERSION = CURRENT_VERSION;
+// 更新通知で検知した最新バージョン。「ダウンロード」ボタンで setup.exe の直リンクを組むのに使う
+// （リポジトリのリリースページを開くとお客様にソース側が見えるため、exe直DLにする）。
+let latestUpdateVersion = '';
 
 function setupAutoUpdater() {
   try {
@@ -1262,6 +1265,7 @@ function setupAutoUpdater() {
     // 新版が出たら「通知だけ」出す（自動DL・自動インストールはしない）。
     autoUpdater.on('update-available', (info: any) => {
       console.log('アップデートあり(通知のみ):', info.version);
+      latestUpdateVersion = info.version || '';
       if (mainWindow) {
         mainWindow.webContents.executeJavaScript(`
           (function(){
@@ -1287,9 +1291,15 @@ function setupAutoUpdater() {
       try { mainWindow?.webContents.executeJavaScript(`document.getElementById('update-overlay')?.remove()`); } catch (_) {}
     });
 
-    // 「ダウンロード」ボタン: 最新リリースページをブラウザで開く（自動インストールはしない＝#9593回避）。
+    // 「ダウンロード」ボタン: setup.exe を直リンクでダウンロードさせる（自動インストールはしない＝#9593回避）。
+    //   ★リポジトリのリリースページは開かない（お客様にソース側を見せないため）。
+    //   検知済みバージョンから直リンクを組む。未検知時のみ従来のリリースページにフォールバック。
     ipcMain.handle('update:install', () => {
-      shell.openExternal('https://github.com/Mitsu614/kentikuAI/releases/latest');
+      const v = latestUpdateVersion;
+      const url = v
+        ? `https://github.com/Mitsu614/kentikuAI/releases/download/v${v}/kenchiku-boost-v${v}-setup.exe`
+        : 'https://github.com/Mitsu614/kentikuAI/releases/latest';
+      shell.openExternal(url);
     });
 
   // ── リモート登録申請管理（Supabase） ──
