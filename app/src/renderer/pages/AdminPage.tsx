@@ -239,6 +239,12 @@ export default function AdminPage() {
 
   /* --- リモート登録申請（Supabase） --- */
   const [remoteRegs, setRemoteRegs] = useState<any[]>([]);
+  /* --- マルチシート（席数）設定 --- */
+  const [seatCompany, setSeatCompany] = useState('');
+  const [seatCount, setSeatCount] = useState('5');
+  const [seatResult, setSeatResult] = useState<{ code: string; seats: number } | null>(null);
+  const [seatErr, setSeatErr] = useState('');
+  const [seatBusy, setSeatBusy] = useState(false);
   const [regPlanChoices, setRegPlanChoices] = useState<Record<string, string>>({});
 
   /* --- 改善要望 --- */
@@ -466,6 +472,43 @@ export default function AdminPage() {
                 <button style={styles.btnSm(COLOR.danger)} onClick={handleResetTrustedDevice}>
                   端末をリセット（機種変更時）
                 </button>
+              )}
+            </div>
+          )}
+
+          {/* マルチシート（席数）設定＝会社ライセンスに席数を付与し参加コードを発行 */}
+          {!isWeb && (
+            <div style={{ ...styles.card, border: '2px solid #27ae60', marginBottom: 20 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 6, color: '#27ae60' }}>マルチシート設定（複数人で1ライセンス共有）</h3>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>
+                会社ライセンスに席数を設定して<strong>参加コード</strong>を発行します。各社員はログイン画面の「参加コードで参加」で会社名＋このコードを入れると席を取り、<strong>クレジットは会社の共有プールから消費</strong>されます（承認不要・席数上限あり）。
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input value={seatCompany} onChange={e => setSeatCompany(e.target.value)} placeholder="会社名（承認済みライセンス）"
+                  style={{ flex: '1 1 220px', padding: '10px 12px', border: '1px solid #ccc', borderRadius: 8, fontSize: 14 }} />
+                <input type="number" min={1} value={seatCount} onChange={e => setSeatCount(e.target.value)} placeholder="席数"
+                  style={{ width: 90, padding: '10px 12px', border: '1px solid #ccc', borderRadius: 8, fontSize: 14 }} />
+                <button disabled={seatBusy} onClick={async () => {
+                  if (!seatCompany.trim()) { setSeatErr('会社名を入力してください'); return; }
+                  setSeatBusy(true); setSeatErr(''); setSeatResult(null);
+                  try {
+                    const res = await (window as any).api.setLicenseSeats(seatCompany.trim(), Number(seatCount) || 1);
+                    if (res?.ok) setSeatResult({ code: res.joinCode, seats: res.maxSeats });
+                    else setSeatErr(res?.error || '設定に失敗しました');
+                  } catch (e: any) { setSeatErr(e.message || 'エラー'); }
+                  setSeatBusy(false);
+                }}
+                  style={{ padding: '10px 18px', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 'bold', cursor: 'pointer' }}>
+                  {seatBusy ? '設定中…' : '席数を設定＆コード発行'}
+                </button>
+              </div>
+              {seatErr && <div style={{ color: '#e74c3c', fontSize: 13, marginTop: 8 }}>{seatErr}</div>}
+              {seatResult && (
+                <div style={{ marginTop: 12, padding: '10px 14px', background: '#eafaf0', border: '1px solid #27ae60', borderRadius: 8 }}>
+                  <div style={{ fontSize: 13, color: '#333' }}>「{seatCompany}」を <strong>{seatResult.seats}席</strong>に設定しました。参加コード：</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '0.15em', color: '#1a7a3a', marginTop: 4, fontFamily: 'monospace' }}>{seatResult.code}</div>
+                  <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>このコードを社員に渡してください（会社名＋このコードで参加）。</div>
+                </div>
               )}
             </div>
           )}

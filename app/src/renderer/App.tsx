@@ -48,6 +48,13 @@ export default function App() {
   const [resetNewPass, setResetNewPass] = useState('');
   const [resetMsg, setResetMsg] = useState('');
   const [resetErr, setResetErr] = useState('');
+  // 参加（マルチシート）: 会社名＋参加コードで席を取り、承認なしで即利用開始
+  const [showJoin, setShowJoin] = useState(false);
+  const [joinCompany, setJoinCompany] = useState('');
+  const [joinCode, setJoinCode] = useState('');
+  const [joinUser, setJoinUser] = useState('');
+  const [joinPass, setJoinPass] = useState('');
+  const [joinError, setJoinError] = useState('');
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
   const [highlightConstructionId, setHighlightConstructionId] = useState<number | null>(null);
   const [tenants, setTenants] = useState<any[]>([]);
@@ -159,6 +166,33 @@ export default function App() {
     } catch (e: any) {
       setRegError('エラー: ' + e.message);
     }
+  };
+
+  const handleJoin = async () => {
+    if (!joinCompany.trim() || !joinCode.trim() || !joinUser.trim() || !joinPass) {
+      setJoinError('会社名・参加コード・ユーザー名・パスワードを入力してください'); return;
+    }
+    setJoinError('');
+    setLoginLoading(true);
+    try {
+      const res = await (window as any).api.join({
+        company: joinCompany.trim(), joinCode: joinCode.trim(),
+        username: joinUser.trim(), password: joinPass,
+      });
+      if (res.ok) {
+        setSessionInfo(res);
+        setLoggedIn(true);
+        setCurrentTenant(res.tenantId);
+        setTenantKey(k => k + 1);
+        const onboardingKey = `onboarding_done_${res.username}`;
+        if (!localStorage.getItem(onboardingKey)) { setShowOnboarding(true); setOnboardingStep(0); }
+      } else {
+        setJoinError(res.error || '参加に失敗しました');
+      }
+    } catch (e: any) {
+      setJoinError('エラー: ' + e.message);
+    }
+    setLoginLoading(false);
   };
 
   useEffect(() => { if (loggedIn) loadTenants(); }, [loggedIn]);
@@ -357,11 +391,17 @@ export default function App() {
           >ログイン</button>
           </form>
           <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center', gap: 16 }}>
-            <span onClick={() => { setShowRegister(!showRegister); setShowPassReset(false); setRegMessage(''); setRegError(''); }}
+            <span onClick={() => { setShowRegister(!showRegister); setShowPassReset(false); setShowJoin(false); setRegMessage(''); setRegError(''); }}
               style={{ fontSize: 14, color: '#3a7bd5', cursor: 'pointer' }}>
               {showRegister ? '← ログインに戻る' : '新規登録はこちら'}
             </span>
-            {!showRegister && (
+            {!showRegister && !showPassReset && (
+              <span onClick={() => { setShowJoin(!showJoin); setShowRegister(false); setShowPassReset(false); setJoinError(''); }}
+                style={{ fontSize: 14, color: '#27ae60', cursor: 'pointer' }}>
+                {showJoin ? '← ログインに戻る' : '参加コードで参加'}
+              </span>
+            )}
+            {!showRegister && !showJoin && (
               <span onClick={() => { setShowPassReset(!showPassReset); setShowRegister(false); setResetMsg(''); setResetErr(''); }}
                 style={{ fontSize: 14, color: '#888', cursor: 'pointer' }}>
                 {showPassReset ? '← ログインに戻る' : 'パスワードをお忘れ・変更の方'}
@@ -424,6 +464,32 @@ export default function App() {
               </button>
               <div style={{ fontSize: 12, color: '#888', marginTop: 8, textAlign: 'center' }}>
                 ※ 管理者の承認後にログインできるようになります
+              </div>
+            </div>
+          )}
+          {showJoin && (
+            <div style={{ marginTop: 16, textAlign: 'left', borderTop: '1px solid #eee', paddingTop: 16 }}>
+              <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 4, textAlign: 'center', color: '#1a2332' }}>参加コードで参加</div>
+              <div style={{ fontSize: 12, color: '#888', marginBottom: 12, textAlign: 'center' }}>会社で発行された参加コードで、承認なしですぐ利用開始できます</div>
+              {joinError && <div style={{ color: '#e74c3c', fontSize: 14, marginBottom: 12, textAlign: 'center' }}>{joinError}</div>}
+              <input value={joinCompany} onChange={e => setJoinCompany(e.target.value)} placeholder="会社名（必須）"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#27ae60'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <input value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="参加コード（必須）"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48, letterSpacing: '0.1em' }}
+                onFocus={e => e.target.style.borderColor = '#27ae60'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <input value={joinUser} onChange={e => setJoinUser(e.target.value)} placeholder="ユーザー名（このPC用・必須）"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#27ae60'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <input type="password" value={joinPass} onChange={e => setJoinPass(e.target.value)} placeholder="パスワード（このPC用・必須）"
+                style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
+                onFocus={e => e.target.style.borderColor = '#27ae60'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
+              <button onClick={handleJoin}
+                style={{ width: '100%', padding: '14px', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 10, fontSize: 16, fontWeight: 'bold', cursor: 'pointer', minHeight: 52 }}>
+                参加して利用開始
+              </button>
+              <div style={{ fontSize: 12, color: '#888', marginTop: 8, textAlign: 'center' }}>
+                ※ クレジットは会社の共有プールから消費されます（承認は不要）
               </div>
             </div>
           )}

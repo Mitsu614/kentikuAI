@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseAdmin, normalizeWorkType } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseJoin, licenseAdmin, normalizeWorkType } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 
@@ -1324,6 +1324,15 @@ function setupAutoUpdater() {
     if (!adminSecret) return { ok: false, error: 'adminSecret未設定（設定画面で管理者シークレットを入力してください）' };
     const res = await licenseAdmin(adminSecret, 'approve', companyName, { plan });
     return res && res.ok ? { ok: true } : { ok: false, error: res?.error || '承認失敗' };
+  });
+
+  // マルチシート化：会社ライセンスに席数を設定し参加コードを発行（Edge Function set_seats）。
+  //   返ってきた join_code を中野さんが各社員に渡す → 社員は「参加コードで参加」で席を取る。
+  ipcMain.handle('remote:setSeats', async (_e, companyName: string, maxSeats: number) => {
+    const adminSecret = loadApiConfig().adminSecret || '';
+    if (!adminSecret) return { ok: false, error: 'adminSecret未設定（設定画面で管理者シークレットを入力してください）' };
+    const res = await licenseAdmin(adminSecret, 'set_seats', companyName, { max_seats: Math.max(1, Math.floor(Number(maxSeats) || 1)) });
+    return res && res.ok ? { ok: true, joinCode: res.join_code, maxSeats: res.max_seats } : { ok: false, error: res?.error || '席数設定に失敗しました' };
   });
 
   ipcMain.handle('remote:reject', async (_e, companyName: string) => {
@@ -3033,6 +3042,47 @@ app.whenReady().then(async () => {
     }
 
     return { ok: true };
+  });
+
+  // ── 参加（マルチシート）: 会社名＋参加コードで席を取り、承認なしで即利用開始 ──
+  //   Edge Function の join を叩き、成功したら端末トークンを保存してローカルにactiveテナント＋ユーザーを作る。
+  //   クレジットは会社の共有プール（サーバー側で消費）なので、席ごとに別プールにはならない。
+  ipcMain.handle('auth:join', async (_e, data: any) => {
+    const username = String(data?.username || '').trim();
+    const password = String(data?.password || '');
+    const company = String(data?.company || '').trim();
+    const joinCode = String(data?.joinCode || '').trim();
+    if (!username || !password || !company || !joinCode) {
+      return { ok: false, error: '会社名・参加コード・ユーザー名・パスワードを入力してください' };
+    }
+    if (queryOne('SELECT id FROM users WHERE username = ?', [username])) {
+      return { ok: false, error: 'このユーザー名は既に使われています' };
+    }
+    // Edge Function で席を取得（会社名＋参加コードが本人確認代わり）
+    const res = await licenseJoin(company, joinCode, require('os').hostname()).catch(() => null);
+    if (!res) return { ok: false, error: 'サーバーに接続できませんでした。通信環境をご確認ください。' };
+    if (res.error === 'seats_full') return { ok: false, error: `席が上限（${res.max_seats}席）に達しています。管理者にお問い合わせください。` };
+    if (res.error === 'invalid_company_or_code') return { ok: false, error: '会社名または参加コードが違います。' };
+    if (res.error || !res.token) return { ok: false, error: '参加に失敗しました。会社名・参加コードをご確認ください。' };
+
+    // ローカルに active テナント＋ユーザーを作成（共有ライセンスの情報を反映）
+    const remoteLimit = res.max_credits || res.credits || 50;
+    const tenantId = runSql(
+      'INSERT INTO tenants (name, plan, plan_limit, credits, contact_company) VALUES (?, ?, ?, ?, ?)',
+      [username, res.plan || 'standard', remoteLimit, (res.credits ?? remoteLimit), company]
+    );
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.createHash('sha256').update(salt + password).digest('hex');
+    runSql('INSERT INTO users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
+      [username, `${salt}:${hash}`, 'admin', tenantId]);
+
+    // 端末トークンを保存 → 以後の verify/consume はこのトークンで会社の共有プールを叩く
+    storeLicenseToken(res.token);
+    setCurrentTenant(tenantId);
+    estimateTenantOverride = null;
+    currentSession = { username, tenantId, role: 'admin' };
+    logAudit('join', 'user', tenantId, `${company} (${username}) — 席参加`);
+    return { ok: true, username, tenantId, role: 'admin' };
   });
 
   // ── ユーザー管理 ──

@@ -259,12 +259,14 @@ contextBridge.exposeInMainWorld('api', {
   getTenantUsage: (tenantId: number) => ipcRenderer.invoke('tenants:getUsage', tenantId),
   setTenantActive: (tenantId: number, active: boolean) => ipcRenderer.invoke('tenants:setActive', tenantId, active),
   register: (data: any) => ipcRenderer.invoke('auth:register', data),
+  join: (data: any) => ipcRenderer.invoke('auth:join', data),
   installUpdate: () => ipcRenderer.invoke('update:install'),
 
   // リモート登録申請（Supabase）
   listRemoteRegistrations: () => ipcRenderer.invoke('remote:listRegistrations'),
   approveRemoteRegistration: (companyName: string, plan: string) => ipcRenderer.invoke('remote:approve', companyName, plan),
   rejectRemoteRegistration: (companyName: string) => ipcRenderer.invoke('remote:reject', companyName),
+  setLicenseSeats: (companyName: string, maxSeats: number) => ipcRenderer.invoke('remote:setSeats', companyName, maxSeats),
 
   // スマホ承認の信頼端末
   getTrustedDevice: () => ipcRenderer.invoke('admin:getTrustedDevice'),

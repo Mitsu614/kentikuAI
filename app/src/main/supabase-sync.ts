@@ -49,6 +49,11 @@ export function licenseClaim(companyName: string): Promise<any> {
 export function licenseRegister(companyName: string): Promise<any> {
   return licenseRequest({ action: 'register', company_name: companyName });
 }
+// 参加(マルチシート): 会社名＋参加コードで席を取り、端末トークンを受け取る
+//   { token, active, plan, credits, ... } | { error: 'invalid_company_or_code' | 'seats_full' } | null
+export function licenseJoin(companyName: string, joinCode: string, deviceLabel = ''): Promise<any> {
+  return licenseRequest({ action: 'join', company_name: companyName, join_code: joinCode, device_label: deviceLabel });
+}
 // 管理: 承認/却下/クレジット設定（要 adminSecret）
 export function licenseAdmin(adminSecret: string, sub: string, companyName: string, extra: any = {}): Promise<any> {
   return licenseRequest({ action: 'admin', admin_secret: adminSecret, sub, company_name: companyName, ...extra });

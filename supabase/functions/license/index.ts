@@ -44,8 +44,8 @@ async function sbPatch(path: string, body: unknown): Promise<any[]> {
   if (!res.ok) throw new Error(`patch ${res.status}: ${await res.text()}`);
   return res.json();
 }
-async function sbInsert(body: unknown): Promise<any[]> {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/remote_licenses`, {
+async function sbInsert(body: unknown, table = "remote_licenses"): Promise<any[]> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
     method: "POST",
     headers: { ...H, Prefer: "return=representation" },
     body: JSON.stringify(body),
@@ -71,6 +71,33 @@ function newToken(): string {
   return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+// 人が読める参加コード（8桁・紛らわしい 0/O/1/I を除外）。中野さんが会社へ伝える用。
+function shortCode(): string {
+  const cs = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const b = new Uint8Array(8);
+  crypto.getRandomValues(b);
+  return Array.from(b).map((x) => cs[x % cs.length]).join("");
+}
+
+// トークン → ライセンス行を解決する。
+//   1) license_seats.device_token（マルチシートの端末トークン）→ 親ライセンス
+//   2) 無ければ remote_licenses.license_token 直参照（後方互換：単独利用の既存顧客）
+async function resolveLicense(token: string): Promise<any | null> {
+  const seats = await sbGet(
+    `license_seats?device_token=eq.${encodeURIComponent(token)}&select=license_id`,
+  ).catch(() => []);
+  if (seats.length) {
+    const lic = await sbGet(
+      `remote_licenses?id=eq.${encodeURIComponent(seats[0].license_id)}&select=id,active,plan,credits,max_credits,blocked_message,license_token`,
+    );
+    return lic[0] || null;
+  }
+  const lic = await sbGet(
+    `remote_licenses?license_token=eq.${encodeURIComponent(token)}&select=id,active,plan,credits,max_credits,blocked_message,license_token`,
+  );
+  return lic[0] || null;
+}
+
 // 会社名の正規化（前後空白除去＋連続空白を1つに）。重複行・表記ゆれの汚染を減らす。
 function normalizeName(s: string): string {
   return String(s || "").replace(/\s+/g, " ").trim();
@@ -93,15 +120,13 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const action = body.action;
 
-    // ---- verify: トークンで契約状況を返す ----
+    // ---- verify: トークン(端末 or 単独)で契約状況を返す ----
     if (action === "verify") {
       const token = String(body.token || "");
       if (!token) return json({ error: "token required" }, 400);
-      const rows = await sbGet(
-        `remote_licenses?license_token=eq.${encodeURIComponent(token)}&select=active,plan,credits,max_credits,blocked_message`,
-      );
-      if (!rows.length) return json({ error: "invalid_token" }, 404);
-      return json(publicView(rows[0]));
+      const lic = await resolveLicense(token);
+      if (!lic) return json({ error: "invalid_token" }, 404);
+      return json(publicView(lic));
     }
 
     // ---- consume: サーバー側でクレジットを減算（原子更新）----
@@ -112,20 +137,18 @@ Deno.serve(async (req) => {
       const amount = Math.max(0, Math.floor(Number(body.amount) || 0));
       if (!token) return json({ error: "token required" }, 400);
       try {
-        const rows = await sbRpc("consume_credits", { p_token: token, p_amount: amount });
+        // 端末トークンでも単独トークンでも減算できる共有プールRPC（step4）。
+        const rows = await sbRpc("consume_credits_seat", { p_token: token, p_amount: amount });
         const row = Array.isArray(rows) ? rows[0] : rows;
         if (!row || row.status === "invalid_token") return json({ error: "invalid_token" }, 404);
         if (row.status === "inactive") return json({ error: "inactive" }, 403);
         if (row.status === "insufficient") return json({ error: "insufficient", credits: row.credits ?? 0 }, 402);
         return json({ ok: true, credits: row.credits ?? 0 });
       } catch (_e) {
-        // RPC未適用（step3c SQL 未実行）の移行フォールバック：非原子だが動作は維持する。
-        // SQL を流せば自動で原子更新パスに切り替わる（デプロイ順を問わないための安全網）。
-        const rows = await sbGet(
-          `remote_licenses?license_token=eq.${encodeURIComponent(token)}&select=id,active,credits`,
-        );
-        if (!rows.length) return json({ error: "invalid_token" }, 404);
-        const lic = rows[0];
+        // step4 RPC未適用時のフォールバック：resolve→非原子減算（親ライセンスの行を減らす）。
+        // SQL(rls-step4-multiseat)を流せば自動で原子更新パスに切り替わる。
+        const lic = await resolveLicense(token);
+        if (!lic) return json({ error: "invalid_token" }, 404);
         if (!lic.active) return json({ error: "inactive" }, 403);
         if ((lic.credits ?? 0) < amount) return json({ error: "insufficient", credits: lic.credits ?? 0 }, 402);
         const updated = await sbPatch(
@@ -134,6 +157,34 @@ Deno.serve(async (req) => {
         );
         return json({ ok: true, credits: updated[0]?.credits ?? (lic.credits - amount) });
       }
+    }
+
+    // ---- join: 会社名＋参加コードで席を1つ取り、端末トークンを受け取る（マルチシート） ----
+    // クレジットは親ライセンスの共有プール。max_seats を超えると seats_full。
+    // 参加コードが本人確認代わり（承認不要）。コードは admin set_seats で発行し中野さんが会社へ渡す。
+    if (action === "join") {
+      const company = normalizeName(body.company_name);
+      const code = String(body.join_code || "").trim();
+      const label = String(body.device_label || "").slice(0, 60);
+      if (!company || !code) return json({ error: "company_name and join_code required" }, 400);
+      const lics = await sbGet(
+        `remote_licenses?company_name=eq.${encodeURIComponent(company)}&active=eq.true&select=id,license_token,plan,credits,max_credits,blocked_message,max_seats,join_code`,
+      );
+      const lic = lics.find((l: any) => l.join_code && l.join_code === code);
+      if (!lic) return json({ error: "invalid_company_or_code" }, 404);
+      const seats = await sbGet(`license_seats?license_id=eq.${encodeURIComponent(lic.id)}&select=id`);
+      if (seats.length >= (lic.max_seats || 1)) {
+        return json({ error: "seats_full", max_seats: lic.max_seats || 1 }, 403);
+      }
+      const deviceToken = newToken();
+      await sbInsert({
+        id: "seat_" + newToken().slice(0, 12),
+        license_id: lic.id,
+        device_token: deviceToken,
+        device_label: label || null,
+        created_at: new Date().toISOString(),
+      }, "license_seats");
+      return json({ token: deviceToken, ...publicView(lic) });
     }
 
     // ---- register: 新規会社を「activeトライアル」で登録し、トークンを返す ----
@@ -210,6 +261,11 @@ Deno.serve(async (req) => {
         const patch: any = {
           plan, credits, max_credits: credits, active: true, blocked_message: null, updated_at: new Date().toISOString(),
         };
+        // 承認時にマルチシートを有効化する場合：max_seats 指定があれば席数を設定し、参加コードを発行。
+        if (body.max_seats != null) {
+          patch.max_seats = Math.max(1, Math.floor(Number(body.max_seats)));
+          patch.join_code = body.join_code ? String(body.join_code).trim() : shortCode();
+        }
         // トークン欠落の行（pendingで作られてトークン未発行、または過去のバグで消えた行）は、
         // 承認/変更のタイミングで必ずトークンを発行し、claimed_atをリセットして顧客アプリが再取得できるようにする。
         // → これで「承認したのにクレジットが減らない」状態を復旧できる（正常な行のトークンには触れない）。
@@ -218,7 +274,14 @@ Deno.serve(async (req) => {
           patch.claimed_at = null;
         }
         await sbPatch(`remote_licenses?id=eq.${tid}`, patch);
-        return json({ ok: true });
+        return json({ ok: true, max_seats: patch.max_seats, join_code: patch.join_code });
+      }
+      if (sub === "set_seats") {
+        // 既存ライセンスをマルチシート化：席数を設定し参加コードを発行（指定が無ければ自動生成）。
+        const max_seats = Math.max(1, Math.floor(Number(body.max_seats ?? 1)));
+        const join_code = body.join_code ? String(body.join_code).trim() : shortCode();
+        await sbPatch(`remote_licenses?id=eq.${tid}`, { max_seats, join_code, updated_at: new Date().toISOString() });
+        return json({ ok: true, max_seats, join_code });
       }
       if (sub === "reject") {
         await sbPatch(`remote_licenses?id=eq.${tid}`, {
