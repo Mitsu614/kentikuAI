@@ -1247,7 +1247,7 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.18';
+const CURRENT_VERSION = '3.4.19';
 APP_VERSION = CURRENT_VERSION;
 // 更新通知で検知した最新バージョン。「ダウンロード」ボタンで setup.exe の直リンクを組むのに使う
 // （リポジトリのリリースページを開くとお客様にソース側が見えるため、exe直DLにする）。
