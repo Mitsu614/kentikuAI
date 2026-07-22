@@ -1247,7 +1247,9 @@ function migrateEstimateImagesToDisk() {
 }
 
 // ── 自動アップデート（electron-updater）──
-const CURRENT_VERSION = '3.4.19';
+// ★package.json を唯一の正とする（ハードコードすると、ビルド順序ミスで
+//   パッケージ内の版数だけ古いまま出荷され「更新通知が消えない」事故になる）。
+const CURRENT_VERSION = app.getVersion();
 APP_VERSION = CURRENT_VERSION;
 // 更新通知で検知した最新バージョン。「ダウンロード」ボタンで setup.exe の直リンクを組むのに使う
 // （リポジトリのリリースページを開くとお客様にソース側が見えるため、exe直DLにする）。
@@ -1575,45 +1577,12 @@ app.whenReady().then(async () => {
     }, 2000);
   }
 
-  // ── 自動アップデートチェック ──
-  setTimeout(async () => {
-    try {
-      const https = require('https');
-      const updateInfo: any = await new Promise((resolve) => {
-        const req = https.get('https://api.github.com/repos/Mitsu614/kentikuAI/releases/latest', {
-          headers: { 'User-Agent': 'kenchiku-boost', 'Accept': 'application/vnd.github.v3+json' },
-          timeout: 10000,
-        }, (res: any) => {
-          let body = '';
-          res.on('data', (c: string) => body += c);
-          res.on('end', () => { try { resolve(JSON.parse(body)); } catch (_) { resolve(null); } });
-        });
-        req.on('error', () => resolve(null));
-        req.on('timeout', () => { req.destroy(); resolve(null); });
-      });
-      if (!updateInfo || !updateInfo.tag_name) return;
-      const latestVer = updateInfo.tag_name.replace(/^v/, '');
-      if (latestVer <= APP_VERSION) return;
-
-      // ダウンロードURLを取得
-      const asset = (updateInfo.assets || []).find((a: any) => a.name && a.name.endsWith('.zip'));
-      const downloadUrl = asset ? asset.browser_download_url : updateInfo.html_url;
-      const releaseNotes = updateInfo.body || '';
-
-      const { response } = await dialog.showMessageBox(mainWindow!, {
-        type: 'info',
-        title: 'アップデートのお知らせ',
-        message: `建築ブーストの新しいバージョン v${latestVer} があります。\n\n現在: v${APP_VERSION}\n最新: v${latestVer}`,
-        detail: releaseNotes.substring(0, 300) || '新機能・バグ修正が含まれています。',
-        buttons: ['ダウンロードする', '後で'],
-        defaultId: 0,
-      });
-      if (response === 0) {
-        const { shell } = require('electron');
-        shell.openExternal(downloadUrl);
-      }
-    } catch (e) { console.error('Auto-update dialog failed:', e); }
-  }, 15000);
+  // ── 旧・自動アップデートチェック（削除: 2026-07-22）──
+  //   GitHub API の tag_name とハードコードの APP_VERSION を文字列比較していたため、
+  //   (1) パッケージ内の版数が古いと毎回ダイアログが出続ける
+  //   (2) '3.4.9' > '3.4.10' と誤判定する（文字列比較）
+  //   (3) zip/リリースページを開く＝顧客にリポジトリが見える
+  //   の3点の不具合があった。更新通知は setupAutoUpdater()（latest.yml + setup.exe直リンク）に一本化。
 
   // 起動時バックアップ + 30分ごと
   runBackup(dbPath);
