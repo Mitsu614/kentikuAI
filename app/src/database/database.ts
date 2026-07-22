@@ -811,6 +811,15 @@ function migrate() {
     if (!elCols2.find((c: any) => c.name === 'feedback_at')) {
       db.run('ALTER TABLE estimate_log ADD COLUMN feedback_at DATETIME');
     }
+    // 改修・修繕の精度向上（2026-07-22）: 築年数・構造を実績として保存する。
+    // 保存していないと「築10年の修繕」と「築45年の修繕」が同じ work_type で平均され、
+    // 修正履歴から築年帯ごとの傾向（＝解体・下地補修の実際の膨らみ方）を学習できない。
+    if (!elCols2.find((c: any) => c.name === 'building_age')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN building_age INTEGER');
+    }
+    if (!elCols2.find((c: any) => c.name === 'structure')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN structure TEXT');
+    }
   } catch (_) {}
   // マイナス単価の「諸経費」を「値引き」にリネーム
   try {
