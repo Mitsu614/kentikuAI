@@ -110,6 +110,7 @@ export default function SettingsPage() {
             <label>業種</label>
             <select value={config.industryType || 'general'} onChange={e => setConfig({ ...config, industryType: e.target.value })} style={{ fontSize: 15, padding: '8px 12px' }}>
               <option value="general">総合建設業（工務店・リフォーム）</option>
+              <option value="building">建築一式工事業（新築・増改築の元請）</option>
               <option value="lease">仮設工事リース業</option>
               <option value="demolition">解体工事業</option>
               <option value="exterior">外構・エクステリア業</option>
