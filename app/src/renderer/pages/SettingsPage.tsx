@@ -115,6 +115,7 @@ export default function SettingsPage() {
               <option value="exterior">外構・エクステリア業</option>
               <option value="painting">塗装工事業</option>
               <option value="equipment">設備工事業（水道・電気・空調）</option>
+              <option value="plant">プラント設備工事業（配管・機器据付・計装）</option>
             </select>
           </div>
         </div>
