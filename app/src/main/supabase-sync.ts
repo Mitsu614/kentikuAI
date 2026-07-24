@@ -49,6 +49,15 @@ export function licenseClaim(companyName: string): Promise<any> {
 export function licenseRegister(companyName: string): Promise<any> {
   return licenseRequest({ action: 'register', company_name: companyName });
 }
+// 承認制の新規申請: pending行をサーバー側で作成しトークンを受け取る（anon直INSERTの置換）
+//   { token, status: 'pending', active: false } | { error } | null
+export function licenseRegisterPending(companyName: string, note = ''): Promise<any> {
+  return licenseRequest({ action: 'register_pending', company_name: companyName, note });
+}
+// 管理: 全ライセンス一覧（承認/管理画面用。要 adminSecret） { ok, rows } | { error } | null
+export function licenseList(adminSecret: string): Promise<any> {
+  return licenseRequest({ action: 'admin', admin_secret: adminSecret, sub: 'list' });
+}
 // 参加(マルチシート): 会社名＋参加コードで席を取り、端末トークンを受け取る
 //   { token, active, plan, credits, ... } | { error: 'invalid_company_or_code' | 'seats_full' } | null
 export function licenseJoin(companyName: string, joinCode: string, deviceLabel = ''): Promise<any> {

@@ -219,6 +219,46 @@ Deno.serve(async (req) => {
       return json({ token, status: "trial", plan: "trial", credits: TRIAL_CREDITS });
     }
 
+    // ---- register_pending: 承認制の新規申請をサーバー側で作成（anon直INSERTの置換） ----
+    //   既存アプリの「pendingで登録→管理者が承認」フローを維持したままEdge化する。
+    //   トークンを発行して返し、顧客はそれで承認状況を verify できる（anon SELECT不要化）。
+    if (action === "register_pending") {
+      const company = normalizeName(body.company_name);
+      if (!company) return json({ error: "company_name required" }, 400);
+      // レート制限（register と同様に大量作成を抑止）
+      const since = new Date(Date.now() - 60_000).toISOString();
+      const recent = await sbGet(
+        `remote_licenses?created_at=gte.${encodeURIComponent(since)}&select=id`,
+      );
+      if (recent.length >= 5) return json({ error: "rate_limited" }, 429);
+      // 同名の既存があれば、そのトークンを返す（重複pending行の乱立を防ぐ）
+      const existing = await sbGet(
+        `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=id,license_token,plan,active`,
+      );
+      if (existing.length) {
+        let token = existing[0].license_token;
+        if (!token) {
+          token = newToken();
+          await sbPatch(`remote_licenses?id=eq.${encodeURIComponent(existing[0].id)}`, { license_token: token, claimed_at: new Date().toISOString() });
+        }
+        return json({ token, status: existing[0].plan, active: existing[0].active });
+      }
+      const token = newToken();
+      await sbInsert({
+        id: "reg_" + newToken().slice(0, 12),
+        company_name: company,
+        plan: "pending",
+        credits: 0,
+        max_credits: 30,
+        active: false,
+        blocked_message: String(body.note || "承認待ち"),
+        license_token: token,
+        claimed_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      });
+      return json({ token, status: "pending", active: false });
+    }
+
     // ---- claim: 既存ライセンス(会社名)のトークンを1回だけ受け取る（移行用） ----
     // 注意：これは移行期間限定の経路。会社名だけで本人確認できないため、
     //  ・移行完了後は CLAIM_ENABLED=false で恒久的に閉じる（横取り窓を消す）
@@ -246,6 +286,14 @@ Deno.serve(async (req) => {
     if (action === "admin") {
       if (!ADMIN_SECRET || body.admin_secret !== ADMIN_SECRET) return json({ error: "forbidden" }, 403);
       const sub = body.sub;
+      // list: 全登録の一覧（company指定不要）。管理ダッシュボード/承認画面用。
+      // license_token は返さない（オーナー画面にも不要・漏洩面を最小化）。
+      if (sub === "list") {
+        const rows = await sbGet(
+          `remote_licenses?select=id,company_name,plan,active,credits,max_credits,blocked_message,max_seats,join_code,claimed_at,created_at,updated_at&order=created_at.desc`,
+        );
+        return json({ ok: true, rows });
+      }
       const company = String(body.company_name || "").trim();
       if (!company) return json({ error: "company_name required" }, 400);
       // 対象を一意に特定（同名複数は誤爆を避けてエラーに）。以降の更新はすべて id 指定で行う。
@@ -291,8 +339,17 @@ Deno.serve(async (req) => {
       }
       if (sub === "set_credits") {
         const credits = Number(body.credits ?? 0);
+        const patch: any = { credits, updated_at: new Date().toISOString() };
+        // アプリの管理画面はクレジット変更時に上限(max_credits)も揃える。指定があれば反映。
+        if (body.max_credits != null) patch.max_credits = Number(body.max_credits);
+        await sbPatch(`remote_licenses?id=eq.${tid}`, patch);
+        return json({ ok: true });
+      }
+      // set_active: 利用停止/再開（オーナーの管理画面用）。anon UPDATEを廃止するための移行先。
+      if (sub === "set_active") {
+        const active = !!body.active;
         await sbPatch(`remote_licenses?id=eq.${tid}`, {
-          credits, updated_at: new Date().toISOString(),
+          active, updated_at: new Date().toISOString(),
         });
         return json({ ok: true });
       }

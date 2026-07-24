@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseJoin, licenseAdmin, normalizeWorkType } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, normalizeWorkType } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 
@@ -1305,18 +1305,13 @@ function setupAutoUpdater() {
     });
 
   // ── リモート登録申請管理（Supabase） ──
+  // ★anon直GETを廃止し、管理Edge(admin/list, service_role)経由に変更＝anon SELECT封鎖の前提。
   ipcMain.handle('remote:listRegistrations', async () => {
     try {
-      const https = require('https');
-      return await new Promise((resolve) => {
-        const req = https.get(
-          'https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?select=*&order=created_at.desc',
-          { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 8000 },
-          (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve([]); } }); }
-        );
-        req.on('error', () => resolve([]));
-        req.on('timeout', () => { req.destroy(); resolve([]); });
-      });
+      const adminSecret = loadApiConfig().adminSecret || '';
+      if (!adminSecret) return [];
+      const res = await licenseList(adminSecret);
+      return res && Array.isArray(res.rows) ? res.rows : [];
     } catch (_) { return []; }
   });
 
@@ -1462,19 +1457,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // ── リモートライセンスチェック（関数化して定期実行） ──
-  async function fetchLicenseByName(searchName: string): Promise<any[]> {
-    const https = require('https');
-    return new Promise((resolve) => {
-      const req = https.get(
-        `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${encodeURIComponent(searchName)}&select=id,active,credits,blocked_message,plan,max_credits`,
-        { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 8000 },
-        (res: any) => { let body = ''; res.on('data', (c: string) => body += c); res.on('end', () => { try { resolve(JSON.parse(body)); } catch (_) { resolve([]); } }); }
-      );
-      req.on('error', () => resolve([]));
-      req.on('timeout', () => { req.destroy(); resolve([]); });
-    });
-  }
+  // （fetchLicenseByName は anon直GET廃止に伴い削除。ライセンス照会はトークンverify/admin listに一本化）
 
   async function syncRemoteLicense(isStartup = false) {
     if (getCurrentTenant() === 1) return;
@@ -1545,19 +1528,10 @@ app.whenReady().then(async () => {
         const https = require('https');
         const os = require('os');
         const tenant = queryOne('SELECT name, credits FROM tenants WHERE id = ?', [getCurrentTenant()]);
-        const licRow = await new Promise((resolve) => {
-          const tn = encodeURIComponent(tenant?.name || '');
-          const req = https.get(
-            `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${tn}&select=id`,
-            { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 5000 },
-            (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve(null); } }); }
-          );
-          req.on('error', () => resolve(null));
-          req.on('timeout', () => { req.destroy(); resolve(null); });
-        });
-        const licenseId = Array.isArray(licRow) && licRow.length > 0 ? licRow[0].id : null;
+        // ★license_idの補助GET(anon SELECT)を廃止。会社名で活動を記録すれば足り、
+        //   anon SELECT封鎖の妨げになるため。license_idはサーバー側の突合に委ねる。
         const activityData = JSON.stringify({
-          license_id: licenseId,
+          license_id: null,
           company_name: tenant?.name || '不明',
           hostname: os.hostname(),
           username: os.userInfo().username,
@@ -1874,21 +1848,15 @@ app.whenReady().then(async () => {
     setConfigSaver(saveApiConfig);
     // スマホ（オーナー=テナント1のみ）からの新規登録承認。adminSecretはPC内で完結しスマホに渡さない。
     setAdminHandler(async (action: string, payload: any) => {
+      const adminSecret = loadApiConfig().adminSecret || '';
       if (action === 'list') {
+        // ★anon直GETを廃止し、管理Edge(admin/list)経由に統一。
         try {
-          const https = require('https');
-          return await new Promise((resolve) => {
-            const req = https.get(
-              'https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?select=*&order=created_at.desc',
-              { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 8000 },
-              (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve([]); } }); }
-            );
-            req.on('error', () => resolve([]));
-            req.on('timeout', () => { req.destroy(); resolve([]); });
-          });
+          if (!adminSecret) return [];
+          const res = await licenseList(adminSecret);
+          return res && Array.isArray(res.rows) ? res.rows : [];
         } catch (_) { return []; }
       }
-      const adminSecret = loadApiConfig().adminSecret || '';
       if (!adminSecret) return { ok: false, error: 'adminSecret未設定（PCの設定画面で管理者シークレットを入力してください）' };
       if (action === 'approve') {
         const res = await licenseAdmin(adminSecret, 'approve', payload?.company_name, { plan: payload?.plan });
@@ -2766,28 +2734,18 @@ app.whenReady().then(async () => {
   // クレジット変更（ローカル + Supabase同期）
   ipcMain.handle('tenants:setCredits', async (_e, tenantId: number, credits: number) => {
     runSql('UPDATE tenants SET credits = ?, plan_limit = ? WHERE id = ?', [credits, credits, tenantId]);
-    // Supabase同期
+    // Supabase同期（★anon直PATCHを廃止し、admin(set_credits) Edge Function 経由に変更＝改ざん封鎖）
     try {
-      const https = require('https');
+      const adminSecret = loadApiConfig().adminSecret || '';
       const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [tenantId]);
       const name = tenant?.contact_company || tenant?.name || '';
-      const body = JSON.stringify({ credits, max_credits: credits, updated_at: new Date().toISOString() });
-      // contact_companyで検索
-      let found = await fetchLicenseByName(name);
-      if (found.length === 0 && tenant?.name !== name) found = await fetchLicenseByName(tenant.name);
-      if (found.length > 0) {
-        await new Promise<void>((resolve) => {
-          const req = https.request({
-            hostname: 'slhgkedzlormaovwpadi.supabase.co',
-            path: `/rest/v1/remote_licenses?id=eq.${found[0].id}`,
-            method: 'PATCH',
-            headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
-            timeout: 5000,
-          }, () => resolve());
-          req.on('error', () => resolve());
-          req.write(body);
-          req.end();
-        });
+      if (adminSecret && name) {
+        let res = await licenseAdmin(adminSecret, 'set_credits', name, { credits, max_credits: credits });
+        // contact_company で見つからなければ tenants.name でも試す（旧登録の名前ゆれ対策）
+        if (res?.error === 'not_found' && tenant?.name && tenant.name !== name) {
+          res = await licenseAdmin(adminSecret, 'set_credits', tenant.name, { credits, max_credits: credits });
+        }
+        if (res?.error) console.error('setCredits Edge同期エラー:', res.error);
       }
     } catch (e) { console.error('Supabase credits sync failed:', e); }
     logAudit('update', 'tenant', tenantId, `クレジット: ${credits}`);
@@ -2797,27 +2755,17 @@ app.whenReady().then(async () => {
   // 利用停止/有効化（ローカル + Supabase同期）
   ipcMain.handle('tenants:setActive', async (_e, tenantId: number, active: boolean) => {
     runSql('UPDATE tenants SET plan = ? WHERE id = ?', [active ? 'standard' : 'suspended', tenantId]);
-    // Supabase同期
+    // Supabase同期（★anon直PATCHを廃止し、admin(set_active) Edge Function 経由に変更＝改ざん封鎖）
     try {
-      const https = require('https');
+      const adminSecret = loadApiConfig().adminSecret || '';
       const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [tenantId]);
       const name = tenant?.contact_company || tenant?.name || '';
-      const body = JSON.stringify({ active, updated_at: new Date().toISOString() });
-      let found = await fetchLicenseByName(name);
-      if (found.length === 0 && tenant?.name !== name) found = await fetchLicenseByName(tenant.name);
-      if (found.length > 0) {
-        await new Promise<void>((resolve) => {
-          const req = https.request({
-            hostname: 'slhgkedzlormaovwpadi.supabase.co',
-            path: `/rest/v1/remote_licenses?id=eq.${found[0].id}`,
-            method: 'PATCH',
-            headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json' },
-            timeout: 5000,
-          }, () => resolve());
-          req.on('error', () => resolve());
-          req.write(body);
-          req.end();
-        });
+      if (adminSecret && name) {
+        let res = await licenseAdmin(adminSecret, 'set_active', name, { active });
+        if (res?.error === 'not_found' && tenant?.name && tenant.name !== name) {
+          res = await licenseAdmin(adminSecret, 'set_active', tenant.name, { active });
+        }
+        if (res?.error) console.error('setActive Edge同期エラー:', res.error);
       }
     } catch (e) { console.error('Supabase tenant status sync failed:', e); }
     logAudit('update', 'tenant', tenantId, active ? '有効化' : '利用停止');
@@ -2867,23 +2815,19 @@ app.whenReady().then(async () => {
     // 承認待ちチェック（Supabaseで承認状態を確認）
     const tenant = queryOne('SELECT plan, contact_company FROM tenants WHERE id = ?', [user.tenant_id]);
     if (tenant?.plan === 'pending') {
-      // Supabaseで承認済みか確認
+      // 承認済みかをトークンで確認（★anon直GETを廃止。verifyはEdge/service_role経由）。
       try {
-        const https = require('https');
-        const companyName = encodeURIComponent(tenant.contact_company || user.username);
-        const licCheck: any = await new Promise((resolve) => {
-          const req = https.get(
-            `https://slhgkedzlormaovwpadi.supabase.co/rest/v1/remote_licenses?company_name=eq.${companyName}&select=plan,active,max_credits`,
-            { headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e' }, timeout: 5000 },
-            (res: any) => { let b = ''; res.on('data', (c: string) => b += c); res.on('end', () => { try { resolve(JSON.parse(b)); } catch (_) { resolve(null); } }); }
-          );
-          req.on('error', () => resolve(null));
-          req.on('timeout', () => { req.destroy(); resolve(null); });
-        });
-        if (Array.isArray(licCheck) && licCheck.length > 0 && licCheck[0].active && licCheck[0].plan !== 'pending') {
-          // Supabaseで承認済み → ローカルDBも更新
-          const lic = licCheck[0];
-          runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', [lic.plan, lic.max_credits || 50, user.tenant_id]);
+        // ★ここでは register(activeトライアル)にフォールバックしない＝未承認が勝手にactive化する
+        //   バイパスを防ぐ。保存トークン→claim（既存pending行の移行）だけでトークンを得る。
+        let token = getStoredLicenseToken();
+        if (!token) {
+          const claimed = await licenseClaim(tenant.contact_company || user.username || '');
+          if (claimed && claimed.token) { storeLicenseToken(claimed.token); token = claimed.token; }
+        }
+        const lic = token ? await licenseVerify(token) : null;
+        if (lic && !lic.error && lic.active && lic.plan && lic.plan !== 'pending') {
+          // 承認済み → ローカルDBも更新
+          runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', [lic.plan, lic.max_credits || lic.credits || 50, user.tenant_id]);
         } else {
           return { ok: false, error: '管理者の承認待ちです。しばらくお待ちください。' };
         }
@@ -2953,28 +2897,13 @@ app.whenReady().then(async () => {
 
     logAudit('register', 'user', tenantId, `${company} (${username}) — 承認待ち`);
 
-    // Supabaseに登録（remote_licenses にpending状態で追加）
+    // Supabaseに登録（★anon直INSERTを廃止し、Edge register_pending 経由に。
+    //   サーバー側でpending行を作成しトークンを受け取って保存＝以後の承認確認をverifyで行える）。
     try {
-      const https = require('https');
-      const regBody = JSON.stringify({
-        id: `reg_${Date.now().toString(36)}`,
-        company_name: company,
-        plan: 'pending',
-        credits: 0,
-        max_credits: 30,
-        active: false,
-        blocked_message: `承認待ち — ユーザー: ${username}, メール: ${email || ''}, 電話: ${tel || ''}`,
-      });
-      await new Promise<void>((resolve) => {
-        const postReq = https.request({
-          hostname: 'slhgkedzlormaovwpadi.supabase.co', path: '/rest/v1/remote_licenses', method: 'POST',
-          headers: { 'apikey': 'sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Authorization': 'Bearer sb_publishable_nq8l4yeQYEHVJu-ETSa0JA_juFGv43e', 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-          timeout: 5000,
-        }, () => resolve());
-        postReq.on('error', () => resolve());
-        postReq.write(regBody);
-        postReq.end();
-      });
+      const note = `承認待ち — ユーザー: ${username}, メール: ${email || ''}, 電話: ${tel || ''}`;
+      const reg = await licenseRegisterPending(company, note);
+      if (reg && reg.token) storeLicenseToken(reg.token);
+      else if (reg && reg.error) console.error('register_pending エラー:', reg.error);
     } catch (e) { console.error('Supabase registration failed:', e); }
 
     // メール通知
