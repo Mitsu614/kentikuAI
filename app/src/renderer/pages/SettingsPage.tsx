@@ -3,8 +3,15 @@ import { PageGuide } from '../components/PageGuide';
 
 // Sub-components are at the bottom of this file
 
+// 画面で入力しうる機密フィールド。保存後は入力値をstateから消して伏せ字表示に戻す。
+// （main側の SENSITIVE_FIELDS のうち、この画面から触るものだけ）
+const SECRET_FIELDS = ['reinfolibApiKey', 'serverPassword', 'adminSecret'];
+
 export default function SettingsPage() {
-  const [config, setConfig] = useState<any>({ anthropicKey: '', openaiKey: '', dbPath: '', companyName: '', companyAddress: '', companyTel: '', companyBank: '', invoiceNumber: '' });
+  const [config, setConfig] = useState<any>({ dbPath: '', companyName: '', companyAddress: '', companyTel: '', companyBank: '', invoiceNumber: '' });
+  // 機密は config:load で返ってこない（露出面をゼロにする方針）。
+  // 「設定済みか」のフラグだけ受け取り、入力欄は常に空から始める。
+  const [secrets, setSecrets] = useState<Record<string, boolean>>({});
   const [saved, setSaved] = useState(false);
   const [dbMsg, setDbMsg] = useState('');
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
@@ -12,7 +19,10 @@ export default function SettingsPage() {
   const [localIp, setLocalIp] = useState<string>('');
 
   useEffect(() => {
-    (window as any).api.loadConfig().then((c: any) => setConfig(c));
+    (window as any).api.loadConfig().then((c: any) => {
+      setConfig(c);
+      setSecrets(c?.secretsSet || {});
+    });
     // トンネル状態確認
     (window as any).api.tunnelStatus?.().then((s: any) => {
       if (s?.active) setTunnelUrl(s.url);
@@ -24,10 +34,34 @@ export default function SettingsPage() {
 
   // ← PlanManagement component is rendered below
 
+  // 入力した機密を画面のメモリに残さないためのクリア（保存/解除の直後に呼ぶ）
+  const forgetSecretInputs = (base: any) => {
+    const next = { ...base };
+    for (const f of SECRET_FIELDS) delete next[f];
+    return next;
+  };
+  const refreshSecretFlags = async () => {
+    try {
+      const c = await (window as any).api.loadConfig();
+      setSecrets(c?.secretsSet || {});
+    } catch (_) {}
+  };
+
   const save = async () => {
     await (window as any).api.saveConfig(config);
+    setConfig(forgetSecretInputs(config));
+    await refreshSecretFlags();
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  // 保存済みの機密を明示的に削除する。null を送ると保存側が「解除」として扱う
+  // （空欄はあくまで「触っていない」＝維持なので、削除にはこの経路が必要）。
+  const clearSecret = async (field: string, label: string) => {
+    if (!confirm(`保存済みの「${label}」を削除します。よろしいですか？`)) return;
+    await (window as any).api.saveConfig({ ...config, [field]: null });
+    setConfig(forgetSecretInputs(config));
+    await refreshSecretFlags();
   };
 
   const selectDbFolder = async () => {
@@ -72,6 +106,15 @@ export default function SettingsPage() {
 
       {/* 管理者用: プラン申請管理 */}
       <PlanAdmin />
+
+      {/* 管理者用: 管理者シークレット（ライセンス管理Edge Functionの鍵） */}
+      <AdminSecret
+        isSet={!!secrets.adminSecret}
+        value={config.adminSecret || ''}
+        onChange={v => setConfig({ ...config, adminSecret: v })}
+        onSave={save}
+        onClear={() => clearSecret('adminSecret', '管理者シークレット')}
+      />
 
       {/* 文字サイズ */}
       <div className="card">
@@ -127,12 +170,12 @@ export default function SettingsPage() {
             <a href="https://www.reinfolib.mlit.go.jp/api/request/" target="_blank" rel="noreferrer">利用申請</a>
             （無料）で取得したキーを入れてください。未入力でも他の機能は動きます。
           </p>
-          <input
-            type="password"
+          <SecretInput
+            isSet={!!secrets.reinfolibApiKey}
             value={config.reinfolibApiKey || ''}
-            onChange={e => setConfig({ ...config, reinfolibApiKey: e.target.value })}
+            onChange={v => setConfig({ ...config, reinfolibApiKey: v })}
+            onClear={() => clearSecret('reinfolibApiKey', '不動産情報ライブラリ APIキー')}
             placeholder="未設定（地価データは使いません）"
-            style={{ width: '100%' }}
           />
         </div>
 
@@ -310,12 +353,20 @@ export default function SettingsPage() {
 
         <div style={{ marginTop: 16 }}>
           <div className="form-group">
-            <label>アクセスパスワード（空欄=パスワードなし）</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input type="password" value={config.serverPassword || ''} onChange={e => setConfig({ ...config, serverPassword: e.target.value })} placeholder="外部アクセス時のパスワード" style={{ flex: 1 }} />
+            <label>アクセスパスワード</label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <div style={{ flex: 1 }}>
+                <SecretInput
+                  isSet={!!secrets.serverPassword}
+                  value={config.serverPassword || ''}
+                  onChange={v => setConfig({ ...config, serverPassword: v })}
+                  onClear={() => clearSecret('serverPassword', 'アクセスパスワード')}
+                  placeholder="外部アクセス時のパスワード"
+                />
+              </div>
               <button className="btn btn-secondary" onClick={save}>設定</button>
             </div>
-            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>設定するとURL接続時にパスワード入力が必要になります</div>
+            <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>設定するとURL接続時にパスワード入力が必要になります（「解除」でパスワードなしに戻ります）</div>
           </div>
         </div>
 
@@ -989,6 +1040,88 @@ function AuditLog() {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// ── 機密入力の共通UI ──
+// 値は画面に一切出さない（config:load が機密を返さないため、そもそも取得できない）。
+// 空欄のまま保存＝維持、「解除」＝明示削除。
+function SecretInput({ isSet, value, onChange, onClear, placeholder }: {
+  isSet: boolean;
+  value: string;
+  onChange: (v: string) => void;
+  onClear: () => void;
+  placeholder: string;
+}) {
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input
+          type="password"
+          autoComplete="new-password"
+          spellCheck={false}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          placeholder={isSet ? '設定済み（変更するときだけ入力）' : placeholder}
+          style={{ flex: 1 }}
+        />
+        {isSet && (
+          <button className="btn btn-secondary" onClick={onClear} style={{ whiteSpace: 'nowrap' }}>解除</button>
+        )}
+      </div>
+      <div style={{ fontSize: 11, color: isSet ? '#27ae60' : '#888', marginTop: 4 }}>
+        {isSet ? '✓ 保存済み（値は表示されません）。空欄のまま保存すれば維持されます。' : '未設定'}
+      </div>
+    </div>
+  );
+}
+
+// ── 管理者シークレット（オーナー専用） ──
+// ライセンス管理はすべて Edge Function(service_role) 経由で、その呼び出しにこのシークレットが要る。
+// PC内に暗号化保存され、スマホ側へは一切渡らない。値が違えばEdgeが403を返すだけで権限は増えない。
+function AdminSecret({ isSet, value, onChange, onSave, onClear }: {
+  isSet: boolean;
+  value: string;
+  onChange: (v: string) => void;
+  onSave: () => void;
+  onClear: () => void;
+}) {
+  const [isOwner, setIsOwner] = useState(false);
+
+  useEffect(() => {
+    // PlanAdmin と同じ判定（テナント1＝オーナー）。機種変更した新PCでも入力できるようにする。
+    (window as any).api.currentTenant?.().then((tid: number) => {
+      if (tid === 1) setIsOwner(true);
+    }).catch(() => {});
+  }, []);
+
+  if (!isOwner) return null;
+
+  return (
+    <div className="card" style={{ marginTop: 16, border: '2px solid #8e44ad' }}>
+      <h3 style={{ marginBottom: 12 }}>🔐 管理者シークレット（オーナー専用）</h3>
+      <p style={{ fontSize: 12, color: '#666', margin: '0 0 8px' }}>
+        「管理」タブでライセンス一覧・承認・クレジット変更を行うための鍵です。
+        Supabase側に設定した <code>ADMIN_SECRET</code> と同じ値を入れてください。
+        未設定だと管理タブの一覧が空になります。
+      </p>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+        <div style={{ flex: 1 }}>
+          <SecretInput
+            isSet={isSet}
+            value={value}
+            onChange={onChange}
+            onClear={onClear}
+            placeholder="Supabaseの ADMIN_SECRET と同じ値"
+          />
+        </div>
+        <button className="btn btn-primary" onClick={onSave} style={{ whiteSpace: 'nowrap' }}>保存</button>
+      </div>
+      <div style={{ background: '#f4ecf7', borderRadius: 8, padding: 10, fontSize: 11, color: '#555', marginTop: 12, lineHeight: 1.7 }}>
+        このPC内に暗号化して保存され、画面にも通信にも出ません（スマホ承認機能にも渡しません）。
+        間違った値を入れてもサーバーが拒否するだけで、他人のデータには届きません。
+      </div>
     </div>
   );
 }

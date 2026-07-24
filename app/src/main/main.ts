@@ -87,6 +87,44 @@ function loadApiConfig(): any {
   config.bankHolder = 'ユ）ナカノコウムテン';
   return config;
 }
+// 保存済みの機密だけを生ファイルから読む（トライアルキーのフォールバックや固定値を混ぜない）。
+// 「本当にユーザーが設定した値か」を判定する用途と、保存時のマージ元として使う。
+function loadStoredSecrets(): Record<string, any> {
+  const out: Record<string, any> = {};
+  try {
+    if (!fs.existsSync(getConfigPath())) return out;
+    const raw = JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8'));
+    for (const f of SENSITIVE_FIELDS) {
+      if (raw[f]) { const v = decryptField(raw[f]); if (v) out[f] = v; }
+    }
+    for (const f of SENSITIVE_JSON_FIELDS) {
+      if (typeof raw[f] === 'string' && raw[f]) {
+        try { const v = JSON.parse(decryptField(raw[f])); if (v) out[f] = v; } catch (_) {}
+      } else if (raw[f] && typeof raw[f] === 'object') out[f] = raw[f]; // 旧形式(平文)
+    }
+  } catch (_) {}
+  return out;
+}
+
+// レンダラーから届いた設定を保存用にマージする。
+// config:load は機密を返さないため、届いた値だけを信じて全上書きすると保存の度に
+// APIキー・ライセンストークン・スマホセッションが消える（＝実際に起きていたバグ）。
+//   undefined / ''  → 「画面で触っていない」＝保存済みの値を維持
+//   null            → 「解除」ボタンによる明示的な削除
+function mergeIncomingConfig(incoming: any): any {
+  const stored = loadStoredSecrets();
+  const merged: any = { ...(incoming || {}) };
+  delete merged.secretsSet; // 状態表示用のフラグは保存しない
+  for (const f of [...SENSITIVE_FIELDS, ...SENSITIVE_JSON_FIELDS]) {
+    if (merged[f] === null) { delete merged[f]; continue; }
+    if (merged[f] === undefined || merged[f] === '') {
+      if (stored[f] !== undefined) merged[f] = stored[f];
+      else delete merged[f];
+    }
+  }
+  return merged;
+}
+
 function saveApiConfig(config: any) {
   const toSave = { ...config };
   // 暗号化
@@ -3359,11 +3397,22 @@ app.whenReady().then(async () => {
   // ── API キー・DB設定管理 ──
   ipcMain.handle('config:load', () => {
     const cfg = loadApiConfig();
-    // フロントにはAPIキーを返さない（トライアル版保護）
-    const { anthropicKey, openaiKey, ...safe } = cfg;
+    // ★機密はレンダラーへ一切返さない（トライアル版保護＋XSS/DevTools/スマホ画面への露出面をゼロにする）。
+    //   代わりに「設定済みかどうか」だけをフラグで渡し、画面は伏せ字で状態を出す。
+    const safe: any = { ...cfg };
+    const stored = loadStoredSecrets();
+    const secretsSet: Record<string, boolean> = {};
+    for (const f of [...SENSITIVE_FIELDS, ...SENSITIVE_JSON_FIELDS]) {
+      const v = stored[f];
+      secretsSet[f] = !!v && (typeof v !== 'object' || Object.keys(v).length > 0);
+      delete safe[f];
+    }
+    safe.secretsSet = secretsSet;
     return safe;
   });
-  ipcMain.handle('config:save', (_e, cfg: any) => {
+  ipcMain.handle('config:save', (_e, incoming: any) => {
+    // 機密は「未入力なら維持・nullなら解除」でマージ。全上書きしない。
+    const cfg = mergeIncomingConfig(incoming);
     saveApiConfig(cfg);
     // 不動産情報ライブラリのキーは external-data 側へ注入する（保存値は暗号化されているため）
     setReinfolibApiKey(cfg.reinfolibApiKey);
