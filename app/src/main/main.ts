@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, normalizeWorkType } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, normalizeWorkType, sendMailEdge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 
@@ -171,6 +171,31 @@ async function ensureLicenseToken(...candidateNames: string[]): Promise<string> 
   if (reg && reg.token) { storeLicenseToken(reg.token); return reg.token; }
   return '';
 }
+// 顧客向けメールの署名に載せる連絡先アドレス。設定(api-config.json)から読む。
+// 未設定なら空を返し、呼び出し側で署名から MAIL 行ごと落とす。
+function getContactMail(): string {
+  try { return String(loadApiConfig().contactMail || '').trim(); } catch { return ''; }
+}
+
+// ── 通知メール ──
+// 送信は Edge Function(send-mail) 経由に一本化する。SMTPの資格情報も運営あての宛先も
+// サーバー側のシークレットにしか無いので、配布アプリにも公開リポジトリにも残らない。
+// 宛先の既定は運営（OWNER_EMAIL）。顧客にも送る場合だけ alsoTo に渡す。
+// 再送判定をしている呼び出し元（学習通知）のために、失敗は例外で返す。
+async function sendNotifyMail(opts: {
+  subject: string;
+  text: string;
+  toOwner?: boolean;              // false にすると運営あてを外す（顧客だけに送る）
+  alsoTo?: string[];
+  attachments?: { filename: string; contentBase64: string }[];
+}): Promise<void> {
+  const token = currentLicenseToken || getStoredLicenseToken();
+  if (!token) throw new Error('ライセンストークン未取得のため通知メールを送信できません');
+  const res = await sendMailEdge({ token, ...opts });
+  if (!res) throw new Error('send-mail: 応答なし（オフライン/タイムアウト）');
+  if (res.error) throw new Error(`send-mail: ${res.error}`);
+}
+
 // ── クレジット消費の"未確定キュー"（STEP3 ハイブリッド精算）──
 // サーバー減算に失敗した消費を貯め、オンライン時に再送する。
 // これが無いと、失敗した消費が syncRemoteLicense の verify 値上書きで"払い戻される"（＝タダ乗り）。
@@ -371,15 +396,7 @@ async function sendLimitNotification(operation: string) {
     const usage = getMonthlyUsage(tid);
     const planDef = PLANS[usage.plan];
 
-    const nodemailer = require('nodemailer');
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
-    });
-
-    await transporter.sendMail({
-      from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-      to: 'mitsuakinakano0215@gmail.com',
+    await sendNotifyMail({
       subject: `【建築ブースト】AIストック上限到達 - ${tenant?.name || 'テナント' + tid}`,
       text: [
         `テナント「${tenant?.name || 'ID:' + tid}」が今月のAIストック上限に達しました。`,
@@ -420,12 +437,6 @@ async function sendUsageNotification(operation: string, detail?: string, extras?
     const usage = getMonthlyUsage(tid);
     const planDef = PLANS[usage.plan];
     const now = new Date();
-
-    const nodemailer = require('nodemailer');
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
-    });
 
     // 見積詳細テキスト
     let estimateDetail = '';
@@ -483,14 +494,12 @@ async function sendUsageNotification(operation: string, detail?: string, extras?
       for (const img of extras.images) {
         if (img.content) {
           const base64Data = img.content.replace(/^data:image\/\w+;base64,/, '');
-          attachments.push({ filename: img.filename, content: Buffer.from(base64Data, 'base64'), cid: img.filename });
+          attachments.push({ filename: img.filename, contentBase64: base64Data });
         }
       }
     }
 
-    await transporter.sendMail({
-      from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-      to: 'mitsuakinakano0215@gmail.com',
+    await sendNotifyMail({
       subject: `【利用通知】${tenant?.name || 'テナント' + tid} — ${operation}`,
       text: [
         `テナント「${tenant?.name || 'ID:' + tid}」がAI機能を使用しました。`,
@@ -1096,21 +1105,15 @@ async function sendLearningCompleteNotification(tenantId: number, workType?: str
     const prevNotified = tenant?.learning_notified_date ?? null;
     try { runSql('UPDATE tenants SET learning_notified_date = ? WHERE id = ?', [today, tenantId]); } catch (_) {}
 
-    const ownerEmail = 'mitsuakinakano0215@gmail.com';
-    // 両社（実績を入力した顧客＋自社=建築ブースト）の両方に宛先(To)で送る
-    const recipients = Array.from(new Set([tenant?.contact_email, ownerEmail].filter(Boolean)));
+    // 両社（実績を入力した顧客＋自社=建築ブースト）の両方に宛先(To)で送る。
+    // 自社あては送信側(send-mail)が OWNER_EMAIL を入れるので、ここでは顧客だけ渡す。
+    const recipients = Array.from(new Set([tenant?.contact_email].filter(Boolean)));
     const now = new Date();
 
     try {
-      // require/createTransport も try 内に入れる: ここで失敗しても当日枠を解放して再送を許すため
-      const nodemailer = require('nodemailer');
-      const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user: ownerEmail, pass: 'cmlz usad gycg sbem' },
-      });
-      await transporter.sendMail({
-        from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-        to: recipients.join(', '),
+      // 送信も try 内に入れる: ここで失敗しても当日枠を解放して再送を許すため
+      await sendNotifyMail({
+        alsoTo: recipients,
         subject: '【建築ブースト】AIが御社の実績を学習しました 🎓',
         text: [
           `${tenant?.contact_company || tenant?.name || 'お客様'} 様`,
@@ -1377,6 +1380,28 @@ function setupAutoUpdater() {
     return res && res.ok ? { ok: true } : { ok: false, error: res?.error || '却下失敗' };
   });
 
+  // 会社ライセンスの残クレジットと上限を「別々に」設定する（Edge Function set_credits）。
+  //   tenants:setCredits は残と上限を同値でしか送れず、また会社にローカルのテナント行が
+  //   無いと手が出せない（河原様・みやび様など）。ここは会社名を直接キーにするので全社を操作できる。
+  //   ★実際に利用可否を決めるのはこのリモート値。ローカルのtenantsは表示用の写しに過ぎない。
+  ipcMain.handle('remote:setCredits', async (_e, companyName: string, credits: number, maxCredits: number) => {
+    const adminSecret = loadApiConfig().adminSecret || '';
+    if (!adminSecret) return { ok: false, error: 'adminSecret未設定（設定画面で管理者シークレットを入力してください）' };
+    const c = Math.max(0, Math.floor(Number(credits)));
+    const m = Math.max(0, Math.floor(Number(maxCredits)));
+    if (!isFinite(c) || !isFinite(m)) return { ok: false, error: '数値が不正です' };
+    const res = await licenseAdmin(adminSecret, 'set_credits', companyName, { credits: c, max_credits: m });
+    if (!res || res.error) return { ok: false, error: res?.error || 'クレジット設定に失敗しました' };
+    // ローカルの写しも合わせる（管理画面の表示がリモートと食い違って見えるのを防ぐ）。
+    // 会社名の一致だけを見る＝リモートに存在しない名前では何も起きない。
+    try {
+      runSql('UPDATE tenants SET credits = ?, plan_limit = ? WHERE contact_company = ? OR name = ?',
+        [c, m, companyName, companyName]);
+    } catch (e) { console.error('ローカルの写し更新に失敗:', e); }
+    logAudit('update', 'license', 0, `${companyName} クレジット: ${c}/${m}`);
+    return { ok: true, credits: c, maxCredits: m };
+  });
+
   // スマホ承認の「信頼端末」状態を取得（PCの管理画面用）
   ipcMain.handle('admin:getTrustedDevice', async () => {
     try { const cfg = loadApiConfig(); return { trusted: !!cfg.trustedAdminDeviceId, at: cfg.trustedAdminDeviceAt || '' }; }
@@ -1620,14 +1645,7 @@ app.whenReady().then(async () => {
         if (diffDays >= 30) {
           const usage = getMonthlyUsage(t.id);
           const planDef = PLANS[t.plan] || {};
-          const nodemailer = require('nodemailer');
-          const transporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
-          });
-          await transporter.sendMail({
-            from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-            to: 'mitsuakinakano0215@gmail.com',
+          await sendNotifyMail({
             subject: `【建築ブースト】提供から1ヶ月経過 - ${t.contact_company || t.name}`,
             text: [
               `テナント「${t.contact_company || t.name}」の利用開始から1ヶ月が経過しました。`,
@@ -1686,17 +1704,11 @@ app.whenReady().then(async () => {
           const hoursSaved = Math.round(totalEstimates * 3.99);
           const moneySaved = hoursSaved * 3750; // 日当3万円÷8時間=3,750円/時
 
-          const nodemailer = require('nodemailer');
-          const transporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
-          });
-
-          // 顧客向けレポート
+          // 顧客向けレポート（運営あてには送らず、顧客だけに届ける）
           if (t.contact_email) {
-            await transporter.sendMail({
-              from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-              to: t.contact_email,
+            await sendNotifyMail({
+              toOwner: false,
+              alsoTo: [t.contact_email],
               subject: `【建築ブースト】月次ご利用レポート（${now.getFullYear()}年${now.getMonth() + 1}月）`,
               text: [
                 `${t.contact_company || t.name} 様`,
@@ -1730,15 +1742,15 @@ app.whenReady().then(async () => {
                 '',
                 '有限会社中野工務店',
                 'TEL: 080-6138-0698',
-                'MAIL: mitsuakinakano0215@gmail.com',
-              ].join('\n'),
+                // 署名の連絡先アドレスは設定から読む（私物アドレスをソースに残さない）。
+                // 未設定なら行ごと落として電話番号だけ載せる。
+                getContactMail() ? `MAIL: ${getContactMail()}` : '',
+              ].filter(Boolean).join('\n'),
             });
           }
 
           // 管理者向け通知
-          await transporter.sendMail({
-            from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-            to: 'mitsuakinakano0215@gmail.com',
+          await sendNotifyMail({
             subject: `【月次レポート送信】${t.contact_company || t.name} — ${thisMonthEstimates}件利用`,
             text: [
               `月次レポートを送信しました。`,
@@ -1763,17 +1775,10 @@ app.whenReady().then(async () => {
 
         // ── 更新2ヶ月前（10ヶ月目）のレビューリマインダー ──
         if (monthsSinceStart === 10 && !(t as any).review_notified) {
-          const nodemailer = require('nodemailer');
-          const transporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
-          });
           const totalEstimates = queryOne('SELECT COUNT(*) as cnt FROM estimate_log WHERE tenant_id = ?', [t.id])?.cnt || 0;
           const hoursSaved = Math.round(totalEstimates * 3.99);
 
-          await transporter.sendMail({
-            from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-            to: 'mitsuakinakano0215@gmail.com',
+          await sendNotifyMail({
             subject: `【要対応】更新2ヶ月前 — ${t.contact_company || t.name} レビュー訪問してください`,
             text: [
               `${t.contact_company || t.name} の年間契約が残り2ヶ月です。`,
@@ -2946,14 +2951,7 @@ app.whenReady().then(async () => {
 
     // メール通知
     try {
-      const nodemailer = require('nodemailer');
-      const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
-      });
-      await transporter.sendMail({
-        from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-        to: 'mitsuakinakano0215@gmail.com',
+      await sendNotifyMail({
         subject: `【新規登録申請】${company} — ${username}`,
         text: [
           '新規ユーザー登録申請がありました。',
@@ -3238,14 +3236,7 @@ app.whenReady().then(async () => {
 
     // オーナーにメール通知
     try {
-      const nodemailer = require('nodemailer');
-      const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
-      });
-      await transporter.sendMail({
-        from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-        to: 'mitsuakinakano0215@gmail.com',
+      await sendNotifyMail({
         subject: `【建築ブースト】プラン変更申請 - ${tenant?.name || 'テナント'}`,
         text: [
           `テナント「${tenant?.name}」からプラン変更申請がありました。`,
@@ -6839,14 +6830,7 @@ ${pastWork || 'まだ実績なし'}`;
     try {
       const tid = getCurrentTenant();
       const tenant = queryOne('SELECT name, contact_company, contact_tel, contact_email FROM tenants WHERE id = ?', [tid]);
-      const nodemailer = require('nodemailer');
-      const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user: 'mitsuakinakano0215@gmail.com', pass: 'cmlz usad gycg sbem' },
-      });
-      await transporter.sendMail({
-        from: '建築ブースト <mitsuakinakano0215@gmail.com>',
-        to: 'mitsuakinakano0215@gmail.com',
+      await sendNotifyMail({
         subject: `【改善要望】${tenant?.name || 'テナント'} — ${data.title}`,
         text: [
           `テナント「${tenant?.name || ''}」から改善要望が届きました。`,

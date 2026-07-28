@@ -68,6 +68,44 @@ export function licenseAdmin(adminSecret: string, sub: string, companyName: stri
   return licenseRequest({ action: 'admin', admin_secret: adminSecret, sub, company_name: companyName, ...extra });
 }
 
+// ── 通知メール送信（Edge Function: send-mail） ──
+// SMTPの資格情報と運営あての宛先アドレスはサーバー側のシークレットにしか無い。
+// アプリは「何を送るか」だけを渡し、「誰に・どの口から送るか」は関知しない。
+export interface MailAttachment { filename: string; contentBase64: string }
+export interface MailPayload {
+  token: string;                  // ライセンストークン（発信者の確認用）
+  subject: string;
+  text: string;
+  toOwner?: boolean;              // 既定 true（運営あて）
+  alsoTo?: string[];              // 顧客など追加の宛先（最大3件）
+  attachments?: MailAttachment[];
+}
+// 添付があると往復が重くなるのでタイムアウトは長め。
+export function sendMailEdge(payload: MailPayload): Promise<any> {
+  const https = require('https');
+  const url = new URL(`${SUPABASE_URL}/functions/v1/send-mail`);
+  const timeoutMs = payload.attachments && payload.attachments.length ? 60000 : 20000;
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: url.hostname, port: 443, path: url.pathname, method: 'POST',
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: timeoutMs,
+    }, (res: any) => {
+      let data = '';
+      res.on('data', (c: string) => { data += c; });
+      res.on('end', () => { try { resolve(data ? JSON.parse(data) : null); } catch { resolve(null); } });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.write(JSON.stringify(payload));
+    req.end();
+  });
+}
+
 interface FeedbackData {
   work_type: string;
   region?: string;

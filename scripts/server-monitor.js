@@ -6,9 +6,11 @@ const nodemailer = require('nodemailer');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const GMAIL_USER = process.env.GMAIL_USER || 'mitsuakinakano0215@gmail.com';
+// アドレスは GitHub Secrets（GMAIL_USER / NOTIFY_EMAIL）から渡す。
+// 公開リポジトリなので、既定値としてソースに書かない。
+const GMAIL_USER = process.env.GMAIL_USER;
 const GMAIL_PASS = process.env.GMAIL_PASS;
-const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || 'mitsuakinakano0215@gmail.com';
+const NOTIFY_EMAIL = process.env.NOTIFY_EMAIL || GMAIL_USER;
 
 // HTTP GETリクエスト
 function httpGet(url, headers = {}) {

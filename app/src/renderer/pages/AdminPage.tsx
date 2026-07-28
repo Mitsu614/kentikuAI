@@ -258,6 +258,8 @@ export default function AdminPage() {
 
   /* --- クレジット操作 --- */
   const [creditEdits, setCreditEdits] = useState<Record<number, string>>({});
+  // リモートライセンスの残/上限（会社名キー）。空欄はその項目を変えない意味。
+  const [credEdits, setCredEdits] = useState<Record<string, { credits?: string; max?: string }>>({});
   const [usageEdits, setUsageEdits] = useState<Record<number, string>>({});
   const [tenantUsages, setTenantUsages] = useState<Record<number, { used: number; limit: number; remaining: number; expiresAt?: string | null; daysLeft?: number | null }>>({});
 
@@ -389,6 +391,32 @@ export default function AdminPage() {
     } catch (e) { console.error(e); showToast('変更に失敗しました'); }
   };
 
+  // リモートライセンスの残クレジット／上限を設定する。
+  // 空欄の項目は現在値をそのまま送る（Edge側は credits 未指定を 0 と解釈するため、必ず明示的に送る）。
+  const handleSetLicenseCredits = async (r: any) => {
+    const edit = credEdits[r.company_name] || {};
+    const curC = Number(r.credits ?? 0);
+    const curM = Number(r.max_credits ?? 0);
+    const nextC = edit.credits === undefined || edit.credits === '' ? curC : parseInt(edit.credits, 10);
+    const nextM = edit.max === undefined || edit.max === '' ? curM : parseInt(edit.max, 10);
+    if (isNaN(nextC) || isNaN(nextM) || nextC < 0 || nextM < 0) { showToast('正しい数値を入力してください'); return; }
+    if (nextC === curC && nextM === curM) { showToast('変更がありません'); return; }
+    if (nextC > nextM) {
+      if (!window.confirm(`残(${nextC})が上限(${nextM})を超えています。このまま設定しますか？`)) return;
+    }
+    if (!window.confirm(`「${r.company_name}」のクレジットを変更します。\n\n残  : ${curC} → ${nextC}\n上限: ${curM} → ${nextM}\n\nよろしいですか？`)) return;
+    try {
+      const res = await (window as any).api.setLicenseCredits(r.company_name, nextC, nextM);
+      if (res?.ok) {
+        showToast(`${r.company_name} を ${nextC}/${nextM} に変更しました`);
+        setCredEdits(prev => ({ ...prev, [r.company_name]: {} }));
+        await loadTenants();
+      } else {
+        showToast(res?.error || '変更に失敗しました');
+      }
+    } catch (e) { console.error(e); showToast('変更に失敗しました'); }
+  };
+
   const handleToggleActive = async (tenant: Tenant) => {
     const isSuspended = tenant.plan === 'suspended';
     const action = isSuspended ? '有効化' : '利用停止';
@@ -516,7 +544,11 @@ export default function AdminPage() {
           {/* リモート登録申請（Supabase） */}
           {remoteRegs.length > 0 && (
             <div style={{ ...styles.card, border: '2px solid #e67e22', marginBottom: 20 }}>
-              <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, color: '#e67e22' }}>リモート登録申請（全顧客）</h3>
+              <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4, color: '#e67e22' }}>リモート登録申請（全顧客）</h3>
+              <div style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>
+                ここのクレジットが<strong>実際に利用可否を決める値</strong>です（下のテナント一覧はこのPC内の写し）。
+                「残」と「上限」に数値を入れて変更を押すと個別に設定できます。空欄の項目は現在値のままです。
+              </div>
               <table style={styles.table}>
                 <thead>
                   <tr>
@@ -546,7 +578,41 @@ export default function AdminPage() {
                             {r.plan === 'pending' ? '承認待ち' : r.plan === 'demo' ? 'デモ' : r.plan === 'standard' ? 'スタンダード' : r.plan === 'pro' ? 'プロ' : r.plan}
                           </span>
                         </td>
-                        <td style={styles.td}>{r.credits} / {r.max_credits}</td>
+                        <td style={styles.td}>
+                          {/* ★ここが実際に利用可否を決める値。残と上限を別々に設定できる。 */}
+                          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                            <span style={{ color: (r.credits ?? 0) <= 5 ? '#e74c3c' : '#27ae60' }}>{r.credits}</span>
+                            <span style={{ color: '#888' }}> / {r.max_credits}</span>
+                          </div>
+                          {!isPending && (
+                            <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 11, color: '#888' }}>
+                              残
+                              <input
+                                type="number" min={0} placeholder={String(r.credits ?? 0)}
+                                value={credEdits[r.company_name]?.credits ?? ''}
+                                onChange={e => setCredEdits(prev => ({
+                                  ...prev,
+                                  [r.company_name]: { ...(prev[r.company_name] || {}), credits: e.target.value },
+                                }))}
+                                style={{ width: 56, padding: '2px 4px', border: '1px solid #ddd', borderRadius: 4, fontSize: 12 }}
+                              />
+                              上限
+                              <input
+                                type="number" min={0} placeholder={String(r.max_credits ?? 0)}
+                                value={credEdits[r.company_name]?.max ?? ''}
+                                onChange={e => setCredEdits(prev => ({
+                                  ...prev,
+                                  [r.company_name]: { ...(prev[r.company_name] || {}), max: e.target.value },
+                                }))}
+                                style={{ width: 56, padding: '2px 4px', border: '1px solid #ddd', borderRadius: 4, fontSize: 12 }}
+                              />
+                              <button
+                                style={{ ...styles.btnSm(COLOR.primary), fontSize: 10, padding: '2px 6px' }}
+                                onClick={() => handleSetLicenseCredits(r)}
+                              >変更</button>
+                            </div>
+                          )}
+                        </td>
                         <td style={styles.td}>
                           <span style={{ ...styles.badge(r.active ? '#e8f5e9' : '#fce4ec', r.active ? '#2e7d32' : '#c62828') }}>
                             {r.active ? '有効' : '無効'}

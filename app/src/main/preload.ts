@@ -267,6 +267,9 @@ contextBridge.exposeInMainWorld('api', {
   approveRemoteRegistration: (companyName: string, plan: string) => ipcRenderer.invoke('remote:approve', companyName, plan),
   rejectRemoteRegistration: (companyName: string) => ipcRenderer.invoke('remote:reject', companyName),
   setLicenseSeats: (companyName: string, maxSeats: number) => ipcRenderer.invoke('remote:setSeats', companyName, maxSeats),
+  // 残クレジットと上限を別々に設定（会社名がキー＝ローカルのテナント行が無くても操作できる）
+  setLicenseCredits: (companyName: string, credits: number, maxCredits: number) =>
+    ipcRenderer.invoke('remote:setCredits', companyName, credits, maxCredits),
 
   // スマホ承認の信頼端末
   getTrustedDevice: () => ipcRenderer.invoke('admin:getTrustedDevice'),
