@@ -1731,8 +1731,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8 }}>
                 {result.estimateWarnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
               </ul>
+              {/* 実際に直したときだけ「下げました」と書く。何も直していないのに
+                  「自動で下げました」と出て、警告文の「金額は変更していません」と矛盾していた */}
               <div style={{ fontSize: 12, color: '#7b241c', marginTop: 8 }}>
-                金額が過大になる誤りは自動で下げました。過小になる誤りは、勝手に増額せず警告だけにしています。
+                {result.estimateAutoFixed && '金額が過大になる誤りは自動で下げました。'}
+                {result.estimateAdvisoryOnly && 'ここに出ている金額はまだ変えていません。勝手に増額せず、下のボタンを押したときだけ直します。'}
                 <strong>提出前に必ず内訳の数量と金額を確認してください。</strong>
               </div>
               {/* 各警告の「正しい値」に、人の承認を経て1クリックで直す＋上書き保存する */}

@@ -639,6 +639,12 @@ const HEATSHIELD_MARKUP = 1.11; // 粗利率 約10%
 // 桁落ちは quantity × unitPrice と cost の乖離として必ず現れる。5倍以上ずれていたら
 // 掛け算のほうを信じて cost を引き直す。原価/売価の取り違え（1.1〜1.5倍）は誤検知しない。
 const DIGIT_DROP_FACTOR = 5;
+
+// 「見つけたが直していない」警告に必ず付ける文言。画面側はこの有無で
+// 「自動で下げました」と言ってよいかを判定するので、勝手に文言を変えないこと。
+// （この印が無い警告＝実際に金額を直したもの）
+const NO_CHANGE_NOTE = '金額は変更していません';
+
 function repairDigitDrops(result: any, context: string): string[] {
   const warnings: string[] = [];
   for (const b of result.breakdown) {
@@ -676,7 +682,7 @@ function repairDigitDrops(result: any, context: string): string[] {
     const hi = Math.max(...costs), lo = Math.min(...costs);
     if (lo > 0 && hi / lo >= 50 && !warnings.some(w => w.startsWith(rows.find(r => Number(r.cost) === lo)!.item))) {
       const low = rows.find(r => Number(r.cost) === lo)!;
-      const msg = `${low.item}: ${lo.toLocaleString()}円 は同種の「${rows.find(r => Number(r.cost) === hi)!.item}」${hi.toLocaleString()}円 と${Math.round(hi / lo)}倍ちがいます。桁落ちの可能性`;
+      const msg = `${low.item}: ${lo.toLocaleString()}円 は同種の「${rows.find(r => Number(r.cost) === hi)!.item}」${hi.toLocaleString()}円 と${Math.round(hi / lo)}倍ちがいます。桁落ちの可能性。${NO_CHANGE_NOTE}`;
       console.warn(`[${context}] 桁違いの疑い（自動修正しません） → ${msg}`);
       warnings.push(msg);
     }
@@ -708,7 +714,7 @@ function enforceHeatshieldQuantity(result: any, context: string): string[] {
   if (ratio < df) {
     const newQty = Math.round(roof * df);
     const deltaPct = Math.round((df / Math.max(ratio, 0.01) - 1) * 100);
-    const msg = `見積数量 ${qty}㎡ ÷ 屋根面積 ${roof}㎡ = ${ratio.toFixed(2)} で、申告された展開係数 ${df} と合いません。掛け忘れなら数量は ${newQty}㎡（約${deltaPct}%の過小見積）。金額は変更していません`;
+    const msg = `見積数量 ${qty}㎡ ÷ 屋根面積 ${roof}㎡ = ${ratio.toFixed(2)} で、申告された展開係数 ${df} と合いません。掛け忘れなら数量は ${newQty}㎡（約${deltaPct}%の過小見積）。${NO_CHANGE_NOTE}`;
     console.warn(`[${context}] 展開係数の掛け忘れ疑い（自動修正しません） → ${msg}`);
     // 過小は勝手に増額しない方針だが、ユーザーが「こちらに変更する」を押したら適用できるよう
     // 補正内容を構造化して持たせる（材料+施工費を df/ratio 倍・数量を newQty に引き直す）。
@@ -768,7 +774,7 @@ function checkLaborAgainstManDays(result: any, context: string): string | null {
 
   const diff = Math.round(fromManDays - fromBreakdown);
   const msg = `人件費 ¥${fromBreakdown.toLocaleString()} が、人工の積み上げ Σ(人工×日額) = ¥${Math.round(fromManDays).toLocaleString()} と合いません（${ratio.toFixed(2)}倍）。`
-    + `${diff > 0 ? `¥${diff.toLocaleString()} 不足している可能性` : `¥${Math.abs(diff).toLocaleString()} 過大の可能性`}があります。金額は変更していません`;
+    + `${diff > 0 ? `¥${diff.toLocaleString()} 不足している可能性` : `¥${Math.abs(diff).toLocaleString()} 過大の可能性`}があります。${NO_CHANGE_NOTE}`;
   console.warn(`[${context}] 人件費と人工が不整合（自動修正しません） → ${msg}`);
   // 「こちらに変更する」で人件費を人工の積み上げ（Σ人工×日額）に合わせられるよう補正内容を持たせる。
   // 施工費の行だけを factor 倍する（材料・仮設・経費は人件費と無関係なので触らない）。
@@ -963,6 +969,13 @@ function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = D
 
   const laborWarn = checkLaborAgainstManDays(result, context);
   if (laborWarn) (result.estimateWarnings = result.estimateWarnings || []).push(laborWarn);
+
+  // 画面の説明文が実態とズレないように、「実際に直した警告」と「見つけただけの警告」を分けて持たせる。
+  // 以前は『金額が過大になる誤りは自動で下げました』が無条件で出ており、
+  // 何も直していないときにも表示されて矛盾していた。
+  const allWarns: string[] = Array.isArray(result.estimateWarnings) ? result.estimateWarnings : [];
+  result.estimateAutoFixed = allWarns.some((w: string) => !String(w).includes(NO_CHANGE_NOTE));
+  result.estimateAdvisoryOnly = allWarns.some((w: string) => String(w).includes(NO_CHANGE_NOTE));
 
   // 材料費 + 人件費 + 経費 + 粗利 = 売上金額 が必ず成立するように、粗利は差分で置く。
   const costTotal = result.estimatedMaterialCost + result.estimatedLaborCost + result.estimatedExpenseCost;
