@@ -261,6 +261,9 @@ contextBridge.exposeInMainWorld('api', {
   register: (data: any) => ipcRenderer.invoke('auth:register', data),
   join: (data: any) => ipcRenderer.invoke('auth:join', data),
   installUpdate: () => ipcRenderer.invoke('update:install'),
+  checkUpdate: () => ipcRenderer.invoke('update:check'),
+  runUpdateInstaller: () => ipcRenderer.invoke('update:runInstaller'),
+  openUpdateFolder: () => ipcRenderer.invoke('update:openFolder'),
 
   // リモート登録申請（Supabase）
   listRemoteRegistrations: () => ipcRenderer.invoke('remote:listRegistrations'),

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import DashboardPage from './pages/DashboardPage';
+import BusyPop from './components/BusyPop';
 
 const PropertiesPage = lazy(() => import('./pages/PropertiesPage'));
 const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
@@ -158,7 +159,8 @@ export default function App() {
         company: regCompany.trim(), email: regEmail.trim(), tel: regTel.trim(),
       });
       if (res.ok) {
-        setRegMessage('登録申請を送信しました。管理者の承認をお待ちください。');
+        // 「いつまで待てばいいのか」が分からないと不安になるので、目安を必ず添える
+        setRegMessage('登録申請を送信しました。\n承認は通常30分〜数時間で完了します（営業時間外の場合は翌営業日までにご連絡します）。\n承認後、アプリを再起動するとご利用いただけます。');
         setRegUser(''); setRegPass(''); setRegCompany(''); setRegEmail(''); setRegTel('');
       } else {
         setRegError(res.error || '登録に失敗しました');
@@ -441,7 +443,7 @@ export default function App() {
           {showRegister && (
             <div style={{ marginTop: 16, textAlign: 'left', borderTop: '1px solid #eee', paddingTop: 16 }}>
               <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 12, textAlign: 'center', color: '#1a2332' }}>新規登録（承認制）</div>
-              {regMessage && <div style={{ color: '#27ae60', fontSize: 14, marginBottom: 12, textAlign: 'center' }}>{regMessage}</div>}
+              {regMessage && <div style={{ color: '#27ae60', fontSize: 14, marginBottom: 12, textAlign: 'center', whiteSpace: 'pre-line', lineHeight: 1.7 }}>{regMessage}</div>}
               {regError && <div style={{ color: '#e74c3c', fontSize: 14, marginBottom: 12, textAlign: 'center' }}>{regError}</div>}
               <input value={regCompany} onChange={e => setRegCompany(e.target.value)} placeholder="会社名（必須）"
                 style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
@@ -627,6 +629,8 @@ export default function App() {
           ✓ オンラインに復帰しました — データを同期中...
         </div>
       )}
+      {/* 待ち時間POP（あと何分で終わるかを常時表示）。どのページの処理でもここに出る */}
+      <BusyPop />
       {learnedToast && (
         <div className="toast-learning" role="status">
           <span className="learn-icon">🎓</span>

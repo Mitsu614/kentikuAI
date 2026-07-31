@@ -3,6 +3,53 @@ import { PageGuide } from '../components/PageGuide';
 
 // Sub-components are at the bottom of this file
 
+// バージョン確認とアップデート。
+// ダウンロードはアプリ内で行うので、ブラウザもGitHubのページも開かない
+// （以前はリリースページに飛ばされ、お客様側でサインインを求められることがあった）。
+function UpdateCheck() {
+  const [state, setState] = useState<any>(null);
+  const [checking, setChecking] = useState(false);
+
+  const check = async () => {
+    setChecking(true);
+    try {
+      const r = await (window as any).api.checkUpdate();
+      setState(r);
+    } catch (e: any) {
+      setState({ ok: false, error: e?.message || '確認に失敗しました' });
+    }
+    setChecking(false);
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h3 style={{ marginBottom: 12 }}>🔄 バージョン・アップデート</h3>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <button className="btn btn-primary" onClick={check} disabled={checking}>
+          {checking ? '確認中...' : 'アップデートを確認'}
+        </button>
+        {state?.current && <span style={{ fontSize: 13, color: '#666' }}>現在のバージョン: <strong>v{state.current}</strong></span>}
+      </div>
+      {state && (
+        <div style={{ marginTop: 10, fontSize: 13 }}>
+          {!state.ok ? (
+            <span style={{ color: '#c0392b' }}>⚠ {state.error}</span>
+          ) : state.hasUpdate ? (
+            <span style={{ color: '#15803d' }}>
+              🆕 新しいバージョン <strong>v{state.latest}</strong> があります。画面右下の案内から、そのままダウンロードできます。
+            </span>
+          ) : (
+            <span style={{ color: '#666' }}>✅ 最新版をお使いです（v{state.latest}）</span>
+          )}
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>
+        ダウンロードはアプリの中で行われます。ブラウザやログイン画面は開きません。
+      </div>
+    </div>
+  );
+}
+
 // 画面で入力しうる機密フィールド。保存後は入力値をstateから消して伏せ字表示に戻す。
 // （main側の SENSITIVE_FIELDS のうち、この画面から触るものだけ）
 const SECRET_FIELDS = ['reinfolibApiKey', 'serverPassword', 'adminSecret'];
@@ -115,6 +162,9 @@ export default function SettingsPage() {
         onSave={save}
         onClear={() => clearSecret('adminSecret', '管理者シークレット')}
       />
+
+      {/* バージョン・アップデート */}
+      <UpdateCheck />
 
       {/* 文字サイズ */}
       <div className="card">

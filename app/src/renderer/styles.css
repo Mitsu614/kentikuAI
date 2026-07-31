@@ -651,6 +651,59 @@ body {
   to { transform: rotate(0) scale(1); }
 }
 
+/* ===== 待ち時間POP（あと何分で終わるかを常に見せる） ===== */
+.busy-pop {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10003;
+  width: min(420px, calc(100vw - 32px));
+  padding: 14px 20px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  color: var(--text);
+  border: 2px solid var(--primary);
+  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.22);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  animation: busyPop 0.32s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+.busy-pop .busy-icon { font-size: 26px; line-height: 1.2; animation: busyPulse 1.6s ease-in-out infinite; }
+.busy-pop .busy-body { flex: 1; min-width: 0; }
+.busy-pop .busy-title { font-size: 14px; font-weight: 700; }
+.busy-pop .busy-remain { font-size: 26px; font-weight: 900; color: var(--primary); letter-spacing: -0.5px; margin: 2px 0 6px; }
+.busy-pop .busy-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.busy-pop .busy-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--primary), var(--success));
+  transition: width 0.9s ease;
+}
+.busy-pop .busy-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 5px;
+}
+.busy-pop .busy-note { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+.busy-pop-done { border-color: var(--success); }
+.busy-pop-done .busy-icon { animation: none; }
+@keyframes busyPop {
+  0% { transform: translateX(-50%) translateY(-20px) scale(0.94); opacity: 0; }
+  100% { transform: translateX(-50%) translateY(0) scale(1); opacity: 1; }
+}
+@keyframes busyPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.86); opacity: 0.6; }
+}
+/* 待機POPが出ている間は学習POPを下にずらす（重なり防止） */
+.busy-active .toast-learning { top: 168px; }
+.dark-mode .busy-pop { box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5); }
+
 /* ===== 自動保存インジケーター ===== */
 .auto-save-indicator {
   position: fixed;

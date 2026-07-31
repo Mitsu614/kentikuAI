@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, net } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -1295,6 +1295,111 @@ APP_VERSION = CURRENT_VERSION;
 // 更新通知で検知した最新バージョン。「ダウンロード」ボタンで setup.exe の直リンクを組むのに使う
 // （リポジトリのリリースページを開くとお客様にソース側が見えるため、exe直DLにする）。
 let latestUpdateVersion = '';
+// ダウンロード済みインストーラーの置き場所と、二重ダウンロード防止フラグ
+let updateFilePath = '';
+let updateDownloading = false;
+
+// ── 更新通知カード（右下に出る小窓）──
+// 中身だけ差し替えられるように、外枠とクリック処理は一度だけ作る。
+// ボタンは data-act で判別してイベント委譲する（innerHTML を入れ替えてもハンドラが外れない）。
+const UPD_BTN_MAIN = 'flex:1;padding:10px;background:#27ae60;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer';
+const UPD_BTN_SUB = 'padding:10px 14px;background:none;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;color:#888';
+
+function showUpdateCard(inner: string) {
+  if (!mainWindow) return;
+  const js = `(function(){
+    var d=document.getElementById('update-overlay');
+    if(!d){
+      d=document.createElement('div');d.id='update-overlay';document.body.appendChild(d);
+      d.style.cssText='position:fixed;bottom:20px;right:20px;z-index:99999;width:340px;max-width:calc(100vw - 40px)';
+      d.innerHTML='<div class="upd-card" style="background:#fff;border:1px solid #d1d5db;border-radius:12px;padding:16px 18px;box-shadow:0 8px 28px rgba(0,0,0,0.18)"></div>';
+      d.addEventListener('click',function(e){
+        var b=e.target&&e.target.closest?e.target.closest('[data-act]'):null; if(!b)return;
+        var a=b.getAttribute('data-act');
+        if(a==='dl'){window.api&&window.api.installUpdate&&window.api.installUpdate();}
+        else if(a==='close'){d.remove();}
+        else if(a==='run'){window.api&&window.api.runUpdateInstaller&&window.api.runUpdateInstaller();}
+        else if(a==='folder'){window.api&&window.api.openUpdateFolder&&window.api.openUpdateFolder();}
+      });
+    }
+    var c=d.querySelector('.upd-card'); if(c) c.innerHTML=${JSON.stringify(inner)};
+  })()`;
+  mainWindow.webContents.executeJavaScript(js).catch(() => {});
+}
+
+const mbOf = (n: number) => (n / 1024 / 1024).toFixed(0);
+
+function updCardAvailable(v: string) {
+  return `<div style="font-size:14px;font-weight:700;color:#1a2332;margin-bottom:6px">🆕 新しいバージョン v${v} があります</div>`
+    + `<div style="font-size:12px;color:#666;margin-bottom:12px">「ダウンロード」を押すと、この画面のままアプリが更新ファイルを受け取ります。</div>`
+    + `<div style="display:flex;gap:8px"><button data-act="dl" style="${UPD_BTN_MAIN}">ダウンロード</button><button data-act="close" style="${UPD_BTN_SUB}">閉じる</button></div>`;
+}
+
+function updCardProgress(v: string, received: number, total: number) {
+  const pct = total > 0 ? Math.min(99, Math.floor((received / total) * 100)) : 0;
+  return `<div style="font-size:14px;font-weight:700;color:#1a2332;margin-bottom:8px">⬇ v${v} をダウンロードしています</div>`
+    + `<div style="height:10px;background:#eee;border-radius:5px;overflow:hidden;margin-bottom:6px"><div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#3b82f6,#10b981);transition:width .3s ease"></div></div>`
+    + `<div style="font-size:12px;color:#666">${mbOf(received)} MB / ${total > 0 ? mbOf(total) + ' MB' : '—'}（${pct}%）</div>`
+    + `<div style="font-size:11px;color:#aaa;margin-top:4px">そのままお使いいただけます。完了したらお知らせします。</div>`;
+}
+
+function updCardDone(v: string, file: string) {
+  return `<div style="font-size:14px;font-weight:700;color:#15803d;margin-bottom:6px">✅ v${v} のダウンロードが完了しました</div>`
+    + `<div style="font-size:12px;color:#666;margin-bottom:10px">「今すぐインストール」を押すと、建築ブーストを終了してインストーラーが立ち上がります。</div>`
+    + `<div style="font-size:11px;color:#aaa;margin-bottom:10px;word-break:break-all">保存先: ${file}</div>`
+    + `<div style="display:flex;gap:8px"><button data-act="run" style="${UPD_BTN_MAIN}">今すぐインストール</button><button data-act="folder" style="${UPD_BTN_SUB}">保存先を開く</button></div>`;
+}
+
+function updCardError(msg: string) {
+  return `<div style="font-size:14px;font-weight:700;color:#b91c1c;margin-bottom:6px">⚠ ダウンロードできませんでした</div>`
+    + `<div style="font-size:12px;color:#666;margin-bottom:12px">${msg}</div>`
+    + `<div style="display:flex;gap:8px"><button data-act="dl" style="${UPD_BTN_MAIN}">もう一度</button><button data-act="close" style="${UPD_BTN_SUB}">閉じる</button></div>`;
+}
+
+/**
+ * インストーラーをアプリ内でダウンロードする。
+ * ブラウザもGitHubのページも一切開かない（お客様が「認証が必要なページに飛ばされる」問題と、
+ * ソース側が見えてしまう問題の両方を断つ）。electron の net はリダイレクトを自動で追う。
+ */
+function downloadToFile(url: string, dest: string, onProgress: (received: number, total: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = net.request({ url, method: 'GET', redirect: 'follow' });
+    req.on('response', (res: any) => {
+      const status = Number(res.statusCode) || 0;
+      if (status >= 400) { reject(new Error(`HTTP ${status}`)); return; }
+      const total = Number(res.headers['content-length'] || res.headers['Content-Length'] || 0);
+      let received = 0;
+      const out = fs.createWriteStream(dest);
+      out.on('error', reject);
+      res.on('data', (chunk: Buffer) => {
+        received += chunk.length;
+        // 100MB超を一気にバッファに溜めないよう、書き出しが詰まったら受信を止める
+        if (!out.write(chunk) && typeof res.pause === 'function') {
+          res.pause();
+          out.once('drain', () => { if (typeof res.resume === 'function') res.resume(); });
+        }
+        onProgress(received, total);
+      });
+      res.on('end', () => { out.end(() => resolve()); });
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/** 最新バージョン番号。electron-updater が検知済みならそれを使い、無ければ公開APIから引く */
+async function resolveLatestVersion(): Promise<string> {
+  if (latestUpdateVersion) return latestUpdateVersion;
+  try {
+    const res = await fetch('https://api.github.com/repos/Mitsu614/kentikuAI/releases/latest', {
+      headers: { 'User-Agent': 'kenchiku-boost', Accept: 'application/vnd.github+json' },
+    });
+    if (!res.ok) return '';
+    const j: any = await res.json();
+    return String(j?.tag_name || '').replace(/^v/, '');
+  } catch (_) { return ''; }
+}
 
 function setupAutoUpdater() {
   try {
@@ -1309,24 +1414,7 @@ function setupAutoUpdater() {
     autoUpdater.on('update-available', (info: any) => {
       console.log('アップデートあり(通知のみ):', info.version);
       latestUpdateVersion = info.version || '';
-      if (mainWindow) {
-        mainWindow.webContents.executeJavaScript(`
-          (function(){
-            let d=document.getElementById('update-overlay');if(d)d.remove();
-            d=document.createElement('div');d.id='update-overlay';document.body.appendChild(d);
-            d.style.cssText='position:fixed;bottom:20px;right:20px;z-index:99999;max-width:320px';
-            d.innerHTML='<div style="background:#fff;border:1px solid #d1d5db;border-radius:12px;padding:16px 18px;box-shadow:0 8px 28px rgba(0,0,0,0.18)">'
-              +'<div style="font-size:14px;font-weight:700;color:#1a2332;margin-bottom:6px">🆕 新しいバージョン v${info.version} があります</div>'
-              +'<div style="font-size:12px;color:#666;margin-bottom:12px">ダウンロードして最新版をインストールしてください。</div>'
-              +'<div style="display:flex;gap:8px">'
-              +'<button id="update-dl" style="flex:1;padding:10px;background:#27ae60;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer">ダウンロード</button>'
-              +'<button id="update-close" style="padding:10px 14px;background:none;border:1px solid #ddd;border-radius:8px;font-size:13px;cursor:pointer;color:#888">閉じる</button>'
-              +'</div></div>';
-            document.getElementById('update-dl').onclick=()=>{ window.api?.installUpdate?.(); };
-            document.getElementById('update-close').onclick=()=>{ document.getElementById('update-overlay')?.remove(); };
-          })()
-        `).catch(() => {});
-      }
+      showUpdateCard(updCardAvailable(latestUpdateVersion));
     });
 
     autoUpdater.on('error', (err: any) => {
@@ -1334,15 +1422,74 @@ function setupAutoUpdater() {
       try { mainWindow?.webContents.executeJavaScript(`document.getElementById('update-overlay')?.remove()`); } catch (_) {}
     });
 
-    // 「ダウンロード」ボタン: setup.exe を直リンクでダウンロードさせる（自動インストールはしない＝#9593回避）。
-    //   ★リポジトリのリリースページは開かない（お客様にソース側を見せないため）。
-    //   検知済みバージョンから直リンクを組む。未検知時のみ従来のリリースページにフォールバック。
-    ipcMain.handle('update:install', () => {
-      const v = latestUpdateVersion;
-      const url = v
-        ? `https://github.com/Mitsu614/kentikuAI/releases/download/v${v}/kenchiku-boost-v${v}-setup.exe`
-        : 'https://github.com/Mitsu614/kentikuAI/releases/latest';
-      shell.openExternal(url);
+    // 「ダウンロード」ボタン: アプリ内でインストーラーを受け取る（自動インストールはしない＝#9593回避）。
+    //   ★ブラウザもGitHubのページも開かない。以前は releases ページへ飛ばしていて、
+    //     お客様側で「サインインを求められる／ソース側が見える」状態になっていた。
+    ipcMain.handle('update:install', async () => {
+      if (updateDownloading) return { ok: false, error: 'ダウンロード中です' };
+      const v = await resolveLatestVersion();
+      if (!v) {
+        showUpdateCard(updCardError('最新バージョンを確認できませんでした。ネットワークをご確認のうえ、もう一度お試しください。'));
+        return { ok: false, error: 'version unknown' };
+      }
+      const url = `https://github.com/Mitsu614/kentikuAI/releases/download/v${v}/kenchiku-boost-v${v}-setup.exe`;
+      const dest = path.join(app.getPath('downloads'), `kenchiku-boost-v${v}-setup.exe`);
+      updateDownloading = true;
+      showUpdateCard(updCardProgress(v, 0, 0));
+      let lastPush = 0;
+      try {
+        await downloadToFile(url, dest, (received, total) => {
+          const now = Date.now();
+          if (now - lastPush < 400) return;   // 画面更新は0.4秒に1回まで（描画で足を引っ張らない）
+          lastPush = now;
+          showUpdateCard(updCardProgress(v, received, total));
+        });
+        updateFilePath = dest;
+        showUpdateCard(updCardDone(v, dest));
+        return { ok: true, file: dest };
+      } catch (e: any) {
+        try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch (_) {}   // 途中まで落ちたファイルは残さない
+        showUpdateCard(updCardError(`${e?.message || e}`));
+        return { ok: false, error: String(e?.message || e) };
+      } finally {
+        updateDownloading = false;
+      }
+    });
+
+    // 「今すぐインストール」: アプリを終了してインストーラーを起動する
+    ipcMain.handle('update:runInstaller', async () => {
+      if (!updateFilePath || !fs.existsSync(updateFilePath)) return { ok: false, error: 'ファイルがありません' };
+      const r = await dialog.showMessageBox({
+        type: 'question',
+        buttons: ['インストールする', 'キャンセル'],
+        defaultId: 0, cancelId: 1,
+        title: 'アップデート',
+        message: 'インストーラーを起動します。\n建築ブーストはいったん終了します。よろしいですか？',
+      });
+      if (r.response !== 0) return { ok: false };
+      try { flushSave(); } catch (_) {}
+      await shell.openPath(updateFilePath);
+      setTimeout(() => app.quit(), 1500);
+      return { ok: true };
+    });
+
+    // 設定画面の「アップデートを確認」。お客様が自分で最新版の有無を確かめられるようにする
+    ipcMain.handle('update:check', async () => {
+      const latest = await resolveLatestVersion();
+      if (!latest) return { ok: false, current: CURRENT_VERSION, error: '最新バージョンを確認できませんでした' };
+      const cmp = (a: string, b: string) => {
+        const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+        for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0); }
+        return 0;
+      };
+      const hasUpdate = cmp(latest, CURRENT_VERSION) > 0;
+      if (hasUpdate) { latestUpdateVersion = latest; showUpdateCard(updCardAvailable(latest)); }
+      return { ok: true, current: CURRENT_VERSION, latest, hasUpdate };
+    });
+
+    ipcMain.handle('update:openFolder', () => {
+      if (updateFilePath && fs.existsSync(updateFilePath)) shell.showItemInFolder(updateFilePath);
+      else shell.openPath(app.getPath('downloads'));
     });
 
   // ── リモート登録申請管理（Supabase） ──
@@ -1550,7 +1697,7 @@ app.whenReady().then(async () => {
         if (lic.plan === 'pending') {
           // 承認待ち → アプリは閉じない
           if (isStartup) {
-            dialog.showMessageBox({ type: 'info', title: '承認待ち', message: '管理者の承認をお待ちください。\n承認後にアプリを再起動するとご利用いただけます。', buttons: ['OK'] });
+            dialog.showMessageBox({ type: 'info', title: '承認待ち', message: '管理者の承認をお待ちください。\n\n承認は通常30分〜数時間で完了します（営業時間外の場合は翌営業日までにご連絡します）。\n承認後にアプリを再起動するとご利用いただけます。', buttons: ['OK'] });
           }
           return;
         }
@@ -5594,6 +5741,15 @@ ${categories}
 - 迷ったら中心帯を採用しろ（根拠なく高い方へ寄せない。自社実績があればそれを最優先）
 - 上記の検証で乖離が見つかった場合は、金額を修正してから出力しろ
 
+### ルールE': お客様への時間の説明（customerSchedule）
+見積金額と同じくらい、施主が知りたいのは「うちは何時間つぶれるのか」だ。次を必ず守れ。
+- 「約5日」のような業者向けの暦日数だけで済ませるな。**1日あたり何時間・何時から何時まで**を必ず出せ。
+- **家の外で待たないといけない時間**（塗料や接着剤の臭気、粉じん、床や塗膜の乾燥待ち、断水・停電、搬入で通路が塞がる等）を
+  必ず判定しろ。必要なら hours と when を時間で答えろ。「念のため外出をおすすめします」で終わらせるな。
+- 水道・トイレ・キッチン・玄関・駐車場など、**使えなくなる設備と、その時間**を unusable に必ず書き出せ。
+- 立ち会いが要るのは実際にどの場面か、何分かを書け。終日拘束するなら理由を書け。要らないなら「不要」と言い切れ。
+- 分からないから曖昧にする、は禁止。工種・数量・人工から算出した根拠のある時間を書け。
+
 ### ルールE: breakdownの書き方
 - 各項目に「数量×単価」の根拠をnoteに記載（材料の行は "7m²×5,570円/m²"、施工費の行は "3人工×2日×25,000円"）
 - 設備機器は型番相当のグレードをnoteに記載（例: "TOTO同等品中級グレード"）
@@ -5626,6 +5782,23 @@ ${categories}
   "profitRate": 適用した粗利率（数値、%、例: 30）,
   "confidence": "高/中/低",
   "estimatedDuration": "推定工期（例: '約5日', '約2週間', '約1.5ヶ月'）。全工程の着工から完了までの暦日数。並行作業を考慮して算出",
+  "customerSchedule": {
+    "totalLabel": "★お客様にそのまま伝える所要時間★ 業者向けの暦日数ではなく、施主が予定を組める粒度で書く。半日で終わるなら『約3時間』『半日（約4時間）』、1日なら『1日（実働 約6時間）』、複数日なら『3日間（1日あたり約7時間）』。分単位で終わる軽作業なら『約40分』",
+    "hoursPerDay": "★1日あたり職人が現場にいる時間★（例: '約6時間'、'約8時間（うち昼休憩1時間）'）。日によって違うなら一番長い日を書き、その旨を添える",
+    "onSiteTime": "現場に入ってから出るまでの目安時刻（例: '9:00〜13:00'、'8:30〜17:00（うち昼休憩1時間）'）。時間帯が読めないなら null",
+    "visitDays": 現場に入る日数（数値。1日で終わるなら1。半日でも1）,
+    "outOfHome": {
+      "required": true/false（お客様が家の外に出て待つ必要があるか。塗料・接着剤の臭気、粉じん、床の乾燥待ち、断水・停電、重量物搬入で通路が塞がる等があれば true）,
+      "hours": "★家の外で待っていただく時間★（例: '約3時間'、'2日目のみ約4時間'）。不要なら null",
+      "when": "その時間帯（例: '1日目 10:00〜13:00'）。不要なら null",
+      "reason": "外に出ていただく理由をお客様の言葉で（例: '塗料のにおいが強く、乾くまでは屋内にいると気分が悪くなることがあります'）。不要なら null",
+      "note": "在宅でしのげる代替案があれば書く（例: '2階の部屋にいていただければ在宅のままでも問題ありません'）。無ければ null"
+    },
+    "attendance": "お客様の立ち会い・在宅が必要な場面と、その所要時間（例: '着工時のご説明10分と、完了確認15分のみ。日中の外出は問題ありません'）。終日在宅が必要ならその理由も書く",
+    "unusable": ["工事中に使えなくなる場所・設備と、その時間（例: 'キッチンの水道 10:00〜15:00（約5時間）'、'トイレ 終日（1日目のみ・仮設トイレをご用意します）'、'玄関 搬入の30分だけ'）。無ければ空配列"],
+    "impacts": ["その他の生活への影響を、必ず時間帯つきで具体的に（例: '騒音が大きいのは初日の解体 約2時間'、'お車を1台分、道路側へ移動していただきます'、'足場設置日は洗濯物を室内に'）。無ければ空配列"],
+    "dayPlan": [{"day": "1日目", "time": "9:00〜17:00", "hours": "約7時間", "outOfHome": "外で待つ時間があればここに（例: '10:00〜13:00の約3時間'）。不要なら null", "work": "その日にやることを、お客様に分かる言葉で1行（専門用語を避ける）"}]
+  },
   "scheduleProposal": "★希望納期が入力され、かつ推定工期より短い（急ぎ）ときのみ記入・それ以外は必ずnull★ 工期短縮の提案または相談。詰められるなら『増員・残業・応援で△日に短縮可能。割増費用 約◯円（内訳）』、厳しいなら『最短◯日を推奨。1日は品質・安全・段取り上おすすめしない理由』を、職人目線で具体的に3〜5行。本体金額には含めない別途提案として書く。",
   "totalManDays": 総人工数（数値。全職種の延べ人工合計。例: 設備工2人×3日+大工1人×2日=8）,
   "manDaysBreakdown": [

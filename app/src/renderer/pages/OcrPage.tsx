@@ -1,4 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { startBusy, setBusyProgress, endBusy, etaText } from '../components/BusyPop';
+
+// 1枚あたりの読み取り目安（実測が貯まれば BusyPop 側が自動で上書きする初期値）
+const OCR_SEC_PER_PAGE = 20;
 
 // クリックで説明を表示するヘルプアイコン
 function Help({ text }: { text: string }) {
@@ -159,12 +163,15 @@ export default function OcrPage() {
   const addPdf = async () => {
     setPdfLoading(true);
     setError('');
+    startBusy({ key: 'pdf-open', title: 'PDFを画像に変換しています', etaSec: 15, sub: 'ページ数が多いほど時間がかかります' });
     try {
       const pages = await (window as any).api.selectPdf();
       if (pages && pages.length > 0) {
         setImages(prev => [...prev, ...pages.map((p: any) => p.data)]);
       }
+      endBusy();
     } catch (e: any) {
+      endBusy({ ok: false });
       setError(`PDF読み取りエラー: ${e.message}`);
     }
     setPdfLoading(false);
@@ -173,6 +180,14 @@ export default function OcrPage() {
   const processAll = async () => {
     setProcessing(true);
     setError('');
+    // 枚数が多いと数分かかるので、残り時間POPで「あと何分か」を出しながら進める
+    startBusy({
+      key: 'ocr-invoice',
+      title: '書類をAIで読み取っています',
+      total: images.length,
+      perItemSec: OCR_SEC_PER_PAGE,
+      note: '読み取りが終わるまでこの画面を開いたままにしてください',
+    });
     const newResults: any[] = [];
     for (let i = 0; i < images.length; i++) {
       try {
@@ -181,7 +196,9 @@ export default function OcrPage() {
       } catch (e: any) {
         newResults.push({ _error: e.message, _imgIndex: i });
       }
+      setBusyProgress(i + 1);
     }
+    endBusy({ ok: newResults.some(r => !r._error) });
     setResults(newResults);
     setProcessing(false);
     loadLogs(); // 読み取った時点でログに残る
@@ -272,6 +289,12 @@ export default function OcrPage() {
             <button className="btn btn-primary" onClick={processAll} disabled={processing} style={{ fontSize: 16, padding: '12px 32px' }}>
               {processing ? `🔄 読み取り中...（${images.length}枚）` : `📖 ${images.length}枚をAIで読み取り`}
             </button>
+            {/* 押す前に「どれくらい待つか」を出しておく（押してから初めて知る、をなくす） */}
+            {!processing && (
+              <span style={{ fontSize: 13, color: '#666', background: '#f1f5f9', padding: '6px 12px', borderRadius: 999 }}>
+                ⏱ {etaText('ocr-invoice', OCR_SEC_PER_PAGE, images.length)}
+              </span>
+            )}
             <Help text="AIが書類の内容（宛先・発行元・明細・金額など）を自動で認識します。AIストックを1消費します。" />
           </div>
         )}

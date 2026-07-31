@@ -1,8 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PageGuide } from '../components/PageGuide';
+import { startBusy, updateBusy, endBusy, etaText } from '../components/BusyPop';
+import CustomerSchedule from '../components/CustomerSchedule';
 
 // 消費税率。AIが出す金額はすべて税抜（原価・粗利の計算がしやすいため）。表示のときだけ税込を併記する。
 const TAX_RATE = 0.1;
+
+// 待ち時間の初期目安（秒）。実測が2回貯まれば BusyPop がそのPCの実測値に自動で切り替える。
+const ESTIMATE_SEC = 60;    // AI見積の作成
+const AREA_SEC = 15;        // 写真からの面積読み取り
+const IMAGE_SEC = 40;       // 完成イメージ生成
+const AUTOCREATE_SEC = 12;  // 物件・施工・請求書の自動登録
+
+// 待っている間に出す「いま何をしているか」の一言。固定POPと画面内カードで同じ文言を使う。
+const analyzeStep = (sec: number) =>
+  sec < 10 ? '画像を解析しています' :
+  sec < 20 ? '建物の種類・規模を特定中' :
+  sec < 32 ? '相場データベースと照合中' :
+  sec < 44 ? '材料費・人件費を積算中' :
+  sec < 56 ? '粗利率・追加提案を計算中' :
+  'もう少しで完了します';
 
 // 金額・人数などの数値入力欄。
 // ・クリック（フォーカス）で中身を全選択 → そのまま打てば丸ごと置き換わる
@@ -92,6 +109,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  // チャットは固定POPを出すと会話のたびに邪魔になるので、吹き出しの中に経過秒だけ出す
+  const [chatElapsed, setChatElapsed] = useState(0);
   const [chatEstimate, setChatEstimate] = useState<any>(null);
   const [chatSessionId, setChatSessionId] = useState<number | null>(null);
   const [chatSessions, setChatSessions] = useState<any[]>([]);
@@ -297,12 +316,15 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setCheckingArea(true);
     setError('');
     setLearned(null);
+    startBusy({ key: 'area-check', title: '写真から面積を読み取っています', etaSec: AREA_SEC, sub: '読み取った面積は次の画面で修正できます' });
     try {
       const res = await (window as any).api.estimateArea({ imageBase64: mainImage, comment });
       setAreaCheck(res);
       setConfirmArea(res?.quantityM2 ? String(Math.round(res.quantityM2)) : '');
+      endBusy();
     } catch (e: any) {
       // 事前確認に失敗しても見積自体は止めない（上限到達・読み取り失敗など）
+      endBusy({ ok: false });
       console.warn('面積の事前確認をスキップ:', e?.message || e);
       analyze();
     } finally {
@@ -326,7 +348,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     timerRef.current = setInterval(() => {
       elapsedRef.current += 1;
       setElapsed(elapsedRef.current);
+      updateBusy({ sub: analyzeStep(elapsedRef.current) });
     }, 1000);
+    // 画面をスクロールしても残り時間が見えるように、固定POPでも出す
+    startBusy({ key: 'ai-estimate', title: 'AIが見積もりを作成しています', sub: analyzeStep(0), etaSec: ESTIMATE_SEC, note: '完了までこの画面を開いたままにしてください' });
     setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     try {
       const clientAttrs = (clientJob || clientHobby || clientAge || clientPriorities.length > 0)
@@ -344,13 +369,17 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline }
         : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline };
       const res = await (window as any).api.analyzeImage(payload);
+      endBusy();
       setResult(res);
       setReArea(res?.assumedArea || ''); // 「AIが前提にした面積」を修正欄の初期値に
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
 
       // 確認後、物件・施工・請求書・発注書を自動作成
+      // confirm はJSを止めるので、待ち時間POPが「完了」に切り替わって描画されるのを1フレーム待つ
+      await new Promise(r => setTimeout(r, 60));
       if (confirm('見積もり結果から物件・施工・請求書・発注書（下書き）を自動作成しますか？')) {
         setCreating(true);
+        startBusy({ key: 'auto-create', title: '物件・施工・請求書を登録しています', etaSec: AUTOCREATE_SEC, note: '登録が終わるまでこの画面を開いたままにしてください' });
         try {
           const mainImage = mode === 'beforeafter' ? (afterImage || beforeImage) : imageData;
           const created = await (window as any).api.autoCreateFromEstimate({ result: res, imageBase64: mainImage, comment, location, area: areaVal });
@@ -365,7 +394,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               await (window as any).api.createPOFromConstruction(created.constructionId);
             } catch (_) {}
           }
+          endBusy();
         } catch (e: any) {
+          endBusy({ ok: false });
           console.error('auto create error:', e);
         }
         setCreating(false);
@@ -390,11 +421,19 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         }
       } catch (_) {}
     } catch (e: any) {
+      endBusy({ ok: false });
       setError(e.message || 'AI解析に失敗しました');
     }
     clearInterval(timerRef.current);
     setAnalyzing(false);
   };
+
+  useEffect(() => {
+    if (!chatLoading) { setChatElapsed(0); return; }
+    const t0 = Date.now();
+    const id = setInterval(() => setChatElapsed(Math.floor((Date.now() - t0) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [chatLoading]);
 
   const [genElapsed, setGenElapsed] = useState(0);
   const genTimerRef = useRef<any>(null);
@@ -415,6 +454,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setGenElapsed(0);
     genElapsedRef.current = 0;
     genTimerRef.current = setInterval(() => { genElapsedRef.current++; setGenElapsed(genElapsedRef.current); }, 1000);
+    startBusy({ key: 'image-gen', title: '完成イメージを生成しています', etaSec: IMAGE_SEC, sub: '見積もりの内容から仕上がりを描いています' });
     try {
       // 元画像がある場合は編集モード（95%維持）、ない場合は生成モード
       const sourceImg = mode === 'beforeafter' ? (afterImage || beforeImage) : imageData;
@@ -428,6 +468,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           ? { prompt: result.imagePrompt, sourceImage: sourceImg, targetLogId: saveTargetLogId, targetConstructionId: saveTargetConstructionId }
           : { prompt: result.imagePrompt, targetLogId: saveTargetLogId, targetConstructionId: saveTargetConstructionId }
       );
+      endBusy();
       setGeneratedImage(url);
       // 施工写真として自動保存 + estimate_logにも保存
       if (url) {
@@ -463,6 +504,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         } catch (_) {}
       }
     } catch (e: any) {
+      endBusy({ ok: false });
       setError(e.message || '画像生成に失敗しました');
     }
     clearInterval(genTimerRef.current);
@@ -630,6 +672,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <span style={{ animation: 'pulse 1.4s infinite', width: 8, height: 8, borderRadius: '50%', background: '#aaa', display: 'inline-block' }} />
                   <span style={{ animation: 'pulse 1.4s infinite 0.2s', width: 8, height: 8, borderRadius: '50%', background: '#aaa', display: 'inline-block' }} />
                   <span style={{ animation: 'pulse 1.4s infinite 0.4s', width: 8, height: 8, borderRadius: '50%', background: '#aaa', display: 'inline-block' }} />
+                  <span style={{ fontSize: 12, color: '#aaa', marginLeft: 4 }}>
+                    {chatElapsed >= 25 ? `もう少しかかります… ${chatElapsed}秒` : `ふつう10〜30秒で返信します（${chatElapsed}秒）`}
+                  </span>
                 </div>
               </div>
             )}
@@ -1162,6 +1207,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <button className="btn btn-primary" onClick={startEstimate} disabled={analyzing || checkingArea || !canAnalyze} style={{ fontSize: 16, padding: '12px 32px' }}>
               {analyzing ? '🔄 AI が解析中...' : checkingArea ? '📐 面積を読み取り中...' : '🤖 AI で見積もりを解析'}
             </button>
+            {/* 押す前に待ち時間を先出しする */}
+            {!analyzing && !checkingArea && (
+              <span style={{ fontSize: 13, color: '#666', background: '#f1f5f9', padding: '6px 12px', borderRadius: 999, whiteSpace: 'nowrap' }}>
+                ⏱ {etaText('ai-estimate', ESTIMATE_SEC)}
+              </span>
+            )}
             <span style={{ fontSize: 12, color: '#888' }}>
               {mode === 'beforeafter' ? 'ビフォーアフター写真から工事内容を判定します' :
                imageData ? '画像 + コメントからAIが見積もりを自動作成します' : 'コメントだけでもAI見積もりできます（画像は任意）'}
@@ -1185,12 +1236,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           <style>{`@keyframes spin { 0% { transform: rotateY(0deg); } 100% { transform: rotateY(360deg); } }`}</style>
           <div style={{ fontSize: 18, fontWeight: 'bold', color: '#1a2332', marginBottom: 8 }}>AI が見積もりを算出中...</div>
           <div style={{ fontSize: 14, color: '#666', marginBottom: 12 }}>
-            {elapsed < 10 ? '画像を解析しています' :
-             elapsed < 20 ? '建物の種類・規模を特定中' :
-             elapsed < 32 ? '相場データベースと照合中' :
-             elapsed < 44 ? '材料費・人件費を積算中' :
-             elapsed < 56 ? '粗利率・追加提案を計算中' :
-             'もう少しで完了します'}
+            {analyzeStep(elapsed)}
           </div>
           {/* プログレスバー（目安60秒） */}
           <div style={{ width: 300, height: 6, background: '#eee', borderRadius: 3, margin: '0 auto 12px', overflow: 'hidden' }}>
@@ -1294,6 +1340,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               </div>
             </div>
           </div>
+
+          {/* お客様に伝える「工事のお時間」。金額の次に必ず聞かれるので金額内訳より前に出す */}
+          <CustomerSchedule schedule={result.customerSchedule} workType={result.workType} duration={result.estimatedDuration} />
 
           {/* AIが前提にした面積 → その場で直して再計算（全自動が基本、気になる時だけ1箇所直す） */}
           {result.assumedArea && (
@@ -1837,7 +1886,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             {!generatedImage ? (
               <div style={{ textAlign: 'center' }}>
                 <p style={{ color: '#888', marginBottom: 12, fontSize: 13 }}>
-                  AI がこの工事の完成イメージを生成します
+                  AI がこの工事の完成イメージを生成します（⏱ {etaText('image-gen', IMAGE_SEC)}）
                 </p>
                 <button className="btn btn-primary" onClick={generateImage} disabled={generating} style={{ fontSize: 16, padding: '12px 32px' }}>
                   {generating ? `🔄 画像を生成中... ${genElapsed}秒` : '🎨 完成イメージを生成'}
