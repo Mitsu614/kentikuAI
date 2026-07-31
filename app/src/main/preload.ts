@@ -262,6 +262,18 @@ contextBridge.exposeInMainWorld('api', {
   join: (data: any) => ipcRenderer.invoke('auth:join', data),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
+  // 外出先アクセスの準備状況（初回のcloudflaredダウンロード等）を受け取る
+  onTunnelProgress: (cb: (text: string) => void) => {
+    const h = (_e: any, text: string) => cb(text);
+    ipcRenderer.on('tunnel:progress', h);
+    return () => ipcRenderer.removeListener('tunnel:progress', h);
+  },
+  // 張り直しでURLが変わったときに、設定画面の表示を差し替えるため
+  onTunnelUrl: (cb: (info: { url: string; provider: string }) => void) => {
+    const h = (_e: any, info: any) => cb(info);
+    ipcRenderer.on('tunnel:url', h);
+    return () => ipcRenderer.removeListener('tunnel:url', h);
+  },
   runUpdateInstaller: () => ipcRenderer.invoke('update:runInstaller'),
   openUpdateFolder: () => ipcRenderer.invoke('update:openFolder'),
 

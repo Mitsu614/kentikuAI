@@ -1994,24 +1994,147 @@ app.whenReady().then(async () => {
       return r.status === 200;
     } catch (_) { return false; }
   }
-  async function openTunnel(): Promise<any> {
-    const localtunnel = require('localtunnel');
-    let tunnel: any = null;
-    // 1) まず固定サブドメインで取得（毎回同じURL）。ただし取得できても loca.lt 側の停滞で
-    //    503になることがあるので、配信できているか検証する。
+  // ── Cloudflare Tunnel（本命）──
+  // loca.lt は初回アクセスで「Click to Continue」の確認画面が挟まり、しかもトンネルパスワード
+  // （PC側のグローバルIP）を聞かれることがある。お客様に説明できないので Cloudflare に寄せる。
+  // trycloudflare のクイックトンネルはアカウント不要・確認画面なし・切断がほぼ無い。
+  const CLOUDFLARED_URL = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe';
+  const cloudflaredPath = () => path.join(app.getPath('userData'), 'cloudflared.exe');
+  let tunnelProvider: 'cloudflare' | 'localtunnel' | null = null;
+  let cfChild: any = null;
+
+  function pushTunnelProgress(text: string) {
+    try { mainWindow?.webContents.send('tunnel:progress', text); } catch (_) {}
+  }
+
+  /**
+   * cloudflared 本体を用意する。初回だけ公式配布から取得して userData に置く（約52MB）。
+   * allowDownload=false のときは既にある場合だけ返す。起動直後の自動接続で、
+   * お客様が頼んでもいない52MBのダウンロードを黙って始めないため。
+   */
+  async function ensureCloudflared(allowDownload: boolean): Promise<string | null> {
+    const dest = cloudflaredPath();
     try {
-      tunnel = await localtunnel({ port: 3456, subdomain: TUNNEL_SUBDOMAIN });
-      if (!(await verifyTunnel(tunnel.url))) {
-        console.log(`固定サブドメイン(${TUNNEL_SUBDOMAIN})が503停滞 → ランダムに切替`);
-        try { tunnel.close(); } catch (_) {}
-        tunnel = null;
+      // 途中で切れた不完全なファイルを掴まないよう、サイズも見る
+      if (fs.existsSync(dest) && fs.statSync(dest).size > 10 * 1024 * 1024) return dest;
+    } catch (_) {}
+    if (!allowDownload) return null;
+    const tmp = dest + '.part';
+    try {
+      pushTunnelProgress('外出先アクセスの準備をしています（初回のみ）...');
+      let lastPush = 0;
+      await downloadToFile(CLOUDFLARED_URL, tmp, (received, total) => {
+        const now = Date.now();
+        if (now - lastPush < 500) return;
+        lastPush = now;
+        const pct = total > 0 ? Math.floor((received / total) * 100) : 0;
+        pushTunnelProgress(`外出先アクセスの準備中（初回のみ）… ${mbOf(received)} / ${total > 0 ? mbOf(total) : '—'} MB（${pct}%）`);
+      });
+      try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch (_) {}
+      fs.renameSync(tmp, dest);
+      pushTunnelProgress('準備ができました。接続しています...');
+      return dest;
+    } catch (e: any) {
+      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) {}
+      console.log('cloudflared の取得に失敗:', e?.message || e);
+      return null;
+    }
+  }
+
+  /**
+   * cloudflared を起動し、発行された https://xxxx.trycloudflare.com を拾って返す。
+   * localtunnel と同じ形（url / close() / on()）に包むので、既存の監視・再接続がそのまま使える。
+   */
+  function openCloudflareTunnel(exe: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const { spawn } = require('child_process');
+      const child = spawn(exe, ['tunnel', '--no-autoupdate', '--url', `http://localhost:3456`], { windowsHide: true });
+      cfChild = child;
+      const handlers: Record<string, Function[]> = {};
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { child.kill(); } catch (_) {}
+        reject(new Error('cloudflared がURLを返しませんでした'));
+      }, 60000);
+      const scan = (buf: any) => {
+        // cloudflared は進捗をstderrに出す。URLはどちらに来ても拾えるようにする
+        const m = String(buf).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i);
+        if (!m || settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({
+          url: m[0],
+          close: () => { try { child.kill(); } catch (_) {} },
+          on: (ev: string, cb: Function) => { (handlers[ev] = handlers[ev] || []).push(cb); },
+        });
+      };
+      child.stdout?.on('data', scan);
+      child.stderr?.on('data', scan);
+      child.on('error', (e: any) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); reject(e);
+      });
+      child.on('exit', () => {
+        if (cfChild === child) cfChild = null;
+        if (!settled) { settled = true; clearTimeout(timer); reject(new Error('cloudflared が終了しました')); return; }
+        (handlers['close'] || []).forEach(cb => { try { cb(); } catch (_) {} });
+      });
+    });
+  }
+
+  // 発行直後の trycloudflare は DNS が回るまで数秒かかり、すぐ叩くと名前解決に失敗する（実測）。
+  // 1回で見限ると毎回 localtunnel に落ちてしまうので、間隔を空けて数回試す。
+  async function verifyTunnelWithRetry(url: string, tries = 6, waitMs = 4000): Promise<boolean> {
+    for (let i = 0; i < tries; i++) {
+      if (await verifyTunnel(url)) return true;
+      pushTunnelProgress(`接続を確認しています…（${i + 1}/${tries}）`);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+    return false;
+  }
+
+  async function openTunnel(allowDownload = false): Promise<any> {
+    let tunnel: any = null;
+    // 1) 本命: Cloudflare Tunnel
+    try {
+      const exe = await ensureCloudflared(allowDownload);
+      if (exe) {
+        tunnel = await openCloudflareTunnel(exe);
+        if (await verifyTunnelWithRetry(tunnel.url)) {
+          tunnelProvider = 'cloudflare';
+        } else {
+          console.log('Cloudflare トンネルが応答しない → localtunnel にフォールバック');
+          try { tunnel.close(); } catch (_) {}
+          tunnel = null;
+        }
       }
-    } catch (_) { tunnel = null; }
-    // 2) 固定がダメならランダムサブドメインで取り直す（配信優先）
+    } catch (e: any) {
+      console.log('Cloudflare トンネル起動に失敗:', e?.message || e);
+      tunnel = null;
+    }
+
+    // 2) 予備: 従来の localtunnel（Cloudflareが落ちている・社内で塞がれている場合の逃げ道）
     if (!tunnel) {
-      tunnel = await localtunnel({ port: 3456 });
+      const localtunnel = require('localtunnel');
+      // 固定サブドメインで取得（毎回同じURL）。取得できても loca.lt 側の停滞で503になることが
+      // あるので、配信できているか検証する。
+      try {
+        tunnel = await localtunnel({ port: 3456, subdomain: TUNNEL_SUBDOMAIN });
+        if (!(await verifyTunnel(tunnel.url))) {
+          console.log(`固定サブドメイン(${TUNNEL_SUBDOMAIN})が503停滞 → ランダムに切替`);
+          try { tunnel.close(); } catch (_) {}
+          tunnel = null;
+        }
+      } catch (_) { tunnel = null; }
+      if (!tunnel) tunnel = await localtunnel({ port: 3456 });
+      tunnelProvider = 'localtunnel';
     }
     activeTunnel = tunnel;
+    // 監視から張り直したときURLが変わる。設定画面が古いURLを表示したままだと、
+    // お客様が死んだリンクを職人さんに配ってしまうので、その場で差し替える。
+    try { mainWindow?.webContents.send('tunnel:url', { url: tunnel.url, provider: tunnelProvider }); } catch (_) {}
     tunnelStopped = false;
     // 切断時の自動再接続（localtunnelの503対策）
     tunnel.on('close', () => { activeTunnel = null; scheduleReconnect(); });
@@ -3320,19 +3443,30 @@ app.whenReady().then(async () => {
 
   // ── 外部公開トンネル ──
   ipcMain.handle('tunnel:start', async () => {
-    if (activeTunnel) return activeTunnel.url;
-    const tunnel = await openTunnel();
+    // 起動直後の自動接続が localtunnel で張られている場合は、ここで Cloudflare に張り替える
+    if (activeTunnel && tunnelProvider === 'cloudflare') return activeTunnel.url;
+    if (activeTunnel) { try { activeTunnel.close(); } catch (_) {} activeTunnel = null; }
+    // ボタンを押したときだけ cloudflared のダウンロードを許可する
+    const tunnel = await openTunnel(true);
     return tunnel.url;
   });
+
+  // アプリ終了時に cloudflared を残さない（ゾンビが3456を掴んで次回起動が壊れるのを防ぐ）
+  app.on('before-quit', () => { if (cfChild) { try { cfChild.kill(); } catch (_) {} cfChild = null; } });
 
   ipcMain.handle('tunnel:stop', async () => {
     tunnelStopped = true;
     if (tunnelReconnectTimer) { clearTimeout(tunnelReconnectTimer); tunnelReconnectTimer = null; }
     if (activeTunnel) { activeTunnel.close(); activeTunnel = null; }
+    // cloudflared は子プロセスなので、確実に終わらせる（閉じ忘れで公開しっぱなしを防ぐ）
+    if (cfChild) { try { cfChild.kill(); } catch (_) {} cfChild = null; }
+    tunnelProvider = null;
   });
 
   ipcMain.handle('tunnel:status', () => {
-    return activeTunnel ? { active: true, url: activeTunnel.url } : { active: false, url: null };
+    return activeTunnel
+      ? { active: true, url: activeTunnel.url, provider: tunnelProvider }
+      : { active: false, url: null, provider: null };
   });
 
   // ── クレジット（AIストック）管理 ──

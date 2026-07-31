@@ -63,6 +63,9 @@ export default function SettingsPage() {
   const [dbMsg, setDbMsg] = useState('');
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [tunnelLoading, setTunnelLoading] = useState(false);
+  const [tunnelProvider, setTunnelProvider] = useState<string | null>(null);
+  // 初回はcloudflaredの取得に時間がかかるので、何をしているか出す
+  const [tunnelProgress, setTunnelProgress] = useState('');
   const [localIp, setLocalIp] = useState<string>('');
 
   useEffect(() => {
@@ -72,11 +75,19 @@ export default function SettingsPage() {
     });
     // トンネル状態確認
     (window as any).api.tunnelStatus?.().then((s: any) => {
-      if (s?.active) setTunnelUrl(s.url);
+      if (s?.active) { setTunnelUrl(s.url); setTunnelProvider(s.provider || null); }
     }).catch(() => {});
     (window as any).api.getLocalIp?.().then((ip: string) => {
       if (ip) setLocalIp(ip);
     }).catch(() => {});
+    const off = (window as any).api.onTunnelProgress?.((t: string) => setTunnelProgress(t));
+    const offUrl = (window as any).api.onTunnelUrl?.((info: any) => {
+      if (info?.url) { setTunnelUrl(info.url); setTunnelProvider(info.provider || null); }
+    });
+    return () => {
+      if (typeof off === 'function') off();
+      if (typeof offUrl === 'function') offUrl();
+    };
   }, []);
 
   // ← PlanManagement component is rendered below
@@ -123,14 +134,20 @@ export default function SettingsPage() {
     if (tunnelUrl) {
       await (window as any).api.stopTunnel();
       setTunnelUrl(null);
+      setTunnelProvider(null);
+      setTunnelProgress('');
     } else {
       setTunnelLoading(true);
+      setTunnelProgress('');
       try {
         const url = await (window as any).api.startTunnel();
         setTunnelUrl(url);
+        const s = await (window as any).api.tunnelStatus?.();
+        setTunnelProvider(s?.provider || null);
       } catch (e: any) {
-        alert('トンネル接続に失敗しました: ' + (e.message || e));
+        alert('外出先アクセスの接続に失敗しました: ' + (e.message || e));
       }
+      setTunnelProgress('');
       setTunnelLoading(false);
     }
   };
@@ -357,8 +374,8 @@ export default function SettingsPage() {
       <div className="card" style={{ border: '2px solid #e67e22', background: tunnelUrl ? '#fffbf0' : '#fff' }}>
         <h3 style={{ marginBottom: 12 }}>🌐 外出先からアクセス</h3>
         <p style={{ color: '#666', fontSize: 13, marginBottom: 16 }}>
-          ONにすると、外出先のスマホやPCからインターネット経由でこのアプリにアクセスできます。<br/>
-          現場で写真を撮ってそのままAI見積もりに送れます。
+          ONにすると、<strong>別のWi-Fiやスマホのモバイル回線からでも</strong>このアプリを開けます。<br/>
+          現場で写真を撮ってそのままAI見積もりに送れます。パソコンの電源が入っていて、建築ブーストが起動している間だけつながります。
         </p>
 
         <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
@@ -371,6 +388,11 @@ export default function SettingsPage() {
             >
               {tunnelLoading ? '⏳ 接続中...' : tunnelUrl ? '🔴 外部公開を停止' : '🌐 外部公開を開始'}
             </button>
+
+            {/* 初回は cloudflared（約70MB）の取得があるので、黙って待たせない */}
+            {tunnelLoading && tunnelProgress && (
+              <div style={{ marginTop: 10, fontSize: 12, color: '#e67e22' }}>{tunnelProgress}</div>
+            )}
 
             {tunnelUrl && (
               <div style={{ marginTop: 16 }}>
@@ -386,7 +408,9 @@ export default function SettingsPage() {
                   <span style={{ fontSize: 11, fontWeight: 'normal', marginLeft: 8, color: '#888' }}>（クリックでコピー）</span>
                 </div>
                 <div style={{ marginTop: 8, fontSize: 12, color: '#888' }}>
-                  ※ 初回アクセス時に確認画面が出る場合は「Click to Continue」を押してください
+                  {tunnelProvider === 'cloudflare'
+                    ? '開くとログイン画面が出ます。アプリと同じユーザー名・パスワードでお使いください。'
+                    : '※ 予備の回線につながっています。初回アクセス時に確認画面が出たら「Click to Continue」を押してください'}
                 </div>
               </div>
             )}
