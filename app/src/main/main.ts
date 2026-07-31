@@ -30,7 +30,7 @@ function decryptTrialKey(encoded: string): string {
 }
 
 // ── API キー暗号化 ──
-const SENSITIVE_FIELDS = ['anthropicKey', 'openaiKey', 'serverPassword', 'licenseToken', 'adminSecret', 'reinfolibApiKey'];
+const SENSITIVE_FIELDS = ['anthropicKey', 'openaiKey', 'serverPassword', 'licenseToken', 'adminSecret', 'reinfolibApiKey', 'genbaToken'];
 // オブジェクトのまま持つ機密（JSON化してから暗号化する）。
 // webSessions は30日有効なスマホ用セッショントークンなので平文で置かない。
 const SENSITIVE_JSON_FIELDS = ['webSessions'];
@@ -2084,6 +2084,51 @@ app.whenReady().then(async () => {
     });
   }
 
+  // ── 現場リンク（会社ごとに変わらない入口）──
+  // トンネルURLは接続のたびに変わるので、そのままでは職人さんに毎回URLを送り直すことになる。
+  // 変わらないURLを1本用意し、その転送先をここから更新する。
+  const GENBA_BASE = 'https://nakanokoumuten.com/genba';
+
+  /** この端末が現場リンクの持ち主であることを示す token（初回に作って端末内に保存） */
+  function genbaToken(): string {
+    const cfg = loadApiConfig();
+    if (cfg.genbaToken && /^[a-f0-9]{32,64}$/i.test(cfg.genbaToken)) return cfg.genbaToken;
+    const t = crypto.randomBytes(24).toString('hex');
+    saveApiConfig({ ...cfg, genbaToken: t });
+    return t;
+  }
+
+  /** 現場リンクのID。未設定なら端末固有の短いIDを自動で作る（お客様は設定画面で変更できる） */
+  function genbaId(): string {
+    const cfg = loadApiConfig();
+    const set = String(cfg.genbaLinkId || '').trim().toLowerCase();
+    if (/^[a-z0-9-]{2,32}$/.test(set)) return set;
+    return TUNNEL_SUBDOMAIN;   // kb + hostname/username のハッシュ12桁
+  }
+
+  function genbaUrl(): string { return `${GENBA_BASE}/${genbaId()}`; }
+
+  async function registerGenbaLink(tunnelUrl: string) {
+    try {
+      const res = await fetch(`${GENBA_BASE}/update.php`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: genbaId(), url: tunnelUrl, token: genbaToken() }),
+      });
+      const j: any = await res.json().catch(() => null);
+      if (j?.ok) {
+        console.log(`現場リンク更新: ${genbaUrl()} → ${tunnelUrl}`);
+        try { mainWindow?.webContents.send('tunnel:genba', { url: genbaUrl(), ok: true }); } catch (_) {}
+      } else {
+        console.log('現場リンクの更新に失敗:', j?.error || res.status);
+        try { mainWindow?.webContents.send('tunnel:genba', { url: genbaUrl(), ok: false, error: j?.error || `HTTP ${res.status}` }); } catch (_) {}
+      }
+    } catch (e: any) {
+      // 現場リンクが使えなくてもトンネル自体は使えるので、ここで失敗しても止めない
+      console.log('現場リンクの更新に失敗:', e?.message || e);
+    }
+  }
+
   // 発行直後の trycloudflare は DNS が回るまで数秒かかり、すぐ叩くと名前解決に失敗する（実測）。
   // 1回で見限ると毎回 localtunnel に落ちてしまうので、間隔を空けて数回試す。
   async function verifyTunnelWithRetry(url: string, tries = 6, waitMs = 4000): Promise<boolean> {
@@ -2135,6 +2180,8 @@ app.whenReady().then(async () => {
     // 監視から張り直したときURLが変わる。設定画面が古いURLを表示したままだと、
     // お客様が死んだリンクを職人さんに配ってしまうので、その場で差し替える。
     try { mainWindow?.webContents.send('tunnel:url', { url: tunnel.url, provider: tunnelProvider }); } catch (_) {}
+    // 現場リンク（会社ごとに変わらない入口）の転送先を更新する
+    registerGenbaLink(tunnel.url);
     tunnelStopped = false;
     // 切断時の自動再接続（localtunnelの503対策）
     tunnel.on('close', () => { activeTunnel = null; scheduleReconnect(); });
@@ -3465,8 +3512,21 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('tunnel:status', () => {
     return activeTunnel
-      ? { active: true, url: activeTunnel.url, provider: tunnelProvider }
-      : { active: false, url: null, provider: null };
+      ? { active: true, url: activeTunnel.url, provider: tunnelProvider, genbaUrl: genbaUrl(), genbaId: genbaId() }
+      : { active: false, url: null, provider: null, genbaUrl: genbaUrl(), genbaId: genbaId() };
+  });
+
+  // 現場リンクのIDを変更する（例: kb3f2a… → nakano）。変更後は次の接続から新しいURLになる
+  ipcMain.handle('tunnel:setGenbaId', async (_e, id: string) => {
+    const v = String(id || '').trim().toLowerCase();
+    if (v && !/^[a-z0-9-]{2,32}$/.test(v)) {
+      return { ok: false, error: 'IDは半角の英数字とハイフンで2〜32文字にしてください' };
+    }
+    const cfg = loadApiConfig();
+    saveApiConfig({ ...cfg, genbaLinkId: v });
+    // すでにつながっているなら、その場で新しいIDに登録し直す
+    if (activeTunnel) await registerGenbaLink(activeTunnel.url);
+    return { ok: true, genbaUrl: genbaUrl(), genbaId: genbaId() };
   });
 
   // ── クレジット（AIストック）管理 ──

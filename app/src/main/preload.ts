@@ -274,6 +274,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('tunnel:url', h);
     return () => ipcRenderer.removeListener('tunnel:url', h);
   },
+  setGenbaId: (id: string) => ipcRenderer.invoke('tunnel:setGenbaId', id),
+  onGenbaStatus: (cb: (info: { url: string; ok: boolean; error?: string }) => void) => {
+    const h = (_e: any, info: any) => cb(info);
+    ipcRenderer.on('tunnel:genba', h);
+    return () => ipcRenderer.removeListener('tunnel:genba', h);
+  },
   runUpdateInstaller: () => ipcRenderer.invoke('update:runInstaller'),
   openUpdateFolder: () => ipcRenderer.invoke('update:openFolder'),
 

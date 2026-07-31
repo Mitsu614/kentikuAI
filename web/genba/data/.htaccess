@@ -1,0 +1,2 @@
+# token を含むため、Webからは一切読ませない（.htaccess が効かない環境への保険）
+Require all denied

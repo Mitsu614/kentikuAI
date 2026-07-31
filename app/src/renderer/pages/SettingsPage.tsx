@@ -64,6 +64,11 @@ export default function SettingsPage() {
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [tunnelLoading, setTunnelLoading] = useState(false);
   const [tunnelProvider, setTunnelProvider] = useState<string | null>(null);
+  // 現場リンク（会社ごとに変わらない入口）。職人さんはこれをブックマークする
+  const [genbaUrl, setGenbaUrl] = useState('');
+  const [genbaId, setGenbaId] = useState('');
+  const [genbaIdInput, setGenbaIdInput] = useState('');
+  const [genbaMsg, setGenbaMsg] = useState('');
   // 初回はcloudflaredの取得に時間がかかるので、何をしているか出す
   const [tunnelProgress, setTunnelProgress] = useState('');
   const [localIp, setLocalIp] = useState<string>('');
@@ -76,6 +81,7 @@ export default function SettingsPage() {
     // トンネル状態確認
     (window as any).api.tunnelStatus?.().then((s: any) => {
       if (s?.active) { setTunnelUrl(s.url); setTunnelProvider(s.provider || null); }
+      if (s?.genbaUrl) { setGenbaUrl(s.genbaUrl); setGenbaId(s.genbaId || ''); setGenbaIdInput(s.genbaId || ''); }
     }).catch(() => {});
     (window as any).api.getLocalIp?.().then((ip: string) => {
       if (ip) setLocalIp(ip);
@@ -84,11 +90,27 @@ export default function SettingsPage() {
     const offUrl = (window as any).api.onTunnelUrl?.((info: any) => {
       if (info?.url) { setTunnelUrl(info.url); setTunnelProvider(info.provider || null); }
     });
+    const offGenba = (window as any).api.onGenbaStatus?.((info: any) => {
+      if (info?.url) setGenbaUrl(info.url);
+      setGenbaMsg(info?.ok ? '' : `現場リンクの更新に失敗しました（${info?.error || '不明'}）`);
+    });
     return () => {
       if (typeof off === 'function') off();
       if (typeof offUrl === 'function') offUrl();
+      if (typeof offGenba === 'function') offGenba();
     };
   }, []);
+
+  const saveGenbaId = async () => {
+    const r = await (window as any).api.setGenbaId?.(genbaIdInput);
+    if (r?.ok) {
+      setGenbaUrl(r.genbaUrl); setGenbaId(r.genbaId); setGenbaIdInput(r.genbaId);
+      setGenbaMsg('現場リンクを変更しました');
+      setTimeout(() => setGenbaMsg(''), 3000);
+    } else {
+      setGenbaMsg(r?.error || '変更できませんでした');
+    }
+  };
 
   // ← PlanManagement component is rendered below
 
@@ -421,6 +443,45 @@ export default function SettingsPage() {
               <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>QRコードで即アクセス</div>
               <img src={qrUrl} alt="QR" style={{ width: 160, height: 160, borderRadius: 8, border: '1px solid #ddd' }} />
               <div style={{ fontSize: 11, color: '#aaa', marginTop: 4 }}>スマホのカメラで読み取り</div>
+            </div>
+          )}
+        </div>
+
+        {/* 現場リンク＝会社ごとに変わらない入口。職人さんに配るのはこちら */}
+        <div style={{ marginTop: 16, background: '#f0fdf4', border: '2px solid #86efac', borderRadius: 10, padding: '14px 16px' }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#15803d', marginBottom: 6 }}>
+            📌 現場リンク（職人さんに渡すのはこちら）
+          </div>
+          <p style={{ fontSize: 12, color: '#555', marginBottom: 10, lineHeight: 1.7 }}>
+            上のURLは接続のたびに変わりますが、<strong>こちらは一度決めたら変わりません</strong>。
+            職人さんはこのアドレスをスマホでお気に入り登録しておけば、毎回URLを送り直す必要がなくなります。
+          </p>
+          <div
+            style={{
+              background: '#fff', border: '2px solid #22c55e', borderRadius: 8, padding: '10px 16px',
+              fontSize: 16, fontWeight: 'bold', color: '#15803d', wordBreak: 'break-all', cursor: 'pointer',
+            }}
+            onClick={() => { navigator.clipboard.writeText(genbaUrl); alert('現場リンクをコピーしました'); }}
+          >
+            {genbaUrl || '—'}
+            <span style={{ fontSize: 11, fontWeight: 'normal', marginLeft: 8, color: '#888' }}>（クリックでコピー）</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: '#555' }}>リンクの名前:</span>
+            <input
+              type="text"
+              value={genbaIdInput}
+              onChange={e => setGenbaIdInput(e.target.value)}
+              placeholder="例: nakano"
+              style={{ padding: '6px 10px', border: '1px solid #ccc', borderRadius: 6, fontSize: 14, width: 180 }}
+            />
+            <button className="btn btn-secondary btn-sm" onClick={saveGenbaId} disabled={genbaIdInput === genbaId}>変更</button>
+            <span style={{ fontSize: 11, color: '#888' }}>半角の英数字（会社名のローマ字など）</span>
+          </div>
+          {genbaMsg && <div style={{ fontSize: 12, color: genbaMsg.includes('失敗') || genbaMsg.includes('できません') ? '#c0392b' : '#15803d', marginTop: 6 }}>{genbaMsg}</div>}
+          {!tunnelUrl && (
+            <div style={{ fontSize: 11, color: '#888', marginTop: 8 }}>
+              ※ 「外部公開を開始」がONの間だけつながります。OFFのときにこのリンクを開くと「いまは接続できません」と表示されます。
             </div>
           )}
         </div>
