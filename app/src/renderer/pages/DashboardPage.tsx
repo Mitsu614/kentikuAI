@@ -39,8 +39,17 @@ export default function DashboardPage({ onNavigate, onNavigateToInvoice }: { onN
     });
     setSummary(sum);
     setInvoices(inv);
-    setAllConstructions(constructions);
-    setRecentConstructions(constructions.slice(0, 5));
+    // ★新しい工事が上に来るように、画面側でも並べ直す。
+    //   取得元の並びに依存させない（表示順は画面の責任として固定する）。
+    //   工事日の降順 → 同じ日付なら登録の新しい順（id降順）。
+    const byNewest = [...constructions].sort((a: any, b: any) => {
+      const da = String(a.construction_date || '');
+      const db = String(b.construction_date || '');
+      if (da !== db) return db.localeCompare(da);   // 日付が違えば新しい日付が上
+      return (Number(b.id) || 0) - (Number(a.id) || 0);   // 同じ日付なら後から登録したものが上
+    });
+    setAllConstructions(byNewest);
+    setRecentConstructions(byNewest.slice(0, 5));
     try {
       const os = await (window as any).api.getOutcomeStats?.();
       if (os) setOutcomeStats(os);

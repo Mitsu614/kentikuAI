@@ -820,6 +820,23 @@ function migrate() {
     if (!elCols2.find((c: any) => c.name === 'structure')) {
       db.run('ALTER TABLE estimate_log ADD COLUMN structure TEXT');
     }
+    // 人が直した原価・売価（2026-08-23）。AIが出した値(ai_*)は原本として残し、
+    // 人の修正はこちらに持つ。こうしておくと「元に戻す」でAIの原案へいつでも戻せる。
+    if (!elCols2.find((c: any) => c.name === 'edited_material_cost')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN edited_material_cost REAL');
+    }
+    if (!elCols2.find((c: any) => c.name === 'edited_labor_cost')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN edited_labor_cost REAL');
+    }
+    if (!elCols2.find((c: any) => c.name === 'edited_expense_cost')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN edited_expense_cost REAL');
+    }
+    if (!elCols2.find((c: any) => c.name === 'edited_total')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN edited_total REAL');
+    }
+    if (!elCols2.find((c: any) => c.name === 'edited_at')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN edited_at TEXT');
+    }
   } catch (_) {}
   // マイナス単価の「諸経費」を「値引き」にリネーム
   try {

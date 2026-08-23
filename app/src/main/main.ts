@@ -343,8 +343,10 @@ async function sendStatsToSupabase() {
       WHERE synced_at IS NULL
       -- 隔離学習: 隔離テナントの行は work_type に関わらず全除外（AND→OR）。
       -- 併せて工種名が遮熱/特許の行も除外。リアルタイム側 shouldIsolateLearning と同一基準。
+      -- ★industry_type='heatshield' も除外する。isolated_learning の付け忘れテナントの
+      --   OCR取込(work_type=書類タイトル＝会社名込みで遮熱を含まない)が素通りするのを塞ぐ。
       AND NOT (
-        tenant_id IN (SELECT id FROM tenants WHERE isolated_learning = 1)
+        tenant_id IN (SELECT id FROM tenants WHERE isolated_learning = 1 OR industry_type = 'heatshield')
         OR work_type LIKE '%遮熱%' OR work_type LIKE '%特許%'
       )
       AND (
@@ -572,8 +574,13 @@ function getTenantProfile(tid: number): { industryType: string | null; isolated:
 // ※ work_type 文字列だけで判定していた頃は、隔離テナント(山下さん)でも図面タイトルが
 //   「工場屋根」等で遮熱を含まないと匿名データが共有プールに漏れ、遮熱の特殊価格帯が
 //   全国係数を汚染しうる穴があった。テナントの隔離フラグを一次判定にして塞ぐ。
+// ★さらに industry_type='heatshield' も無条件で隔離する。isolated_learning の付け忘れが
+//   そのまま流出になるのを防ぐため（database.ts の山下さん自動判定は industry_type が空の
+//   ときしか発火しないので、業種だけ手動設定されたテナントはフラグが立たない）。
+//   見積アンカー側(analyzeImageCore)は既に heatshield を見ており、そちらと基準を揃える。
 function shouldIsolateLearning(tid: number, workType?: string): boolean {
-  return getTenantProfile(tid).isolated || isHeatshieldWork(workType);
+  const p = getTenantProfile(tid);
+  return p.isolated || p.industryType === 'heatshield' || isHeatshieldWork(workType);
 }
 
 export interface ClientAttrs { job?: string; hobby?: string; age?: string; priorities?: string[] }
@@ -918,6 +925,36 @@ function pinHeatshieldScalePrices(result: any, context: string): string[] {
   return [`スカイ工法を4費目（材工共＋安全＋足場＋諸経費）で確定・税抜¥${rounded.toLocaleString()}${canRound ? '（10万円単位で端数調整、材工共に吸収）' : ''}`];
 }
 
+// ── ストリーミング中の「いま何を書いているか」を日本語にする ──
+// 出てきたJSONのどこまで書けたかで判定する。秒数から推測する固定メッセージと違い、
+// 実際に進んだぶんだけ進むので、待ち時間の体感が変わる。
+function describeEstimateProgress(acc: string): { stage: string; items: number } {
+  const items = (acc.match(/"item"\s*:/g) || []).length;
+  let stage = '相場データベースと照合しています';
+  if (acc.includes('"workType"')) stage = '工事の種類・規模を判定しました';
+  if (acc.includes('"manDaysBreakdown"')) stage = '職人の人工（何人×何日）を積算中';
+  if (acc.includes('"breakdown"')) stage = items > 0 ? `内訳を積算中… ${items}項目` : '内訳の積算に入りました';
+  if (acc.includes('"customerSchedule"')) stage = 'お客様向けの工事時間・生活への影響をまとめ中';
+  if (acc.includes('"gradeOptions"')) stage = '松竹梅プランを作成中';
+  if (acc.includes('"recommendations"')) stage = '追加提案をまとめています（もうすぐ完了）';
+  if (acc.includes('"imagePrompt"')) stage = '仕上げ中（もうすぐ完了）';
+  return { stage, items };
+}
+
+// ── 金額を持たない内訳行を落とす（出力が途中で切れたときの後始末）──
+// 出力が max_tokens で切れると、最後の行が {"item":"…","category":"材料" のように金額を持たないまま
+// parseLenientJson の括弧補完で生き残る。それを内訳に混ぜると「単価0円・金額0円」の行として
+// 画面にも見積書にも出てしまう（2026-08-23に実際に発生）。金額の無い行は見積の行として
+// 成立していないので落とし、何行落としたかを返して必ず画面に警告を出す。
+function dropPricelessBreakdownRows(result: any): number {
+  if (!result || !Array.isArray(result.breakdown)) return 0;
+  const before = result.breakdown.length;
+  result.breakdown = result.breakdown.filter((b: any) => Number(b?.cost) > 0);
+  const dropped = before - result.breakdown.length;
+  if (dropped > 0) console.warn(`[analyze] 金額の無い内訳 ${dropped} 行を除外（出力が切れた可能性）`);
+  return dropped;
+}
+
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
   // 「こちらに変更する」候補は毎回作り直す（補正を当てて積み直すと、解消した警告は再出しない）
@@ -1210,6 +1247,53 @@ function getOcrFilesDir(dbFilePath: string) {
   const dir = path.join(path.dirname(dbFilePath), 'ocr_files');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+// ── 図面拾い出しの結果を、見積プロンプトに載せる形へ整形する ──
+// 拾い出しは「図面の寸法から計算式つきで出た数量」なので、AIの目測推定より必ず強い。
+// ただしユーザーが現場で測った実測値(area)には勝たせない（順序: 実測値 > 図面拾い出し > 推定）。
+function formatTakeoffForPrompt(takeoff: any): string {
+  if (!takeoff || !Array.isArray(takeoff.items) || takeoff.items.length === 0) return '';
+  const lines = takeoff.items.map((it: any, i: number) => {
+    const q = Number(it.quantityWithLoss) || Number(it.quantity) || 0;
+    const loss = Number(it.lossRate) || 0;
+    return `${i + 1}. [${it.part || '—'}] ${it.name || '（名称なし）'} … ${q}${it.unit || ''}`
+      + `（式: ${it.formula || '—'}${loss > 0 ? ` / ロス${Math.round(loss * 100)}%込` : ''}`
+      + `${it.deduction ? ` / ${it.deduction}` : ''} / 出典: ${it.source || '—'} / 確度: ${it.confidence || '—'}）`;
+  }).join('\n');
+  const b = takeoff.building || {};
+  const head = [
+    takeoff.scale ? `縮尺: ${takeoff.scale}（${takeoff.scaleSource || '根拠不明'}）` : '',
+    (takeoff.drawingTypes || []).length ? `図面種別: ${(takeoff.drawingTypes || []).join('・')}` : '',
+    b.structure ? `構造: ${b.structure}` : '',
+    b.floors ? `階数: ${b.floors}` : '',
+    b.totalFloorAreaM2 ? `延床: ${b.totalFloorAreaM2}㎡` : '',
+  ].filter(Boolean).join(' / ');
+  const unreadable = (takeoff.unreadable || []).length
+    ? '\n【図面から拾えなかったもの（勝手に数量を作るな。必要なら前提を明記して概算し、recommendationsで追加資料を求めろ）】\n- '
+      + (takeoff.unreadable || []).join('\n- ')
+    : '';
+  const warn = (takeoff.warnings || []).length
+    ? '\n【図面上の注意】\n- ' + (takeoff.warnings || []).join('\n- ')
+    : '';
+  return `## ★図面からの拾い出し数量（確定値・最優先で使え）★
+${head}
+${lines}${unreadable}${warn}
+
+★重要（違反禁止）★
+- 上の数量は図面の寸法から計算式つきで拾った確定値だ。**写真・航空写真・目測からの推定で上書きするな**。
+- breakdown の各行は、対応する拾い出し行があるなら **quantity / unit をそのまま使い**、note に計算式をそのまま引き写せ。
+- そのうえで各行に "takeoffRef" として、対応する拾い出し行の name を必ず入れろ（対応が無い行は null）。
+- 拾い出しに無い工種（仮設・運搬・諸経費・管理費など）は通常どおり積算してよい。その行の takeoffRef は null にしろ。
+- 拾い出し数量と矛盾する金額を出すな（例: 屋根452㎡と拾えているのに、材料費が100㎡相当しか無い、等）。
+`;
+}
+
+// ── 図面拾い出し（takeoff）のログ表。旧バージョンから上げた端末にも必ず作る ──
+function ensureTakeoffTable() {
+  runSql(`CREATE TABLE IF NOT EXISTS takeoff_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id INTEGER, title TEXT, drawing_types TEXT,
+    scale TEXT, item_count INTEGER, takeoff_json TEXT, file_paths TEXT, comment TEXT, created_at TEXT)`, []);
 }
 
 // ── 見積画像をディスク保存し、DBには軽いサムネ＋ファイルパスだけ持たせる（もっさり対策）──
@@ -2335,9 +2419,19 @@ app.whenReady().then(async () => {
   //   ai_labor_cost=0になる山下さん(遮熱)も、同じ計算で正しく出る。
   //   手動作成の工事は従来どおり materials 合計(=原価入力)＋labor_cost で算出。
   function computeConstructionEconomics(c: any): { matCost: number; laborCost: number; expenseCost: number; cost: number; selling: number; profit: number } {
-    const est = queryOne('SELECT ai_material_cost, ai_labor_cost, ai_total, ai_json FROM estimate_log WHERE construction_id = ? ORDER BY id DESC LIMIT 1', [c.id]);
+    const est = queryOne(`SELECT ai_material_cost, ai_labor_cost, ai_total, ai_json,
+      edited_material_cost, edited_labor_cost, edited_expense_cost, edited_total, edited_at
+      FROM estimate_log WHERE construction_id = ? ORDER BY id DESC LIMIT 1`, [c.id]);
     let matCost = 0, laborCost = 0, expenseCost = 0, selling = 0;
-    if (est && ((est.ai_material_cost || 0) > 0 || (est.ai_labor_cost || 0) > 0)) {
+    // ★人が金額を直していれば、それが正しい原価・売価。AIが最初に出した ai_* より必ず優先する。
+    //   ここを直さないと、修正して保存しても ダッシュボード・施工一覧・レポートの
+    //   原価と粗利がAIの初期値のまま残り、「直したのに数字が変わらない」ことになる。
+    if (est && est.edited_at) {
+      matCost = Number(est.edited_material_cost) || 0;
+      laborCost = Number(est.edited_labor_cost) || 0;
+      expenseCost = Number(est.edited_expense_cost) || 0;
+      selling = Number(c.fixed_selling_price) || Number(est.edited_total) || 0;
+    } else if (est && ((est.ai_material_cost || 0) > 0 || (est.ai_labor_cost || 0) > 0)) {
       matCost = est.ai_material_cost || 0;
       laborCost = est.ai_labor_cost || 0;
       try { const j = JSON.parse(est.ai_json || '{}'); expenseCost = Number(j.estimatedExpenseCost) || 0; } catch (_) {}
@@ -2361,7 +2455,10 @@ app.whenReady().then(async () => {
       FROM constructions c
       LEFT JOIN properties p ON c.property_id = p.id
       WHERE c.tenant_id = ?
-      ORDER BY c.construction_date DESC
+      -- 工事日の降順（新しい工事が上）。同じ日付が並ぶときは登録の新しい順で決着させる。
+      -- AI自動作成の工事はどれも「今日」の日付になるため、第2キーが無いと同日の中で
+      -- 登録の古いものが先に出てしまい、ダッシュボードの「最近の施工履歴」が最近にならない。
+      ORDER BY c.construction_date DESC, c.id DESC
     `, [getCurrentTenant()]);
     return rows.map((r: any) => {
       const e = computeConstructionEconomics(r);
@@ -2456,18 +2553,22 @@ app.whenReady().then(async () => {
     const markupRate = c.markup_rate || 1.3;
     const sellingPrice = Math.ceil((matCost + laborCost) * markupRate);
 
-    const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type, actual_material_cost, actual_labor_cost, actual_selling_price FROM estimate_log WHERE construction_id = ?', [constructionId]);
+    const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type, actual_material_cost, actual_labor_cost, actual_selling_price, edited_labor_cost FROM estimate_log WHERE construction_id = ?', [constructionId]);
     if (!log) return;
+    // ★人が画面で直した「人件費（原価）」があれば、それを実績の人件費として学習する。
+    //   AI自動作成の施工は labor_cost=0（施工費は内訳行に一本化）なので、これが無いと
+    //   actual_labor_cost が常に0で記録され、人件費の精度がいつまでも上がらなかった。
+    const learnedLabor = Number(log.edited_labor_cost) > 0 ? Math.round(Number(log.edited_labor_cost)) : laborCost;
     // 実績値が変わっていない場合はスキップ（重複送信防止）
     const prevMat = log.actual_material_cost || 0;
     const prevLab = log.actual_labor_cost || 0;
     const prevSell = log.actual_selling_price || 0;
-    const changed = Math.abs(prevMat - matCost) > 1 || Math.abs(prevLab - laborCost) > 1 || Math.abs(prevSell - sellingPrice) > 1;
+    const changed = Math.abs(prevMat - matCost) > 1 || Math.abs(prevLab - learnedLabor) > 1 || Math.abs(prevSell - sellingPrice) > 1;
 
     const now = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
     runSql(
       'UPDATE estimate_log SET actual_material_cost=?, actual_labor_cost=?, actual_selling_price=?, actual_markup_rate=?, feedback_at=? WHERE id=?',
-      [matCost, laborCost, sellingPrice, markupRate, now, log.id]
+      [matCost, learnedLabor, sellingPrice, markupRate, now, log.id]
     );
 
     if (!changed) { console.log('学習ループ: 実績値に変更なし — Supabase送信スキップ'); return; }
@@ -2489,7 +2590,7 @@ app.whenReady().then(async () => {
         ai_labor_cost: log.ai_labor_cost,
         ai_total: log.ai_total,
         actual_material_cost: matCost,
-        actual_labor_cost: laborCost,
+        actual_labor_cost: learnedLabor,
         actual_selling_price: sellingPrice,
         actual_markup_rate: markupRate,
         accuracy_ratio: log.ai_total > 0 ? sellingPrice / log.ai_total : null,
@@ -3554,7 +3655,9 @@ app.whenReady().then(async () => {
   // ── 見積ログ ──
   ipcMain.handle('estimates:log', () => {
     return queryAll(
-      'SELECT id, work_type, ai_total, ai_material_cost, ai_labor_cost, ai_markup_rate, construction_id, created_at, ai_json, generated_image, uploaded_image, source, source_log_id FROM estimate_log WHERE tenant_id = ? ORDER BY id DESC LIMIT 50',
+      `SELECT id, work_type, ai_total, ai_material_cost, ai_labor_cost, ai_markup_rate, construction_id, created_at, ai_json, generated_image, uploaded_image, source, source_log_id,
+              edited_material_cost, edited_labor_cost, edited_expense_cost, edited_total, edited_at
+       FROM estimate_log WHERE tenant_id = ? ORDER BY id DESC LIMIT 50`,
       [getCurrentTenant()]
     );
   });
@@ -3795,6 +3898,242 @@ app.whenReady().then(async () => {
   });
 
   // ── 見積書PDF ──
+
+
+  // ── 見積の原価・売価の修正を保存する（上書き保存）──
+  // これまで画面の「人件費（原価）」を直しても、どこにも保存されていなかった。
+  // AI自動作成の施工は labor_cost=0（施工費は内訳行に一本化）なので、人件費の修正が
+  // DBにも請求書にも学習にも一切届いていなかった。ここで受け止める。
+  // ★AIが出した金額(ai_*)は原本として絶対に書き換えない。人の修正は edited_* に持つ。
+  //   こうしておくことで「元に戻す」でいつでもAIの原案へ戻せる。
+  ipcMain.handle('estimates:saveCostEdit', (_e, data: {
+    constructionId: number; materialCost?: number; laborCost?: number; expenseCost?: number; total?: number;
+  }) => {
+    const tid = getCurrentTenant();
+    const cid = Number(data?.constructionId) || 0;
+    if (!cid) throw new Error('ERROR: 保存先の工事が見つかりません。先に「物件・施工・請求書の自動作成」を行ってください。');
+    const log = queryOne(
+      'SELECT id, ai_total FROM estimate_log WHERE construction_id = ? AND tenant_id = ? ORDER BY id DESC LIMIT 1',
+      [cid, tid]
+    );
+
+    // 明細（＝請求書の中身）を新しい売価に比例配分でそろえる。
+    // 明細を動かさずに総額だけ変えると、請求書PDFの内訳と合計が食い違う。
+    const mats = queryAll('SELECT id, quantity, unit_price FROM construction_materials WHERE construction_id = ? ORDER BY id', [cid]);
+    const currentTotal = mats.reduce((s: number, m: any) => s + (Number(m.quantity) || 0) * (Number(m.unit_price) || 0), 0);
+    const newTotal = Math.round(Number(data?.total) || 0);
+    if (currentTotal > 0 && newTotal > 0 && Math.abs(newTotal - currentTotal) >= 1) {
+      const ratio = newTotal / currentTotal;
+      for (const m of mats) {
+        runSql('UPDATE construction_materials SET unit_price = ? WHERE id = ?',
+          [Math.round((Number(m.unit_price) || 0) * ratio), m.id]);
+      }
+    }
+
+    // 人が直した原価をログに残す（学習ループがこれを人件費の実績として読む）
+    const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+    if (log) {
+      runSql(
+        `UPDATE estimate_log SET edited_material_cost=?, edited_labor_cost=?, edited_expense_cost=?, edited_total=?, edited_at=? WHERE id=?`,
+        [Math.round(Number(data?.materialCost) || 0), Math.round(Number(data?.laborCost) || 0),
+         Math.round(Number(data?.expenseCost) || 0), newTotal, jstNow, log.id]
+      );
+    }
+
+    // 売価・請求書金額をここで確定させる（recalcConstruction が invoices.amount まで書き換える）
+    recalcConstruction(cid);
+
+    const inv = queryOne('SELECT id, amount, tax_rate FROM invoices WHERE construction_id = ? ORDER BY id DESC LIMIT 1', [cid]);
+    logAudit('update', 'estimate_cost_edit', cid,
+      `原価修正: 材料${Math.round(Number(data?.materialCost) || 0)} 人件費${Math.round(Number(data?.laborCost) || 0)} 経費${Math.round(Number(data?.expenseCost) || 0)} → 売価${newTotal}`);
+    return {
+      ok: true,
+      logId: log?.id || null,
+      invoiceId: inv?.id || null,
+      amount: Number(inv?.amount) || 0,
+      taxRate: Number(inv?.tax_rate) || 0.1,
+      aiTotal: Number(log?.ai_total) || 0,
+    };
+  });
+
+  // ── 修正を取り消してAIの原案に戻す ──
+  // ai_json（AIが最初に出した見積そのもの）は書き換えていないので、そこから復元できる。
+  ipcMain.handle('estimates:revertCostEdit', (_e, data: { constructionId: number }) => {
+    const tid = getCurrentTenant();
+    const cid = Number(data?.constructionId) || 0;
+    if (!cid) throw new Error('ERROR: 対象の工事が見つかりません。');
+    const log = queryOne(
+      'SELECT id, ai_json, ai_total FROM estimate_log WHERE construction_id = ? AND tenant_id = ? ORDER BY id DESC LIMIT 1',
+      [cid, tid]
+    );
+    if (!log) throw new Error('ERROR: 元の見積（AIの原案）が見つからないため戻せません。');
+    let original: any = null;
+    try { original = JSON.parse(log.ai_json); } catch (_) { original = null; }
+    const aiTotal = Math.round(Number(log.ai_total) || Number(original?.estimatedTotal) || 0);
+
+    const mats = queryAll('SELECT id, quantity, unit_price FROM construction_materials WHERE construction_id = ? ORDER BY id', [cid]);
+    const bd: any[] = Array.isArray(original?.breakdown) ? original.breakdown : [];
+    if (bd.length > 0 && bd.length === mats.length) {
+      // 行数が一致 ＝ 自動作成のままの並び（cm.id順 = 登録順 = breakdown順）。1行ずつ原案の金額へ戻す。
+      mats.forEach((m: any, i: number) => {
+        runSql('UPDATE construction_materials SET quantity = 1, unit_price = ? WHERE id = ?',
+          [Math.round(Number(bd[i]?.cost) || 0), m.id]);
+      });
+    } else {
+      // 人が明細を足した/消した後 → 1対1に戻せないので、比例配分でAIの総額にそろえる
+      const cur = mats.reduce((s: number, m: any) => s + (Number(m.quantity) || 0) * (Number(m.unit_price) || 0), 0);
+      if (cur > 0 && aiTotal > 0) {
+        const ratio = aiTotal / cur;
+        for (const m of mats) {
+          runSql('UPDATE construction_materials SET unit_price = ? WHERE id = ?',
+            [Math.round((Number(m.unit_price) || 0) * ratio), m.id]);
+        }
+      }
+    }
+
+    runSql(
+      'UPDATE estimate_log SET edited_material_cost=NULL, edited_labor_cost=NULL, edited_expense_cost=NULL, edited_total=NULL, edited_at=NULL WHERE id=?',
+      [log.id]
+    );
+    recalcConstruction(cid);
+
+    const inv = queryOne('SELECT id, amount, tax_rate FROM invoices WHERE construction_id = ? ORDER BY id DESC LIMIT 1', [cid]);
+    logAudit('update', 'estimate_cost_revert', cid, `AIの原案（売価${aiTotal}）に戻しました`);
+    return {
+      ok: true,
+      original,
+      amount: Number(inv?.amount) || 0,
+      taxRate: Number(inv?.tax_rate) || 0.1,
+    };
+  });
+
+  // ── いまの修正状態を取得（過去ログを開いたときに「修正済み」を出すため）──
+  ipcMain.handle('estimates:getCostEdit', (_e, constructionId: number) => {
+    const tid = getCurrentTenant();
+    const cid = Number(constructionId) || 0;
+    if (!cid) return null;
+    const row = queryOne(
+      `SELECT id, ai_material_cost, ai_labor_cost, ai_total,
+              edited_material_cost, edited_labor_cost, edited_expense_cost, edited_total, edited_at
+       FROM estimate_log WHERE construction_id = ? AND tenant_id = ? ORDER BY id DESC LIMIT 1`,
+      [cid, tid]
+    );
+    if (!row || !row.edited_at) return null;
+    return row;
+  });
+
+  // ── 数量拾い出し明細書のPDF（見積書の別紙）──
+  // 「その数量はどこから出たのか」を、お客様・元請にそのまま出せる形にする。
+  ipcMain.handle('takeoff:generatePDF', async (_e, data: any) => {
+    const takeoff = data?.takeoff || {};
+    const items: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
+    if (items.length === 0) throw new Error('拾い出し明細がありません。');
+    const cfg = loadApiConfig();
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
+    const title = escapeHtml(data?.title || takeoff.title || '数量拾い出し明細');
+    const clientName = data?.clientName ? escapeHtml(data.clientName) : '';
+
+    const rows = items.map((it: any, i: number) => {
+      const q = Number(it.quantityWithLoss) || Number(it.quantity) || 0;
+      const loss = Number(it.lossRate) || 0;
+      const conf = it.confidence || '—';
+      const confColor = conf === '高' ? '#27ae60' : conf === '中' ? '#e67e22' : '#c0392b';
+      const notes = [
+        it.dimensions ? `寸法 ${escapeHtml(String(it.dimensions))}` : '',
+        it.deduction ? escapeHtml(String(it.deduction)) : '',
+        loss > 0 ? `ロス${Math.round(loss * 100)}%込（拾い ${Number(it.quantity) || 0}${escapeHtml(it.unit || '')}）` : '',
+        it.assumption ? `仮定: ${escapeHtml(String(it.assumption))}` : '',
+      ].filter(Boolean).join(' / ');
+      return `<tr>
+        <td style="text-align:center;color:#888">${i + 1}</td>
+        <td>${escapeHtml(it.part || '—')}</td>
+        <td><strong>${escapeHtml(it.name || '（名称なし）')}</strong>${notes ? `<div style="font-size:8.5px;color:#777;margin-top:2px">${notes}</div>` : ''}</td>
+        <td style="font-family:monospace;font-size:9px">${escapeHtml(it.formula || '—')}</td>
+        <td style="text-align:right;font-weight:bold">${q.toLocaleString()}</td>
+        <td style="text-align:center">${escapeHtml(it.unit || '')}</td>
+        <td style="font-size:9px;color:#666">${escapeHtml(it.source || '—')}</td>
+        <td style="text-align:center;color:${confColor};font-weight:bold">${escapeHtml(conf)}</td>
+      </tr>`;
+    }).join('');
+
+    const summaryRows = (takeoff.summary || []).map((s: any) =>
+      `<span style="display:inline-block;background:#eef3f8;border:1px solid #d4e0ea;border-radius:4px;padding:4px 10px;margin:0 6px 6px 0;font-size:10px"><strong>${escapeHtml(s.label || '')}</strong>: ${escapeHtml(String(s.value ?? ''))}</span>`
+    ).join('');
+
+    const unread = (takeoff.unreadable || []).length
+      ? `<div class="box warn"><div class="box-label">図面から拾えなかった項目（別途ご提供いただければ拾えます）</div><ul>${(takeoff.unreadable || []).map((u: any) => `<li>${escapeHtml(String(u))}</li>`).join('')}</ul></div>` : '';
+    const warns = (takeoff.warnings || []).length
+      ? `<div class="box note"><div class="box-label">図面上の注意点</div><ul>${(takeoff.warnings || []).map((w: any) => `<li>${escapeHtml(String(w))}</li>`).join('')}</ul></div>` : '';
+
+    const b = takeoff.building || {};
+    const meta = [
+      takeoff.scale ? `縮尺: ${escapeHtml(String(takeoff.scale))}${takeoff.scaleSource ? `（${escapeHtml(String(takeoff.scaleSource))}）` : ''}` : '',
+      (takeoff.drawingTypes || []).length ? `図面: ${escapeHtml((takeoff.drawingTypes || []).join('・'))}` : '',
+      b.structure ? `構造: ${escapeHtml(String(b.structure))}` : '',
+      b.floors ? `階数: ${escapeHtml(String(b.floors))}` : '',
+      b.totalFloorAreaM2 ? `延床: ${escapeHtml(String(b.totalFloorAreaM2))}㎡` : '',
+    ].filter(Boolean).join(' ／ ');
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:30px 28px;color:#333;font-size:10px}
+h1{text-align:center;font-size:20px;letter-spacing:6px;margin-bottom:6px}
+.sub{text-align:center;font-size:10px;color:#777;margin-bottom:16px}
+.header{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:10px}
+.client{font-size:14px;font-weight:bold;border-bottom:2px solid #333;padding-bottom:3px}
+.meta{text-align:right;font-size:9px;line-height:1.7}
+.meta-line{background:#f7f9fb;border:1px solid #e3e9ee;border-radius:4px;padding:6px 10px;font-size:10px;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th{background:#2e4057;color:#fff;padding:5px 6px;text-align:left;font-size:9px}
+td{padding:5px 6px;border-bottom:1px solid #eee;font-size:9.5px;vertical-align:top}
+tr:nth-child(even) td{background:#fbfcfd}
+.box{margin-top:12px;padding:8px 10px;border-radius:4px;font-size:9.5px}
+.box ul{margin:4px 0 0 16px}.box li{margin-bottom:2px}
+.box-label{font-weight:bold;margin-bottom:2px}
+.warn{background:#fff8e1;border:1px solid #f0dfa8}.note{background:#f4f6f8;border:1px solid #dde3e8}
+.foot{margin-top:16px;font-size:8.5px;color:#888;line-height:1.6;border-top:1px solid #ddd;padding-top:8px}</style>
+</head><body>
+<h1>数量拾い出し明細</h1>
+<div class="sub">図面からの数量算出根拠（御見積書 別紙）</div>
+<div class="header">
+  <div>${clientName ? `<div class="client">${clientName} 御中</div>` : ''}<div style="margin-top:4px;font-size:11px">件名: ${title}</div></div>
+  <div class="meta">作成日: ${today}
+  ${cfg.companyName ? `<div style="margin-top:6px;border-top:1px solid #ccc;padding-top:4px"><strong>${escapeHtml(cfg.companyName)}</strong><br><span style="font-size:8.5px">${escapeHtml(cfg.companyAddress || '')}${cfg.companyTel ? '<br>TEL: ' + escapeHtml(cfg.companyTel) : ''}</span></div>` : ''}</div>
+</div>
+${meta ? `<div class="meta-line">${meta}${takeoff.overallConfidence ? ` ／ 総合確度: <strong>${escapeHtml(String(takeoff.overallConfidence))}</strong>` : ''}</div>` : ''}
+${summaryRows ? `<div style="margin-bottom:8px">${summaryRows}</div>` : ''}
+<table><thead><tr>
+  <th style="width:24px;text-align:center">No</th>
+  <th style="width:56px">部位</th>
+  <th>材料・工種</th>
+  <th style="width:150px">計算式</th>
+  <th style="width:58px;text-align:right">数量</th>
+  <th style="width:34px;text-align:center">単位</th>
+  <th style="width:110px">出典（図面）</th>
+  <th style="width:34px;text-align:center">確度</th>
+</tr></thead><tbody>${rows}</tbody></table>
+${unread}${warns}
+<div class="foot">
+・数量は上記図面の記載寸法にもとづき算出しています。計算式はすべて記載のとおりで、そのまま検算いただけます。<br>
+・「確度」は算出根拠の強さです（高＝図示寸法から直接算出／中＝一部を他図面・標準仕様から補完／低＝縮尺からの読み取りや仮定を含む）。<br>
+・現場実測・仕様確定により数量が変動する場合があります。着工前に実測をもって確定させていただきます。
+</div>
+</body></html>`;
+
+    const tmpHtml = path.join(app.getPath('temp'), `takeoff_${Date.now()}.html`);
+    const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+    fs.writeFileSync(tmpHtml, Buffer.concat([bom, Buffer.from(html, 'utf-8')]));
+    const pdfWin = new BrowserWindow({ show: false, width: 1123, height: 794, webPreferences: { defaultEncoding: 'utf-8' } });
+    await pdfWin.loadURL(`file:///${tmpHtml.replace(/\\/g, '/')}`);
+    await new Promise<void>(r => setTimeout(r, 1000));
+    // 計算式・出典まで載せるので横向き（A4 landscape）
+    const pdf = await pdfWin.webContents.printToPDF({ printBackground: true, landscape: true, margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 } });
+    pdfWin.close();
+    try { fs.unlinkSync(tmpHtml); } catch (_) {}
+    const savePath = await dialog.showSaveDialog({ defaultPath: `数量拾い出し明細_${(data?.title || takeoff.title || '図面')}_${today}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (!savePath.canceled && savePath.filePath) { fs.writeFileSync(savePath.filePath, pdf); shell.openPath(savePath.filePath); }
+    return true;
+  });
+
   ipcMain.handle('estimates:generatePDF', async (_e, data: any) => {
     const { invoice, materials } = data;
     const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
@@ -4154,11 +4493,15 @@ ${po.notes ? `<div class="notes"><strong>備考</strong><br>${escapeHtml(po.note
       FROM constructions c LEFT JOIN properties p ON c.property_id = p.id WHERE c.tenant_id = ? ORDER BY c.id DESC`,
       [tid, tid, tid, tid]);
     return rows.map((r: any) => {
-      const estMaterial = r.est_material || 0;
-      const estLabor = r.labor_cost || 0;
-      const estCost = estMaterial + estLabor;
-      const estSelling = r.fixed_selling_price || Math.round(estCost * (r.markup_rate || 1.3));
-      const estProfit = estSelling - estCost;
+      // 予算（見積）側は、ダッシュボード・施工一覧と同じ計算を使う。
+      // ここだけ別計算にしていたため、AI見積の工事は材料＝売価（掛率1・売価を明細に持つ設計）となり、
+      // 予算粗利がいつも0で出ていた。人が直した金額（edited_*）もこの関数が拾う。
+      const e = computeConstructionEconomics(r);
+      const estMaterial = e.matCost;
+      const estLabor = e.laborCost;
+      const estCost = e.cost;
+      const estSelling = e.selling;
+      const estProfit = e.profit;
       const actMaterial = r.actual_material_cost || estMaterial;
       const actLabor = r.actual_labor_cost || r.actual_labor_from_attendance || 0;
       const actSelling = r.actual_selling_price || r.invoiced || 0;
@@ -5122,7 +5465,9 @@ ${pages}</body></html>`;
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
   // AI見積もりのコア処理。デスクトップ(IPC)とスマホ(内蔵Webサーバー)の両方から呼ぶ
   const analyzeImageCore = async (data: any) => {
-    let { imageBase64, beforeImage, afterImage, comment, location, area, clientAttrs, roofType, structure, buildingAge, siteConditions, desiredDeadline } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null, structure: '', buildingAge: '', siteConditions: null, desiredDeadline: '' } : data;
+    let { imageBase64, beforeImage, afterImage, comment, location, area, clientAttrs, roofType, structure, buildingAge, siteConditions, desiredDeadline, takeoff, fastMode } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null, structure: '', buildingAge: '', siteConditions: null, desiredDeadline: '', takeoff: null, fastMode: false } : data;
+    // 図面拾い出し（PDF図面から計算式つきで拾った数量）。あれば推定より必ず優先させる。
+    const takeoffSection = formatTakeoffForPrompt(takeoff);
     // スマホ写真は数MBあり、Anthropicの5MB上限で400になるため送信前に縮小する
     imageBase64 = shrinkImageForAI(imageBase64);
     beforeImage = shrinkImageForAI(beforeImage);
@@ -5714,12 +6059,16 @@ ${pages}</body></html>`;
       });
     }
 
-    const response = await client.messages.create({
+    // ★ストリーミングで受ける（2026-08-23）★
+    // 非ストリーミングだと安全域(〜16k)で max_tokens を頭打ちにするしかなく、実際に上限で
+    // 切れていた（ai-debug.log: analyze:max-tokens が 07-12 / 07-31 / 08-04 / 08-23 に発生）。
+    // 切れたJSONは parseLenientJson が括弧を補って救うため、**欠けた行が単価0円・金額0円のまま
+    // 画面に出る**という最悪の壊れ方をしていた。ストリームなら上限を大きく取れるので、まず切らせない。
+    const response = await client.messages.stream({
       model: 'claude-sonnet-4-6',
-      // 新築など大きい見積は内訳＋工数＋施工指示＋提案で長くなり、4000では途中で切れて
-      // JSON解析エラーになっていた。非ストリーミングの安全域(〜16k)内で8000に引き上げる。
-      // 建築一式は工事科目が15項目に及び内訳が長大になるため、この業種だけさらに引き上げる。
-      max_tokens: industryType === 'building' ? 12000 : 8000,
+      // 新築など大きい見積は内訳＋工数＋施工指示＋提案で長くなる。
+      // 建築一式は工事科目が15項目に及び内訳が長大になるため、この業種はさらに引き上げる。
+      max_tokens: industryType === 'building' ? 32000 : 24000,
       temperature: 0,
       system: isBeforeAfter
         ? 'あなたは大阪の建築見積もりの専門家です（実務経験20年以上）。ビフォー（施工前）とアフター（施工後）の2枚の写真を比較して、実施された工事内容を正確に判定してください。判定した工事内容に基づいて、同様の工事を行う場合の見積もりを算出してください。'
@@ -5763,7 +6112,7 @@ ${COST_REFERENCE}
 ${hasLocation ? `## 現場場所\n${location}\n\n★重要: 上記の場所に基づいて「全国 地域別 工事費係数」テーブルから該当する都道府県の係数を適用し、金額を補正すること。大阪以外の場合は必ず地域係数を掛けて算出すること。\n` : ''}
 ${comment ? `## ユーザーが依頼した工事内容（★最重要★）\n${comment}\n` : ''}
 ${(area && String(area).trim()) ? `## ★実測値（面積・数量）— 最優先で使用★\n${String(area).trim()}\n★重要: これはユーザーが現場で測った/把握している確定値です。写真・図面・航空写真からの推定より必ずこの実測値を優先し、この数量で材料費・施工費を算出すること。推定でずらさないこと。実測値が与えられた項目は信頼度(confidence)を高めに扱い、recommendationsに「面積は推定です」等の断り書きを書かないこと。\n` : ''}
-${(roofType && roofType.developFactor > 0) ? `## ★屋根種別（お客様確認済み — 展開係数を必ずこれで）★\n屋根種別: ${roofType.label}。展開係数 = ×${roofType.developFactor}。\n★重要: 折板・波板の材料工事（遮熱シート・カバー工法など、材料が波形に沿って張るもの）では「見積数量 = 屋根面積 × ${roofType.developFactor}」で必ず拾い、developFactor には ${roofType.developFactor} を出力すること。これはお客様が確認した確定値なので、写真からの種別判定より優先する。塗装・葺き替えなど材料が波形に沿わない工事では、この係数は掛けず数量は屋根面積のままにすること。\n` : ''}
+${takeoffSection}${(roofType && roofType.developFactor > 0) ? `## ★屋根種別（お客様確認済み — 展開係数を必ずこれで）★\n屋根種別: ${roofType.label}。展開係数 = ×${roofType.developFactor}。\n★重要: 折板・波板の材料工事（遮熱シート・カバー工法など、材料が波形に沿って張るもの）では「見積数量 = 屋根面積 × ${roofType.developFactor}」で必ず拾い、developFactor には ${roofType.developFactor} を出力すること。これはお客様が確認した確定値なので、写真からの種別判定より優先する。塗装・葺き替えなど材料が波形に沿わない工事では、この係数は掛けず数量は屋根面積のままにすること。\n` : ''}
 ${(structure && String(structure).trim()) ? `## ★建物構造（お客様確認済み）★
 構造: ${String(structure).trim()}。
 ★重要: この構造を前提に、解体・撤去の手間、下地・躯体の作り、施工方法、産廃量を判断しろ。木造・鉄骨造・RC造・SRC造で解体費・補強費・施工手間が大きく変わる（RC/SRCの解体・斫りは木造の数倍）。estimatedScale にこの構造を必ず反映しろ。
@@ -5948,14 +6297,14 @@ ${categories}
 - 迷ったら中心帯を採用しろ（根拠なく高い方へ寄せない。自社実績があればそれを最優先）
 - 上記の検証で乖離が見つかった場合は、金額を修正してから出力しろ
 
-### ルールE': お客様への時間の説明（customerSchedule）
+${fastMode ? '' : `### ルールE': お客様への時間の説明（customerSchedule）
 見積金額と同じくらい、施主が知りたいのは「うちは何時間つぶれるのか」だ。次を必ず守れ。
 - 「約5日」のような業者向けの暦日数だけで済ませるな。**1日あたり何時間・何時から何時まで**を必ず出せ。
 - **家の外で待たないといけない時間**（塗料や接着剤の臭気、粉じん、床や塗膜の乾燥待ち、断水・停電、搬入で通路が塞がる等）を
   必ず判定しろ。必要なら hours と when を時間で答えろ。「念のため外出をおすすめします」で終わらせるな。
 - 水道・トイレ・キッチン・玄関・駐車場など、**使えなくなる設備と、その時間**を unusable に必ず書き出せ。
 - 立ち会いが要るのは実際にどの場面か、何分かを書け。終日拘束するなら理由を書け。要らないなら「不要」と言い切れ。
-- 分からないから曖昧にする、は禁止。工種・数量・人工から算出した根拠のある時間を書け。
+- 分からないから曖昧にする、は禁止。工種・数量・人工から算出した根拠のある時間を書け。`}
 
 ### ルールE: breakdownの書き方
 - 各項目に「数量×単価」の根拠をnoteに記載（材料の行は "7m²×5,570円/m²"、施工費の行は "3人工×2日×25,000円"）
@@ -5989,7 +6338,7 @@ ${categories}
   "profitRate": 適用した粗利率（数値、%、例: 30）,
   "confidence": "高/中/低",
   "estimatedDuration": "推定工期（例: '約5日', '約2週間', '約1.5ヶ月'）。全工程の着工から完了までの暦日数。並行作業を考慮して算出",
-  "customerSchedule": {
+${fastMode ? '' : `  "customerSchedule": {
     "totalLabel": "★お客様にそのまま伝える所要時間★ 業者向けの暦日数ではなく、施主が予定を組める粒度で書く。半日で終わるなら『約3時間』『半日（約4時間）』、1日なら『1日（実働 約6時間）』、複数日なら『3日間（1日あたり約7時間）』。分単位で終わる軽作業なら『約40分』",
     "hoursPerDay": "★1日あたり職人が現場にいる時間★（例: '約6時間'、'約8時間（うち昼休憩1時間）'）。日によって違うなら一番長い日を書き、その旨を添える",
     "onSiteTime": "現場に入ってから出るまでの目安時刻（例: '9:00〜13:00'、'8:30〜17:00（うち昼休憩1時間）'）。時間帯が読めないなら null",
@@ -6005,24 +6354,24 @@ ${categories}
     "unusable": ["工事中に使えなくなる場所・設備と、その時間（例: 'キッチンの水道 10:00〜15:00（約5時間）'、'トイレ 終日（1日目のみ・仮設トイレをご用意します）'、'玄関 搬入の30分だけ'）。無ければ空配列"],
     "impacts": ["その他の生活への影響を、必ず時間帯つきで具体的に（例: '騒音が大きいのは初日の解体 約2時間'、'お車を1台分、道路側へ移動していただきます'、'足場設置日は洗濯物を室内に'）。無ければ空配列"],
     "dayPlan": [{"day": "1日目", "time": "9:00〜17:00", "hours": "約7時間", "outOfHome": "外で待つ時間があればここに（例: '10:00〜13:00の約3時間'）。不要なら null", "work": "その日にやることを、お客様に分かる言葉で1行（専門用語を避ける）"}]
-  },
+  },`}
   "scheduleProposal": "★希望納期が入力され、かつ推定工期より短い（急ぎ）ときのみ記入・それ以外は必ずnull★ 工期短縮の提案または相談。詰められるなら『増員・残業・応援で△日に短縮可能。割増費用 約◯円（内訳）』、厳しいなら『最短◯日を推奨。1日は品質・安全・段取り上おすすめしない理由』を、職人目線で具体的に3〜5行。本体金額には含めない別途提案として書く。",
   "totalManDays": 総人工数（数値。全職種の延べ人工合計。例: 設備工2人×3日+大工1人×2日=8）,
   "manDaysBreakdown": [
     {"trade": "職種名", "workers": 人数, "days": 日数, "manDays": 人工数, "dailyRate": 日額単価, "basis": "★なぜこの日数・人工になるのかの根拠を必ず記入。歩掛（1人が1日にこなす標準作業量）から算出した式で書く。例: '屋根400㎡ ÷ 2人 ÷ 約66㎡/人日 ≒ 3日' / 'コンセント30箇所 ÷ @15箇所/人日 = 2人工'。数量が無い管理系（現場管理・雑工）は '工期◯日に対し常駐0.5人' のように据え置き根拠を書く"}
   ],
   "breakdown": [
-    {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "quantity": 数量（数値。式なら1）, "unit": "単位（m2/式/箇所 等）", "unitPrice": 売価の単価（数値、円。cost ÷ quantity に必ず一致させること）, "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい。**必ず quantity × unitPrice と一致させること。桁を落とすな**）, "note": "数量×単価の根拠（例: 13.3m²×5,570円）"}
+    {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "quantity": 数量（数値。式なら1）, "unit": "単位（m2/式/箇所 等）", "unitPrice": 売価の単価（数値、円。cost ÷ quantity に必ず一致させること）, "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい。**必ず quantity × unitPrice と一致させること。桁を落とすな**）, "note": "数量×単価の根拠（例: 13.3m²×5,570円）。図面拾い出しがある行は、その計算式をそのまま引き写せ", "takeoffRef": "この行の数量の出どころ。図面拾い出しの行を使ったなら、その拾い出し行の name をそのまま入れる。拾い出しと無関係な行（仮設・運搬・諸経費など）は null"}
   ],
   "roofAreaM2": ★遮熱シート工事で折板・波板屋根のときのみ★ 屋根面積(数値、㎡)。それ以外は null,
   "quantityM2": ★遮熱シート工事で折板・波板屋根のときのみ★ 見積数量(数値、㎡。展開係数を掛けた後)。×1.4しなかったなら roofAreaM2 と同じ値。それ以外は null,
   "developFactor": ★遮熱シート工事のときのみ★ 適用した展開係数(数値。折板88mm=1.41 / 折板150mm=1.69 / スレート大波=1.1 / 平葺き・瓦=1.0。掛けなかったなら 1.0)。それ以外は null,
   "recommendations": "画像から判断した追加提案（依頼内容以外で必要そうな工事や注意点。例:『外壁のひび割れも確認されます。外壁補修も検討をおすすめします（別途約○万円）』）",
-  "gradeOptions": [
+${fastMode ? '' : `  "gradeOptions": [
     {"grade": "松", "label": "グレードアップ", "total": 税抜総額（数値、円）, "diff": この見積(竹)との差額（数値、円。プラス）, "spec": ["竹から変える点を具体的に2〜4個。上位グレード材・仕様向上・保証延長・付帯工事の追加など。例:『外壁材を高耐候フッ素へ』『10年保証→15年保証』"], "note": "この松案が向くお客様・メリットを一言"},
     {"grade": "竹", "label": "標準（この見積）", "total": estimatedTotal と必ず同額, "diff": 0, "spec": ["この見積の標準仕様を一言で"], "note": "コストと品質のバランス。基準となる標準プラン"},
     {"grade": "梅", "label": "コスト重視", "total": 税抜総額（数値、円）, "diff": この見積(竹)との差額（数値、円。マイナス）, "spec": ["竹から削る/簡素化する点を具体的に2〜4個。必要最小限の仕様・汎用材・範囲限定など。ただし手抜き・法令/安全に反する削減は絶対にするな。例:『塗料を標準グレードのシリコンへ』『付帯部塗装は省略』"], "note": "予算重視のお客様向け。品質・安全は担保した上での最小構成"}
-  ],
+  ],`}
   "installInstruction": "★遮熱シート（サーモバリア）工事の場合のみ記入・それ以外は必ずnull★ 現場の葺き師・建築板金職人がそのまま作業できる施工指示。工法（スカイ工法／屋根下工法／カバー工法）に合わせ、[石綿事前調査の要否(既存屋根がスレート等の場合)]→[下地確認・清掃]→[張り方向・順序・重ね代]→[固定方法(スペーサー/ビス/気密テープ)]→[通気層の確保]→[端部・棟・軒・ケラバの納まり・雨仕舞い]→[安全(墜落防止・フルハーネス・親綱・踏み抜き)] を現場目線の箇条書き6〜9行で具体的に。各行に該当する公的基準名（安衛則○条／JIS A 6514／石綿事前調査 等）を明記し、必要シート量など数量の目安も添える。",
   "imagePrompt": "この工事で施工した箇所の完成後の写真を生成するための英語プロンプト。80〜100語の英語で、工種に応じて以下の写真スタイルで記述する（フォトリアル・広告品質・photorealistic, professional real estate photography, natural lighting, high detail）。\n- 内装: 室内インテリア写真風（自然光・暖かい木の質感・モダンジャパニーズ・clean interior, warm wood floor, fresh wallpaper, soft daylight from window）\n- 塗装（外壁/屋根）: 塗り替え後の外壁・屋根がツヤと均一な発色で美しく仕上がった住宅外観（freshly painted exterior wall, even smooth finish, clean facade, blue sky, no scaffolding, crisp edges）\n- 外構: exterior/landscaping写真風（青空・ゴールデンアワー・植栽・コンクリート/タイルの質感・neat driveway, fence, greenery, paved approach）\n- 足場: 建物を覆って安全・整然と組まれた足場（well-erected wedge scaffolding around a house, mesh sheet, neat and safe, professional site, blue sky）。※足場は"撤去後"ではなく"綺麗に設置された状態"を描く。\n施工した部分にフォーカスし、美しい仕上がり・プロの現場感を表現。必ず英語で。"
 }
@@ -6047,9 +6396,22 @@ manDaysBreakdownの書き方例:
       }]
     });
 
-    const text = response.content[0].type === 'text' ? response.content[0].text : '';
+    // 生成中の進捗を画面へ流す（0.5秒に1回まで）。待ち時間そのものは変わらないが、
+    // 「いま内訳の何項目目か」が見えるので、止まっているのか進んでいるのかが分かる。
+    let progressAcc = '';
+    let lastProgressAt = 0;
+    response.on('text', (chunk: string) => {
+      progressAcc += chunk;
+      const now = Date.now();
+      if (now - lastProgressAt < 500) return;
+      lastProgressAt = now;
+      try { mainWindow?.webContents.send('ai:progress', describeEstimateProgress(progressAcc)); } catch (_) {}
+    });
+    const finalMsg = await response.finalMessage();
+
+    const text = finalMsg.content[0].type === 'text' ? finalMsg.content[0].text : '';
     console.log('AI response text:', text.substring(0, 500));
-    if (response.stop_reason === 'max_tokens') {
+    if (finalMsg.stop_reason === 'max_tokens') {
       // 出力上限で切れた。parseLenientJson が括弧を補完して救うが、内訳が欠ける恐れがあるので記録。
       console.warn('[analyze] stop_reason=max_tokens: 出力が上限で切れた可能性。修復を試みる');
       logAiError('analyze:max-tokens', '出力がmax_tokensで切れた', { len: text.length });
@@ -6058,10 +6420,23 @@ manDaysBreakdownの書き方例:
     if (!jsonMatch) { logAiError('analyze:no-json', 'AI応答にJSONなし', { head: text.substring(0, 300) }); throw new Error('AI応答の解析に失敗しました: ' + text.substring(0, 200)); }
     const jsonStr = jsonMatch[1] || jsonMatch[0];
     try {
+      const parsedResult = parseLenientJson(jsonStr);
+      // 切れた行（金額なし）は内訳から落としてから積み直す。0円の行を総額に混ぜない。
+      const droppedRows = dropPricelessBreakdownRows(parsedResult);
       const estimateResult = reconcileEstimateTotal(
-        parseLenientJson(jsonStr), 'analyze',
+        parsedResult, 'analyze',
         industryType === 'heatshield' ? HEATSHIELD_MARKUP : DEFAULT_MARKUP
       );
+      // reconcileEstimateTotal は estimateWarnings を上書きするので、警告はこの後に足す
+      if (droppedRows > 0 || finalMsg.stop_reason === 'max_tokens') {
+        estimateResult.truncatedRows = droppedRows;
+        estimateResult.estimateWarnings = [
+          ...(estimateResult.estimateWarnings || []),
+          droppedRows > 0
+            ? `AIの出力が途中で切れたため、金額が入っていない内訳 ${droppedRows} 行を除きました。総額が想定より小さいときは、もう一度見積もり直してください。`
+            : 'AIの出力が上限で切れました。内訳に抜けが無いかご確認ください。',
+        ];
+      }
       // ★改修・修繕の学習用（2026-07-22）: 築年数・構造を見積結果に持たせ、estimate_log へ実績として残す。
       //   入力があればその値。未入力なら AI が estimatedScale に書いた推定値（例「（推定）築30年前後」）を拾う。
       //   これが無いと「築10年の修繕」と「築45年の修繕」が同じ work_type で平均され、築年帯の傾向を学習できない。
@@ -6074,6 +6449,10 @@ manDaysBreakdownの書き方例:
           || (String(estimateResult.estimatedScale || '').match(/(木造|鉄骨造|S造|RC造|SRC造|軽量鉄骨)/) || [])[1] || '';
         if (resolvedStructure) estimateResult.structure = resolvedStructure;
       } catch (e) { console.error('築年数・構造の解決に失敗:', e); }
+
+      // 図面拾い出しを見積結果にぶら下げる。estimate_log の ai_json ごと保存されるので、
+      // あとから見積ログを開いても「この数量はどの図面のどの寸法から出たか」を辿れる。
+      if (takeoff && Array.isArray(takeoff.items) && takeoff.items.length > 0) estimateResult.takeoff = takeoff;
 
       // メール通知（写真・コメント・見積詳細を含む）
       const notifyImages: { filename: string; content: string }[] = [];
@@ -6100,6 +6479,177 @@ manDaysBreakdownの書き方例:
     }
   };
   ipcMain.handle('ai:analyzeImage', (_e, data: any) => analyzeImageCore(data));
+
+  // ── PDF図面からの数量拾い出し（Takeoff）──
+  // 見積の数量は「図面のどの寸法から、どう計算したか」を残さないと後で誰も検算できない。
+  // ここでは金額を一切出さない。拾うのは【数量と、その根拠（縮尺・寸法・計算式・出典ページ）】だけ。
+  // ★PDFはClaudeにネイティブで渡す。画像へラスタ化すると寸法線の細字・小数点が潰れて誤読するため。
+  const takeoffDrawingCore = async (data: {
+    files?: { type?: 'pdf' | 'image'; data: string; name?: string }[];
+    comment?: string; scaleHint?: string; targets?: string;
+  }) => {
+    const files = (data?.files || []).filter((f: any) => f && f.data);
+    if (files.length === 0) throw new Error('ERROR: 図面ファイル（PDFまたは画像）を選択してください。');
+    if (files.length > 6) throw new Error('ERROR: 図面は一度に6ファイルまでです。分けて拾ってください。');
+
+    // クレジット（拾い出し = 2ストック。図面は入力トークンが写真の数倍かかる）
+    await syncRemoteLicense(false);
+    const takeoffCredit = useCreditsSynced(2, '図面拾い出し');
+    if (!takeoffCredit.success) {
+      if (takeoffCredit.limitReached) await sendLimitNotification('図面拾い出し');
+      throw new Error('ERROR: 今月のAIストックの上限に達しました。管理者に連絡済みです。追加ストックについてはご連絡をお待ちください。');
+    }
+    syncCreditsToRemote();
+
+    const config = loadApiConfig();
+    if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。サポートにお問い合わせください。');
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: config.anthropicKey });
+
+    const content: any[] = [];
+    files.forEach((f: any, i: number) => {
+      const raw = String(f.data);
+      const isPdf = f.type === 'pdf' || raw.startsWith('data:application/pdf');
+      content.push({ type: 'text', text: `【図面${i + 1}${f.name ? '：' + f.name : ''}】` });
+      if (isPdf) {
+        content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: raw.replace(/^data:application\/pdf;base64,/, '') } });
+      } else {
+        // 図面は細い寸法線を読ませるので、現場写真ほど縮めない（長辺2000px）
+        const shrunk = shrinkImageForAI(raw, 2000);
+        content.push({ type: 'image', source: { type: 'base64', media_type: detectMediaType(shrunk), data: String(shrunk).replace(/^data:image\/\w+;base64,/, '') } });
+      }
+    });
+
+    content.push({ type: 'text', text: `あなたは建築の積算士（拾い出し20年）です。上の図面から**材料・工種ごとの数量**を拾い出してください。
+金額・単価は絶対に出さないでください（ここは数量だけの工程です）。
+${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
+## 拾い出しの鉄則（違反したら拾い出しとして失格）
+1. **寸法数値が最優先**。図面に寸法線の数値（例 8,190）があれば必ずそれを使え。縮尺からの目測は、寸法数値が無い部位でだけ使い、その行の confidence を「低」にしろ。
+2. **縮尺の確定**: ①図面内の縮尺表記（S=1/100 等）→ ②既知寸法からの逆算 の順で決めろ。どちらも取れない図面から、目測で数量を作るな。
+3. **単位はmm表記が基本**。8,190 は 8.19m。桁を間違えるな（拾い出しで一番多い事故）。
+4. **すべての行に formula（計算式）を数字で書け**。人が電卓で追える式でなければ、その行は出すな。
+   例: "8.19×6.37=52.17"、"(8.19+6.37)×2×2.8=81.5"、"1F 12箇所+2F 8箇所=20"
+5. **推測で数量を作るな**。図面に写っていない・寸法が無い・別図が要る場合は items に入れず、必ず unreadable に
+   「何が読めないか」と「どの図面があれば拾えるか」をセットで書け（例: "屋根勾配が断面図に無い。矩計図があれば実面積を出せます"）。
+6. **二重計上の禁止**。同じ部位を平面図と立面図の両方から拾って2行にするな。1部位1行にまとめ、source に両方書け。
+7. **開口部の控除**: 外壁・内壁・天井の面積は、原則1箇所あたり1㎡以上の開口（窓・出入口）を控除しろ。控除したかどうかを
+   必ず deduction に書け（例: "サッシ6箇所 計9.8㎡を控除"、"1㎡未満のため控除せず"）。
+8. **ロス率**: 実務標準の割増だけを掛けろ（板もの5%／クロス・シート10%／長尺材5%）。掛けたら lossRate と
+   quantityWithLoss に必ず反映し、掛けない項目は lossRate を 0 にしろ。折板屋根に張る材料の展開係数（×1.41等）は
+   ロスではなく数量そのものなので formula の中に書け。
+9. **図面種別で拾える範囲が違う**。平面図＝床面積・内壁長さ・建具数・設備位置／立面図＝外壁面積・開口／屋根伏図＝屋根面積・軒樋長さ／
+   断面図・矩計図＝階高・勾配／建具表＝建具の数量と寸法。無い図面から拾ったことにするな。
+10. 行ごとに confidence（高/中/低）を必ず付けろ。「高」は図示寸法から直接計算した行だけだ。
+
+## 出力形式（必ずこのJSONだけを返す）
+\`\`\`json
+{
+  "title": "図面から読み取った工事名・物件名（無ければnull）",
+  "drawingTypes": ["読み取った図面の種類（平面図/立面図/断面図/矩計図/屋根伏図/展開図/建具表/仕様書/配置図/不明）"],
+  "scale": "確定した縮尺（例: '1/100'）。図面ごとに違うなら代表値。取れなければnull",
+  "scaleSource": "縮尺をどう確定したか（'図面内のS=1/100表記' / '通り芯8,190mmから逆算' / '不明'）",
+  "building": {
+    "structure": "構造（木造/鉄骨造/RC造/SRC造/不明）",
+    "floors": "階数（例: '2階建て'。不明ならnull）",
+    "totalFloorAreaM2": 延床面積（数値、㎡。図面から計算できなければnull）,
+    "note": "建物についての補足（1行。無ければnull）"
+  },
+  "items": [
+    {
+      "part": "部位（屋根/外壁/内壁/床/天井/基礎/建具/設備/電気/外構/仮設 等）",
+      "name": "材料・工種名（例: 'ガルバリウム鋼板 折板屋根'、'石膏ボード t12.5'、'アルミサッシ 引違い 16509'）",
+      "method": "面積 / 長さ / 個数 / 体積 / 質量 のいずれか",
+      "dimensions": "拾いに使った寸法（例: '8,190×6,370'、'H2,800×L14,560'）。寸法が無い行はnull",
+      "formula": "計算式（数字で。例: '8.19×6.37=52.17'）",
+      "quantity": 数量（数値。ロス前）,
+      "unit": "単位（㎡/m/箇所/台/m3/kg/式）",
+      "deduction": "開口部などの控除の有無と内容（例: 'サッシ6箇所 計9.8㎡を控除'）。控除対象外なら null",
+      "lossRate": ロス率（数値。0.05 = 5%。掛けないなら 0）,
+      "quantityWithLoss": 発注数量（数値。quantity×(1+lossRate) を四捨五入）,
+      "source": "出典（例: 'P1 1階平面図 X1〜X3通り'、'P2 南立面図'）",
+      "confidence": "高/中/低",
+      "assumption": "この行で仮定した点（例: '天井高2,400と仮定'）。仮定が無ければ null"
+    }
+  ],
+  "summary": [
+    {"label": "主要数量の名前（例: '屋根面積'）", "value": "値と単位（例: '452㎡'）"}
+  ],
+  "unreadable": ["拾えなかった項目と、拾うために必要な図面・情報（必ずセットで）"],
+  "warnings": ["図面の矛盾・注意点（例: '平面図の寸法合計と全長が120mm合いません'）"],
+  "overallConfidence": "高/中/低"
+}
+\`\`\`
+
+items は拾えた分だけでよい（無理に埋めるな）。読めない図面なら items を空配列にし、unreadable に理由を書け。` });
+
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 12000,
+      temperature: 0,
+      system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
+      messages: [{ role: 'user', content }],
+    });
+
+    const text = response.content[0].type === 'text' ? response.content[0].text : '';
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('図面を読み取れませんでした。図面が鮮明か、寸法が写っているかご確認ください。');
+    let takeoff: any = null;
+    try { takeoff = JSON.parse(jsonMatch[1] || jsonMatch[0]); }
+    catch (_) { takeoff = parseLenientJson(jsonMatch[1] || jsonMatch[0]); }
+    if (!takeoff) throw new Error('図面の読み取り結果を解析できませんでした。');
+
+    // 数量の整合は機械側で担保する（AIは quantityWithLoss の掛け忘れ・桁落ちをやる）
+    takeoff.items = Array.isArray(takeoff.items) ? takeoff.items.map((it: any) => {
+      const q = Number(it.quantity) || 0;
+      const loss = Number(it.lossRate) || 0;
+      const withLoss = Number(it.quantityWithLoss) || 0;
+      const expected = Math.round(q * (1 + loss) * 100) / 100;
+      // 申告値が期待値と5%以上ずれていたら、式のほうを信じて引き直す
+      const fixed = (withLoss > 0 && Math.abs(withLoss - expected) / Math.max(expected, 1) < 0.05) ? withLoss : expected;
+      return { ...it, quantity: q, lossRate: loss, quantityWithLoss: fixed };
+    }) : [];
+
+    // 原本を保存して履歴に残す（OCRと同じ ocr_files ディレクトリ。DBにはパスだけ＝DB肥大化を避ける）
+    let takeoffLogId: number | null = null;
+    try {
+      ensureTakeoffTable();
+      const savedPaths: string[] = [];
+      files.forEach((f: any, i: number) => {
+        try {
+          const raw = String(f.data);
+          const isPdf = f.type === 'pdf' || raw.startsWith('data:application/pdf');
+          const ext = isPdf ? 'pdf' : raw.startsWith('data:image/png') ? 'png' : 'jpg';
+          const b64 = raw.replace(/^data:[^;]+;base64,/, '');
+          const dest = path.join(getOcrFilesDir(dbPath), `takeoff_${Date.now()}_${i}.${ext}`);
+          fs.writeFileSync(dest, Buffer.from(b64, 'base64'));
+          savedPaths.push(dest);
+        } catch (e) { console.error('図面原本の保存に失敗:', e); }
+      });
+      const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+      takeoffLogId = runSql(
+        `INSERT INTO takeoff_log (tenant_id, title, drawing_types, scale, item_count, takeoff_json, file_paths, comment, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [getCurrentTenant(), takeoff.title || null, (takeoff.drawingTypes || []).join('・') || null,
+         takeoff.scale || null, takeoff.items.length, JSON.stringify(takeoff), JSON.stringify(savedPaths),
+         data?.comment || '', jstNow]
+      );
+    } catch (e) { console.error('takeoff_log保存失敗:', e); }
+
+    sendUsageNotification('図面拾い出し', `${(takeoff.drawingTypes || []).join('・') || '図面'} / ${takeoff.items.length}項目 / 縮尺${takeoff.scale || '不明'}`);
+    return { ...takeoff, _takeoffLogId: takeoffLogId };
+  };
+  ipcMain.handle('ai:takeoffDrawing', (_e, data: any) => takeoffDrawingCore(data));
+
+  // 拾い出し履歴（過去に拾った図面を、もう一度見積に載せられるようにする）
+  ipcMain.handle('ai:takeoffHistory', () => {
+    try {
+      ensureTakeoffTable();
+      return queryAll(
+        'SELECT id, title, drawing_types, scale, item_count, takeoff_json, comment, created_at FROM takeoff_log WHERE tenant_id = ? ORDER BY id DESC LIMIT 20',
+        [getCurrentTenant()]
+      );
+    } catch (e) { return []; }
+  });
 
   // ── 見積前の面積確認（画像から面積・数量だけを読み取って提示する）──
   // 本見積(1〜2クレジット)の前に面積を直せるようにする。面積を間違えたまま見積を出すと

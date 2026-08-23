@@ -5,7 +5,19 @@ interface Window {
     updateProperty: (data: any) => Promise<void>;
     deleteProperty: (id: number) => Promise<void>;
     selectImage: () => Promise<string | null>;
-    selectPdf: () => Promise<{ page: number; data: string }[] | null>;
+    selectPdf: () => Promise<{ page: number; type?: string; data: string }[] | null>;
+
+    onAiProgress: (cb: (p: { stage: string; items: number }) => void) => () => void;
+
+    // 見積の原価・売価の修正（上書き保存／元に戻す）
+    saveCostEdit: (data: { constructionId: number; materialCost: number; laborCost: number; expenseCost: number; total: number }) => Promise<any>;
+    revertCostEdit: (data: { constructionId: number }) => Promise<any>;
+    getCostEdit: (constructionId: number) => Promise<any>;
+
+    // 図面からの数量拾い出し（Takeoff）
+    takeoffDrawing: (data: { files: { type?: string; data: string; name?: string }[]; comment?: string; scaleHint?: string; targets?: string }) => Promise<any>;
+    takeoffHistory: () => Promise<any[]>;
+    generateTakeoffPDF: (data: { takeoff: any; title?: string; clientName?: string }) => Promise<boolean>;
 
     listMaterials: () => Promise<any[]>;
     createMaterial: (data: any) => Promise<number>;

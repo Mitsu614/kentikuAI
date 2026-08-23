@@ -89,6 +89,16 @@ contextBridge.exposeInMainWorld('api', {
   // 見積書PDF
   generateEstimatePDF: (data: any) => ipcRenderer.invoke('estimates:generatePDF', data),
 
+  // 見積の原価・売価の修正（上書き保存／元に戻す）
+  saveCostEdit: (data: any) => ipcRenderer.invoke('estimates:saveCostEdit', data),
+  revertCostEdit: (data: any) => ipcRenderer.invoke('estimates:revertCostEdit', data),
+  getCostEdit: (constructionId: number) => ipcRenderer.invoke('estimates:getCostEdit', constructionId),
+
+  // 図面からの数量拾い出し（Takeoff）
+  takeoffDrawing: (data: any) => ipcRenderer.invoke('ai:takeoffDrawing', data),
+  takeoffHistory: () => ipcRenderer.invoke('ai:takeoffHistory'),
+  generateTakeoffPDF: (data: any) => ipcRenderer.invoke('takeoff:generatePDF', data),
+
   // 工事写真
   listConstructionPhotos: (cid: number) => ipcRenderer.invoke('constructionPhotos:list', cid),
   addConstructionPhoto: (data: any) => ipcRenderer.invoke('constructionPhotos:add', data),
@@ -302,5 +312,12 @@ contextBridge.exposeInMainWorld('api', {
     const listener = (_e: any, payload: any) => callback(payload || {});
     ipcRenderer.on('learning:done', listener);
     return () => ipcRenderer.removeListener('learning:done', listener);
+  },
+
+  // AI見積の生成中の進捗（main→renderer push）。ストリームで「いま何を書いているか」を受ける。
+  onAiProgress: (callback: (payload: { stage: string; items: number }) => void) => {
+    const listener = (_e: any, payload: any) => callback(payload || { stage: '', items: 0 });
+    ipcRenderer.on('ai:progress', listener);
+    return () => ipcRenderer.removeListener('ai:progress', listener);
   },
 });

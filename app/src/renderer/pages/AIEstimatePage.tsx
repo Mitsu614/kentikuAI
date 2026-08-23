@@ -11,6 +11,7 @@ const ESTIMATE_SEC = 60;    // AI見積の作成
 const AREA_SEC = 15;        // 写真からの面積読み取り
 const IMAGE_SEC = 40;       // 完成イメージ生成
 const AUTOCREATE_SEC = 12;  // 物件・施工・請求書の自動登録
+const TAKEOFF_SEC = 45;     // 図面からの数量拾い出し（PDFはページ数ぶん重い）
 
 // 待っている間に出す「いま何をしているか」の一言。固定POPと画面内カードで同じ文言を使う。
 const analyzeStep = (sec: number) =>
@@ -58,6 +59,24 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [location, setLocation] = useState('');
   const [comment, setComment] = useState('');
   const [area, setArea] = useState(''); // 面積・数量の実測値（AIの推定より優先させる）
+  // ── 図面からの数量拾い出し（Takeoff）──
+  // PDF図面を読ませて「計算式つきの数量」を先に確定させる。見積はこの数量を確定値として使う。
+  const [takeoffFiles, setTakeoffFiles] = useState<{ type: string; data: string; name: string }[]>([]);
+  const [takeoff, setTakeoff] = useState<any>(null);
+  const [takeoffLoading, setTakeoffLoading] = useState(false);
+  const [takeoffTargets, setTakeoffTargets] = useState(''); // 拾ってほしい対象（任意）
+  const [takeoffScale, setTakeoffScale] = useState('');     // 縮尺の指定（図面に表記が無い/違うとき）
+  const [takeoffOpen, setTakeoffOpen] = useState(false);
+  const [takeoffDragging, setTakeoffDragging] = useState(false);
+  // ── 原価の修正（人件費など）──
+  // AIが最初に出した見積を原本として持っておく。人が直しても、いつでもここへ戻せる。
+  const [baseline, setBaseline] = useState<any>(null);
+  const [costEdited, setCostEdited] = useState<any>(null);   // DBに保存済みの修正（過去ログを開いたとき用）
+  const [savingCost, setSavingCost] = useState(false);
+
+  // ⚡スピード優先 — お客様向けの工事時間説明と松竹梅プランを省いて、生成する文章量を減らす。
+  // 金額・内訳・人工の精度には触らない（削るのは提案の付録だけ）。
+  const [fastMode, setFastMode] = useState(false);
   const [roofType, setRoofType] = useState(''); // 屋根種別（お客様確認）→ 展開係数をAIに強制する
   const [structure, setStructure] = useState(''); // 建物構造（木造/鉄骨/RC/SRC）。未選択ならAIが推察する
   const [buildingAge, setBuildingAge] = useState(''); // 築年数（年）。改修・解体時のコストに反映させる
@@ -133,7 +152,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             time: l.created_at?.split(' ')[1]?.substring(0, 5) || '',
             date: l.created_at?.split(' ')[0] || '',
             workType: l.work_type || '不明',
-            total: l.ai_total || 0,
+            // 金額を直して保存してあれば、その金額を出す（ai_total はAIの原案として残す）
+            total: (Number(l.edited_total) || Number(l.ai_total) || 0),
+            aiTotal: Number(l.ai_total) || 0,
+            edited: !!l.edited_at,
             result: parsed,
             image: l.generated_image || null,
             uploadedImage: l.uploaded_image || null,
@@ -244,8 +266,160 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     onDrop: (e: React.DragEvent) => handleDrop(e, target),
   });
 
+  // 図面から数量を拾ってあれば、写真もコメントも無しで見積を出せる（拾い出しが入力そのもの）
+  const hasTakeoff = !!takeoff && (takeoff.items || []).length > 0;
+  // 見積結果に紐づいた拾い出し（過去ログを開いたときは result 側に入っている）を name で引ける形にする
+  const takeoffSource = (result && result.takeoff) || takeoff;
+  const takeoffByName: Record<string, any> = {};
+  ((takeoffSource && takeoffSource.items) || []).forEach((it: any) => {
+    if (it && it.name) takeoffByName[String(it.name).trim()] = it;
+  });
+  // 費用内訳のどの行で「拾い出し根拠」を開いているか
+  const [openBasis, setOpenBasis] = useState<number | null>(null);
+
+  // ── 原価（材料費・人件費・経費）を直したら、掛率を保ったまま売価を引き直す ──
+  // 「人件費を5万上げたのに請求金額が1円も変わらない」を起こさないため。
+  // 掛率はAIの原案（baseline）の 売価÷原価合計 を使う＝粗利率が維持される。
+  const baseMarkup = (() => {
+    const src = baseline || result;
+    if (!src) return 0;
+    const cost = (Number(src.estimatedMaterialCost) || 0) + (Number(src.estimatedLaborCost) || 0) + (Number(src.estimatedExpenseCost) || 0);
+    const total = Number(src.estimatedTotal) || 0;
+    return cost > 0 && total > 0 ? total / cost : 0;
+  })();
+
+  const editCost = (field: 'estimatedMaterialCost' | 'estimatedLaborCost' | 'estimatedExpenseCost', n: number) => {
+    if (!result) return;
+    const next: any = { ...result, [field]: n };
+    const cost = (Number(next.estimatedMaterialCost) || 0) + (Number(next.estimatedLaborCost) || 0) + (Number(next.estimatedExpenseCost) || 0);
+    if (baseMarkup > 0 && cost > 0) next.estimatedTotal = Math.round(cost * baseMarkup);
+    setResult(next);
+  };
+
+  // 見積ログ一覧を取り直す。金額を直したあと、一覧の金額をその場で追従させるために使う。
+  const refreshEstimateLog = async () => {
+    try {
+      const logs = await (window as any).api.getEstimateLog();
+      if (!logs) return;
+      setEstimateLog(logs.map((l: any) => {
+        let parsed = null;
+        try { parsed = JSON.parse(l.ai_json); } catch (_) {}
+        return {
+          id: l.id,
+          time: l.created_at?.split(' ')[1]?.substring(0, 5) || '',
+          date: l.created_at?.split(' ')[0] || '',
+          workType: l.work_type || '不明',
+          total: (Number(l.edited_total) || Number(l.ai_total) || 0),
+          aiTotal: Number(l.ai_total) || 0,
+          edited: !!l.edited_at,
+          result: parsed,
+          image: l.generated_image || null,
+          uploadedImage: l.uploaded_image || null,
+          constructionId: l.construction_id || null,
+          source: l.source || 'photo',
+          sourceLogId: l.source_log_id || null,
+        };
+      }));
+    } catch (_) {}
+  };
+
+  // 修正を上書き保存する。明細・売価・請求書金額まで一括で合わせ、AIの学習にも渡す。
+  const saveCostEdit = async () => {
+    if (!autoCreated?.constructionId || !result) return;
+    setSavingCost(true);
+    try {
+      const res = await (window as any).api.saveCostEdit({
+        constructionId: autoCreated.constructionId,
+        materialCost: Number(result.estimatedMaterialCost) || 0,
+        laborCost: Number(result.estimatedLaborCost) || 0,
+        expenseCost: Number(result.estimatedExpenseCost) || 0,
+        total: Number(result.estimatedTotal) || 0,
+      });
+      // 請求書カードを最新の金額で描き直す
+      try {
+        const inv = await (window as any).api.getInvoiceByConstruction(autoCreated.constructionId);
+        setLogInvoice(inv);
+      } catch (_) {}
+      setCostEdited({
+        edited_at: new Date().toLocaleString('ja-JP'),
+        edited_labor_cost: Number(result.estimatedLaborCost) || 0,
+        edited_total: Number(result.estimatedTotal) || 0,
+      });
+      await refreshEstimateLog();   // 見積ログ一覧の金額もその場で追従させる
+      const tax = Math.round((res?.amount || 0) * (1 + (res?.taxRate || 0.1)));
+      alert(`上書き保存しました。
+
+請求金額: ¥${Math.round(res?.amount || 0).toLocaleString()}（税込 ¥${tax.toLocaleString()}）
+
+人件費の修正はAIの学習にも反映されます。
+「元に戻す」でいつでもAIの原案へ戻せます。`);
+    } catch (e: any) {
+      alert('保存に失敗しました: ' + String(e?.message || e).replace(/^ERROR: /, '').replace(/^Error: /, ''));
+    } finally {
+      setSavingCost(false);
+    }
+  };
+
+  // AIが最初に出した金額へ戻す。ai_json は書き換えていないので、明細・請求書ごと復元できる。
+  const revertCostEdit = async () => {
+    if (!autoCreated?.constructionId) return;
+    if (!confirm('AIが最初に出した金額に戻します。\n入力した修正（人件費・原価・売価）と、請求書の金額も元に戻ります。\n\nよろしいですか？')) return;
+    setSavingCost(true);
+    try {
+      const res = await (window as any).api.revertCostEdit({ constructionId: autoCreated.constructionId });
+      if (res?.original) {
+        setResult({ ...res.original });
+        setBaseline(JSON.parse(JSON.stringify(res.original)));
+      } else if (baseline) {
+        setResult(JSON.parse(JSON.stringify(baseline)));
+      }
+      setCostEdited(null);
+      try {
+        const inv = await (window as any).api.getInvoiceByConstruction(autoCreated.constructionId);
+        setLogInvoice(inv);
+      } catch (_) {}
+      await refreshEstimateLog();
+      alert(`AIの原案に戻しました。
+
+請求金額: ¥${Math.round(res?.amount || 0).toLocaleString()}`);
+    } catch (e: any) {
+      alert('元に戻せませんでした: ' + String(e?.message || e).replace(/^ERROR: /, '').replace(/^Error: /, ''));
+    } finally {
+      setSavingCost(false);
+    }
+  };
+
+  // 費用内訳の1行を直す。数量・単価・金額のどれを触っても、残りが矛盾しないよう引き直す。
+  const updateBreakdownRow = (i: number, field: 'quantity' | 'unitPrice' | 'cost', n: number) => {
+    if (!result || !Array.isArray(result.breakdown)) return;
+    const next = [...result.breakdown];
+    const row = { ...next[i] };
+    const qty = Number(row.quantity) || 0;
+    const up = Number(row.unitPrice) || 0;
+    if (field === 'quantity') {
+      row.quantity = n;
+      if (up > 0) row.cost = Math.round(n * up);
+      else if (n > 0) row.unitPrice = Math.round((Number(row.cost) || 0) / n);
+    } else if (field === 'unitPrice') {
+      row.unitPrice = n;
+      row.cost = Math.round((qty > 0 ? qty : 1) * n);
+      if (!(qty > 0)) row.quantity = 1;
+    } else {
+      row.cost = n;
+      if (qty > 0) row.unitPrice = Math.round(n / qty);
+      else { row.quantity = 1; row.unitPrice = n; }
+    }
+    // 原価(costBase)は掛率を保ったまま追従させる。粗利が勝手に消えないようにする。
+    const oldCost = Number(next[i].cost) || 0;
+    const oldBase = Number(next[i].costBase) || 0;
+    if (oldCost > 0 && oldBase > 0) row.costBase = Math.round(oldBase * ((Number(row.cost) || 0) / oldCost));
+    next[i] = row;
+    const sum = next.reduce((acc: number, r: any) => acc + (Number(r.cost) || 0), 0);
+    setResult({ ...result, breakdown: next, estimatedTotal: sum });
+  };
+
   const canAnalyze = mode === 'single'
-    ? (!!imageData || comment.trim().length > 0)
+    ? (!!imageData || comment.trim().length > 0 || hasTakeoff)
     : (!!beforeImage && !!afterImage) || comment.trim().length > 0;
 
   // 見積前の面積確認。面積を間違えたまま本見積を回すと「再計算」でクレジットを二重に使うため、
@@ -332,6 +506,86 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     }
   };
 
+  // ── 図面ファイルの追加（PDF・画像）。PDFはClaudeにそのまま渡すのでラスタ化しない ──
+  const addTakeoffFile = async () => {
+    try {
+      const picked = await (window as any).api.selectPdf();
+      if (!picked || picked.length === 0) return;
+      const add = picked.map((f: any) => ({
+        type: f.type || (String(f.data).startsWith('data:application/pdf') ? 'pdf' : 'image'),
+        data: f.data,
+        name: `図面${takeoffFiles.length + 1}`,
+      }));
+      setTakeoffFiles(prev => [...prev, ...add].slice(0, 6));
+      setTakeoff(null);
+    } catch (e: any) { setError(e?.message || '図面を開けませんでした'); }
+  };
+
+  const dropTakeoffFiles = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setTakeoffDragging(false);
+    const files = Array.from(e.dataTransfer?.files || []);
+    const ok = files.filter(f => f.type === 'application/pdf' || f.type.startsWith('image/'));
+    if (ok.length === 0) { setError('PDFまたは画像の図面をドロップしてください'); return; }
+    try {
+      const read = await Promise.all(ok.map(async f => ({
+        type: f.type === 'application/pdf' ? 'pdf' : 'image',
+        data: await readFileAsDataUrl(f),
+        name: f.name,
+      })));
+      setTakeoffFiles(prev => [...prev, ...read].slice(0, 6));
+      setTakeoff(null);
+    } catch (err: any) { setError(err?.message || '図面の読み込みに失敗しました'); }
+  };
+
+  // 拾い出し実行。金額は出さない工程なので、失敗しても見積本体には影響させない。
+  const runTakeoff = async () => {
+    if (takeoffFiles.length === 0) return;
+    setTakeoffLoading(true);
+    setError('');
+    startBusy({ key: 'takeoff', title: '図面から数量を拾っています', etaSec: TAKEOFF_SEC, sub: '寸法・縮尺を読み取り中', note: '図面の枚数が多いほど時間がかかります' });
+    try {
+      const res = await (window as any).api.takeoffDrawing({
+        files: takeoffFiles.map(f => ({ type: f.type, data: f.data, name: f.name })),
+        comment,
+        scaleHint: takeoffScale,
+        targets: takeoffTargets,
+      });
+      endBusy();
+      setTakeoff(res);
+      setTakeoffOpen(true);
+      // 拾えた主要数量を「実測値」欄にも反映しておく（見積プロンプトの二重の保険）
+      const sum = (res?.summary || []).map((x: any) => `${x.label} ${x.value}`).join(' / ');
+      if (sum && !area.trim()) setArea(sum);
+    } catch (e: any) {
+      endBusy({ ok: false });
+      setError((e?.message || '図面の拾い出しに失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
+    } finally {
+      setTakeoffLoading(false);
+    }
+  };
+
+  // 拾い出し1行の数量を人が直す。直した値がそのまま見積の確定数量になる。
+  const editTakeoffQty = (i: number, n: number) => {
+    if (!takeoff) return;
+    const items = [...(takeoff.items || [])];
+    const loss = Number(items[i]?.lossRate) || 0;
+    items[i] = {
+      ...items[i],
+      quantity: n,
+      quantityWithLoss: Math.round(n * (1 + loss) * 100) / 100,
+      confidence: '高',            // 人が確定させた数量は最上位の確度として扱う
+      assumption: items[i]?.assumption,
+      formula: `${items[i]?.formula || ''}${items[i]?.formula ? ' → ' : ''}手入力 ${n}${items[i]?.unit || ''}`,
+    };
+    setTakeoff({ ...takeoff, items });
+  };
+
+  const removeTakeoffItem = (i: number) => {
+    if (!takeoff) return;
+    setTakeoff({ ...takeoff, items: (takeoff.items || []).filter((_: any, j: number) => j !== i) });
+  };
+
   const analyze = async (areaOverride?: string) => {
     if (!canAnalyze) return;
     setAreaCheck(null);
@@ -345,10 +599,19 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setElapsed(0);
     elapsedRef.current = 0;
     if (timerRef.current) clearInterval(timerRef.current);
+    // 実進捗（AIが実際に書いている内容）が届いたら、秒数から推測する固定メッセージはやめる。
+    let liveStage = '';
+    const unsubscribeProgress = (window as any).api.onAiProgress
+      ? (window as any).api.onAiProgress((p: { stage: string }) => {
+          if (!p?.stage) return;
+          liveStage = p.stage;
+          updateBusy({ sub: liveStage });
+        })
+      : null;
     timerRef.current = setInterval(() => {
       elapsedRef.current += 1;
       setElapsed(elapsedRef.current);
-      updateBusy({ sub: analyzeStep(elapsedRef.current) });
+      if (!liveStage) updateBusy({ sub: analyzeStep(elapsedRef.current) });
     }, 1000);
     // 画面をスクロールしても残り時間が見えるように、固定POPでも出す
     startBusy({ key: 'ai-estimate', title: 'AIが見積もりを作成しています', sub: analyzeStep(0), etaSec: ESTIMATE_SEC, note: '完了までこの画面を開いたままにしてください' });
@@ -365,12 +628,16 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       const roof = roofType ? { label: roofType.split('|')[0], developFactor: Number(roofType.split('|')[1]) || 0 } : null;
       // 現場条件（足場・搬入・アクセス・居ながら）→ 一つでも入っていれば構造化して渡す。未入力はAIが写真から推察。
       const site = { access: siteAccess, adjacency: siteAdjacency, occupied: siteOccupied, stories: siteStories };
+      // 図面拾い出しがあれば確定数量として渡す（AIの目測推定より優先される）
+      const takeoffPayload = takeoff && (takeoff.items || []).length > 0 ? takeoff : null;
       const payload = mode === 'beforeafter'
-        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline }
-        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline };
+        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode }
+        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode };
       const res = await (window as any).api.analyzeImage(payload);
       endBusy();
       setResult(res);
+      setBaseline(JSON.parse(JSON.stringify(res)));  // AIの原案を原本として保持（元に戻す用）
+      setCostEdited(null);
       setReArea(res?.assumedArea || ''); // 「AIが前提にした面積」を修正欄の初期値に
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
 
@@ -414,7 +681,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           setEstimateLog(logs.map((l: any) => {
             let parsed = null;
             try { parsed = JSON.parse(l.ai_json); } catch (_) {}
-            return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null, source: l.source || 'photo', sourceLogId: l.source_log_id || null };
+            return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: (Number(l.edited_total) || Number(l.ai_total) || 0), aiTotal: Number(l.ai_total) || 0, edited: !!l.edited_at, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null, source: l.source || 'photo', sourceLogId: l.source_log_id || null };
           }));
           // 最新のログをselectedに
           setSelectedLog(logs[0].id);
@@ -424,6 +691,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       endBusy({ ok: false });
       setError(e.message || 'AI解析に失敗しました');
     }
+    if (unsubscribeProgress) unsubscribeProgress();
     clearInterval(timerRef.current);
     setAnalyzing(false);
   };
@@ -498,7 +766,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             setEstimateLog(logs.map((l: any) => {
               let parsed = null;
               try { parsed = JSON.parse(l.ai_json); } catch (_) {}
-              return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: l.ai_total || 0, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null, source: l.source || 'photo', sourceLogId: l.source_log_id || null };
+              return { id: l.id, time: l.created_at?.split(' ')[1]?.substring(0, 5) || '', date: l.created_at?.split(' ')[0] || '', workType: l.work_type || '不明', total: (Number(l.edited_total) || Number(l.ai_total) || 0), aiTotal: Number(l.ai_total) || 0, edited: !!l.edited_at, result: parsed, image: l.generated_image || null, uploadedImage: l.uploaded_image || null, constructionId: l.construction_id || null, source: l.source || 'photo', sourceLogId: l.source_log_id || null };
             }));
           }
         } catch (_) {}
@@ -516,6 +784,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
 
   const loadFromLog = async (logItem: any) => {
     const r = logItem.result ? { ...logItem.result } : null;
+    // ai_json は「AIが最初に出した原案」。書き換えていないので、これが元に戻す先になる。
+    setBaseline(logItem.result ? JSON.parse(JSON.stringify(logItem.result)) : null);
+    setCostEdited(null);
     // ログの金額（実際の売価）で上書き
     if (r && logItem.total) r.estimatedTotal = logItem.total;
     setResult(r);
@@ -543,6 +814,28 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         ]);
         setLogPO(po);
         setLogInvoice(inv);
+        // ★画面の売上金額は「いま実際に請求している金額」に合わせる。
+        //   ai_total（AIが最初に出した額）を出したままだと、明細・請求書とズレたまま
+        //   「上書き保存」を押した瞬間に明細がその額へ引き直され、金額が勝手に下がる事故になる。
+        //   AIの原案は baseline に残してあるので「元に戻す」は従来どおり効く。
+        const liveAmount = Number(inv?.invoice?.amount) || 0;
+        if (liveAmount > 0) {
+          setResult((prev: any) => (prev ? { ...prev, estimatedTotal: liveAmount } : prev));
+        }
+        // 保存済みの原価修正があれば、その値で画面を出す（AIの原案ではなく「いまの見積」を見せる）
+        try {
+          const edit = await (window as any).api.getCostEdit(logItem.constructionId);
+          if (edit) {
+            setCostEdited(edit);
+            setResult((prev: any) => prev ? {
+              ...prev,
+              estimatedMaterialCost: Number(edit.edited_material_cost) || prev.estimatedMaterialCost,
+              estimatedLaborCost: Number(edit.edited_labor_cost) || prev.estimatedLaborCost,
+              estimatedExpenseCost: Number(edit.edited_expense_cost) || prev.estimatedExpenseCost,
+              estimatedTotal: Number(edit.edited_total) || prev.estimatedTotal,
+            } : prev);
+          }
+        } catch (_) {}
       } catch (_) {}
       setPOLoading(false);
       setInvoiceLoading(false);
@@ -903,6 +1196,220 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>実測値を入れると、写真・航空写真からの推定を使わず正確に計算します（信頼度アップ）。</div>
           </div>
 
+          {/* ── 図面からの数量拾い出し ──
+              見積の数量を「AIの目測」から「図面の寸法＋計算式」に変える工程。
+              ここで拾った数量は、見積側で確定値として扱われる（推定で上書きされない）。 */}
+          <div style={{ marginBottom: 12, border: '1px solid #d9e2ec', borderRadius: 10, overflow: 'hidden' }}>
+            <div
+              onClick={() => setTakeoffOpen(o => !o)}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer',
+                padding: '10px 12px', background: hasTakeoff ? '#eaf6ee' : '#f4f7fa',
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 'bold', color: '#37474f' }}>
+                📐 図面から数量を拾う（PDF・画像）
+                {hasTakeoff && (
+                  <span style={{ marginLeft: 8, fontSize: 11, color: '#2e7d32', fontWeight: 'bold' }}>
+                    ✓ {(takeoff.items || []).length}項目を拾い出し済み
+                  </span>
+                )}
+              </div>
+              <span style={{ fontSize: 12, color: '#78909c' }}>{takeoffOpen ? '▲ 閉じる' : '▼ 開く'}</span>
+            </div>
+
+            {takeoffOpen && (
+              <div style={{ padding: 12 }}>
+                <div style={{ fontSize: 11, color: '#607d8b', marginBottom: 8, lineHeight: 1.6 }}>
+                  平面図・立面図・屋根伏図・建具表などを入れると、寸法から<strong>計算式つきの数量</strong>を拾います。<br />
+                  拾った数量は見積の確定値になります（写真からの推定で上書きされません）。読めない部分は推測せず「拾えなかった項目」として出します。
+                </div>
+
+                <div
+                  onDragOver={e => { e.preventDefault(); if (!takeoffDragging) setTakeoffDragging(true); }}
+                  onDragLeave={e => { e.preventDefault(); setTakeoffDragging(false); }}
+                  onDrop={dropTakeoffFiles}
+                  style={{
+                    border: `2px dashed ${takeoffDragging ? '#3498db' : '#cfd8dc'}`,
+                    background: takeoffDragging ? '#eaf4fc' : '#fafbfc',
+                    borderRadius: 8, padding: 14, textAlign: 'center', marginBottom: 10,
+                  }}
+                >
+                  <div style={{ fontSize: 13, color: '#546e7a', marginBottom: 8 }}>
+                    ここに図面をドラッグ&ドロップ（PDF・JPG・PNG／6ファイルまで）
+                  </div>
+                  <button className="btn btn-secondary btn-sm" type="button" onClick={addTakeoffFile} disabled={takeoffLoading}>
+                    📄 図面を選ぶ
+                  </button>
+                </div>
+
+                {takeoffFiles.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+                    {takeoffFiles.map((f, i) => (
+                      <span key={i} style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 6, background: '#eceff1',
+                        borderRadius: 14, padding: '4px 10px', fontSize: 11, color: '#455a64',
+                      }}>
+                        {f.type === 'pdf' ? '📄' : '🖼'} {f.name}
+                        <button
+                          type="button"
+                          onClick={() => { setTakeoffFiles(prev => prev.filter((_, j) => j !== i)); setTakeoff(null); }}
+                          style={{ border: 'none', background: 'none', color: '#90a4ae', cursor: 'pointer', fontSize: 13, padding: 0 }}
+                        >×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                  <input
+                    type="text"
+                    value={takeoffTargets}
+                    onChange={e => setTakeoffTargets(e.target.value)}
+                    placeholder="拾ってほしい対象（任意）例: 屋根と外壁だけ / 建具の数量"
+                    style={{ flex: '2 1 220px', padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 13, fontFamily: 'inherit' }}
+                  />
+                  <input
+                    type="text"
+                    value={takeoffScale}
+                    onChange={e => setTakeoffScale(e.target.value)}
+                    placeholder="縮尺の指定（任意）例: 1/100"
+                    style={{ flex: '1 1 130px', padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 13, fontFamily: 'inherit' }}
+                  />
+                </div>
+
+                <button
+                  className="btn btn-primary"
+                  type="button"
+                  onClick={runTakeoff}
+                  disabled={takeoffFiles.length === 0 || takeoffLoading}
+                  style={{ width: '100%' }}
+                >
+                  {takeoffLoading ? '📐 図面を読み取っています…' : '📐 この図面から数量を拾う（AIストック2）'}
+                </button>
+
+                {hasTakeoff && (
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+                      <div style={{ fontSize: 12, color: '#37474f' }}>
+                        <strong>拾い出し結果</strong>
+                        {takeoff.scale && <span style={{ marginLeft: 8, color: '#607d8b' }}>縮尺 {takeoff.scale}（{takeoff.scaleSource || '根拠不明'}）</span>}
+                        {takeoff.overallConfidence && (
+                          <span style={{
+                            marginLeft: 8, fontWeight: 'bold',
+                            color: takeoff.overallConfidence === '高' ? '#2e7d32' : takeoff.overallConfidence === '中' ? '#ef6c00' : '#c62828',
+                          }}>総合確度 {takeoff.overallConfidence}</span>
+                        )}
+                      </div>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await (window as any).api.generateTakeoffPDF({
+                              takeoff, title: takeoff.title || comment.slice(0, 30), clientName,
+                            });
+                          } catch (e: any) { alert('PDF生成に失敗: ' + (e.message || e)); }
+                        }}
+                      >📄 拾い出し明細をPDFで出す</button>
+                    </div>
+
+                    {(takeoff.summary || []).length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                        {(takeoff.summary || []).map((sm: any, i: number) => (
+                          <span key={i} style={{ background: '#e8f0fe', border: '1px solid #d0e0f5', borderRadius: 6, padding: '4px 10px', fontSize: 11, color: '#33475b' }}>
+                            <strong>{sm.label}</strong>: {sm.value}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <div style={{ overflowX: 'auto' }}>
+                      <table className="data-table" style={{ fontSize: 12 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ width: 60 }}>部位</th>
+                            <th>材料・工種</th>
+                            <th style={{ width: 170 }}>計算式（根拠）</th>
+                            <th style={{ width: 90, textAlign: 'right' }}>数量</th>
+                            <th style={{ width: 44 }}>単位</th>
+                            <th style={{ width: 110 }}>出典</th>
+                            <th style={{ width: 44, textAlign: 'center' }}>確度</th>
+                            <th style={{ width: 30 }}></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(takeoff.items || []).map((it: any, i: number) => (
+                            <tr key={i}>
+                              <td style={{ color: '#607d8b' }}>{it.part || '—'}</td>
+                              <td>
+                                <div>{it.name}</div>
+                                {(it.dimensions || it.deduction || it.assumption || Number(it.lossRate) > 0) && (
+                                  <div style={{ fontSize: 10, color: '#90a4ae', marginTop: 2 }}>
+                                    {it.dimensions ? `寸法 ${it.dimensions}` : ''}
+                                    {it.deduction ? `${it.dimensions ? ' / ' : ''}${it.deduction}` : ''}
+                                    {Number(it.lossRate) > 0 ? ` / ロス${Math.round(Number(it.lossRate) * 100)}%込 ${it.quantityWithLoss}${it.unit || ''}` : ''}
+                                    {it.assumption ? ` / 仮定: ${it.assumption}` : ''}
+                                  </div>
+                                )}
+                              </td>
+                              <td style={{ fontFamily: 'monospace', fontSize: 11, color: '#546e7a' }}>{it.formula || '—'}</td>
+                              <td style={{ textAlign: 'right' }}>
+                                <NumInput
+                                  value={Number(it.quantity) || 0}
+                                  onValue={n => editTakeoffQty(i, n)}
+                                  style={{ width: 80, padding: '4px 6px', textAlign: 'right', border: '1px solid #ddd', borderRadius: 6, fontSize: 12, fontFamily: 'inherit' }}
+                                />
+                              </td>
+                              <td>{it.unit}</td>
+                              <td style={{ fontSize: 10, color: '#78909c' }}>{it.source || '—'}</td>
+                              <td style={{
+                                textAlign: 'center', fontWeight: 'bold',
+                                color: it.confidence === '高' ? '#2e7d32' : it.confidence === '中' ? '#ef6c00' : '#c62828',
+                              }}>{it.confidence || '—'}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  title="この行を消す"
+                                  onClick={() => removeTakeoffItem(i)}
+                                  style={{ border: 'none', background: 'none', color: '#b0bec5', cursor: 'pointer', fontSize: 14 }}
+                                >×</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+                      数量は直接直せます。直した行は「人が確定させた数量」として扱われ、見積はその値で積算します。
+                    </div>
+
+                    {(takeoff.unreadable || []).length > 0 && (
+                      <div style={{ marginTop: 10, background: '#fff8e1', border: '1px solid #f0dfa8', borderRadius: 8, padding: '8px 12px' }}>
+                        <div style={{ fontSize: 12, fontWeight: 'bold', color: '#8d6e00', marginBottom: 4 }}>⚠ 図面から拾えなかった項目</div>
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: '#795548', lineHeight: 1.7 }}>
+                          {(takeoff.unreadable || []).map((u: string, i: number) => <li key={i}>{u}</li>)}
+                        </ul>
+                        <div style={{ fontSize: 10, color: '#a1887f', marginTop: 4 }}>
+                          ここは推測で数量を作っていません。該当の図面を追加するか、実測値を上の欄に入れてください。
+                        </div>
+                      </div>
+                    )}
+
+                    {(takeoff.warnings || []).length > 0 && (
+                      <div style={{ marginTop: 8, background: '#f4f6f8', border: '1px solid #dde3e8', borderRadius: 8, padding: '8px 12px' }}>
+                        <div style={{ fontSize: 12, fontWeight: 'bold', color: '#546e7a', marginBottom: 4 }}>図面上の注意点</div>
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: '#607d8b', lineHeight: 1.7 }}>
+                          {(takeoff.warnings || []).map((w: string, i: number) => <li key={i}>{w}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* 屋根種別 — 展開係数（材料面積÷屋根面積）は種別で変わる。お客様に聞いて選べば、AIの写真判定より確実。 */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ fontSize: 13, fontWeight: 'bold', color: '#555', display: 'block', marginBottom: 4 }}>🏠 屋根種別（折板・波板の材料工事のとき — お客様に確認）</label>
@@ -1210,9 +1717,21 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             {/* 押す前に待ち時間を先出しする */}
             {!analyzing && !checkingArea && (
               <span style={{ fontSize: 13, color: '#666', background: '#f1f5f9', padding: '6px 12px', borderRadius: 999, whiteSpace: 'nowrap' }}>
-                ⏱ {etaText('ai-estimate', ESTIMATE_SEC)}
+                ⏱ {etaText('ai-estimate', fastMode ? Math.round(ESTIMATE_SEC * 0.7) : ESTIMATE_SEC)}
               </span>
             )}
+            {/* ⚡スピード優先。AIに書かせる文章量を減らして待ち時間を縮める。金額の精度は変えない。 */}
+            <label
+              title="お客様向けの「工事の所要時間・生活への影響」と松竹梅プランを省きます。金額・内訳・人工の計算は変わりません。"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer',
+                color: fastMode ? '#b45309' : '#64748b', background: fastMode ? '#fef3c7' : '#f8fafc',
+                border: `1px solid ${fastMode ? '#fcd34d' : '#e2e8f0'}`, borderRadius: 999, padding: '6px 12px', whiteSpace: 'nowrap',
+              }}
+            >
+              <input type="checkbox" checked={fastMode} onChange={e => setFastMode(e.target.checked)} style={{ margin: 0 }} />
+              ⚡ スピード優先（約3割はやい）
+            </label>
             <span style={{ fontSize: 12, color: '#888' }}>
               {mode === 'beforeafter' ? 'ビフォーアフター写真から工事内容を判定します' :
                imageData ? '画像 + コメントからAIが見積もりを自動作成します' : 'コメントだけでもAI見積もりできます（画像は任意）'}
@@ -1398,17 +1917,17 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     <div style={{ display: 'grid', gridTemplateColumns: isHs ? '1fr 1fr' : '1fr 1fr 1fr', gap: 10 }}>
                       <div style={tile}>
                         <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>{isHs ? '材工共（原価・人件費込み）' : '材料費（原価）'}</div>
-                        <NumInput value={mat} onValue={n => setResult({ ...result, estimatedMaterialCost: n })} style={num} />
+                        <NumInput value={mat} onValue={n => editCost('estimatedMaterialCost', n)} style={num} />
                       </div>
                       {!isHs && (
                         <div style={tile}>
                           <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>人件費（原価）</div>
-                          <NumInput value={labor} onValue={n => setResult({ ...result, estimatedLaborCost: n })} style={num} />
+                          <NumInput value={labor} onValue={n => editCost('estimatedLaborCost', n)} style={num} />
                         </div>
                       )}
                       <div style={tile}>
                         <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>経費（仮設・現場管理・福利厚生）</div>
-                        <NumInput value={exp} onValue={n => setResult({ ...result, estimatedExpenseCost: n })} style={num} />
+                        <NumInput value={exp} onValue={n => editCost('estimatedExpenseCost', n)} style={num} />
                       </div>
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
@@ -1435,44 +1954,73 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   </>
                 );
               })()}
+              {/* 原価を直したときの「いま何円か」の内訳。掛率を保って売価が追従したことを見せる */}
+              {baseMarkup > 0 && baseline && (
+                (() => {
+                  const baseLabor = Number(baseline.estimatedLaborCost) || 0;
+                  const nowLabor = Number(result.estimatedLaborCost) || 0;
+                  const baseTotal = Number(baseline.estimatedTotal) || 0;
+                  const nowTotal = Number(result.estimatedTotal) || 0;
+                  const diffLabor = nowLabor - baseLabor;
+                  const diffTotal = nowTotal - baseTotal;
+                  if (Math.abs(diffLabor) < 1 && Math.abs(diffTotal) < 1) return null;
+                  return (
+                    <div style={{
+                      marginTop: 10, background: '#fffbeb', border: '1px solid #fde68a',
+                      borderRadius: 8, padding: '8px 12px', fontSize: 12, color: '#92400e', lineHeight: 1.8,
+                    }}>
+                      <strong>AIの原案から修正されています</strong>
+                      {Math.abs(diffLabor) >= 1 && (
+                        <div>
+                          人件費（原価）: {fmt(baseLabor)} → <strong>{fmt(nowLabor)}</strong>
+                          <span style={{ color: diffLabor > 0 ? '#b91c1c' : '#15803d', marginLeft: 6 }}>
+                            （{diffLabor > 0 ? '+' : ''}{fmt(diffLabor)}）
+                          </span>
+                        </div>
+                      )}
+                      <div>
+                        売上金額: {fmt(baseTotal)} → <strong>{fmt(nowTotal)}</strong>
+                        <span style={{ color: diffTotal > 0 ? '#b91c1c' : '#15803d', marginLeft: 6 }}>
+                          （{diffTotal > 0 ? '+' : ''}{fmt(diffTotal)}）
+                        </span>
+                        <span style={{ color: '#a16207', marginLeft: 8 }}>
+                          掛率 ×{Math.round(baseMarkup * 100) / 100} を保って引き直しました（粗利率は維持）
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()
+              )}
+              {costEdited && (
+                <div style={{ marginTop: 8, fontSize: 11, color: '#0369a1', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 6, padding: '6px 10px' }}>
+                  💾 保存済みの修正があります（{costEdited.edited_at}）。請求書・明細もこの金額になっています。
+                </div>
+              )}
               {autoCreated && (
-                <button className="btn btn-primary btn-sm" style={{ marginTop: 10, width: '100%' }} onClick={async () => {
-                  try {
-                    if (autoCreated.constructionId) {
-                      // 各明細=粗利込みの最終価格。総額=内訳合計（掛率1・値引き行なし）。
-                      // お見積金額を編集した場合は、各明細を比例配分して総額に合わせる。
-                      const mats = await (window as any).api.listConstructionMaterials(autoCreated.constructionId);
-                      const currentTotal = mats.reduce((s: number, m: any) => s + m.quantity * m.unit_price, 0);
-                      const newTotal = result.estimatedTotal || currentTotal;
-                      if (currentTotal > 0 && newTotal > 0 && Math.abs(newTotal - currentTotal) >= 1) {
-                        const ratio = newTotal / currentTotal;
-                        for (const m of mats) {
-                          await (window as any).api.updateConstructionMaterial({
-                            id: m.id, materialId: m.material_id, name: m.material_name,
-                            quantity: m.quantity, unit: m.unit || '式',
-                            unitPrice: Math.round(m.unit_price * ratio),
-                          });
-                        }
-                      }
-                      await (window as any).api.updateConstruction({
-                        id: autoCreated.constructionId,
-                        propertyId: autoCreated.propertyId,
-                        title: result.workType || '工事',
-                        constructionDate: new Date().toISOString().split('T')[0],
-                        laborCost: 0,
-                        markupRate: 1,
-                        notes: '',
-                        status: '見積中',
-                      });
-                    }
-                    alert('金額を更新しました。AIの学習に反映されます。');
-                  } catch (e: any) {
-                    alert('更新に失敗しました: ' + (e.message || e));
-                  }
-                }}>修正を保存してAI学習に反映</button>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    style={{ flex: 1 }}
+                    disabled={savingCost}
+                    onClick={saveCostEdit}
+                  >
+                    {savingCost ? '保存中...' : '💾 修正を上書き保存（請求書・AI学習に反映）'}
+                  </button>
+                  <button
+                    className="btn btn-sm"
+                    style={{ whiteSpace: 'nowrap' }}
+                    disabled={savingCost}
+                    title="AIが最初に出した金額に戻します（請求書も戻ります）"
+                    onClick={revertCostEdit}
+                  >
+                    ↩ 元に戻す
+                  </button>
+                </div>
               )}
               <div style={{ fontSize: 11, color: '#888', marginTop: 6, textAlign: 'center' }}>
-                金額を修正するとAIの学習精度が向上します{!autoCreated ? '（一括登録後に保存できます）' : ''}
+                {autoCreated
+                  ? '人件費など原価を直して保存すると、明細・請求書の金額まで一括で合わせ、AIの学習にも反映します。'
+                  : '金額を修正するとAIの学習精度が向上します（一括登録後に保存できます）'}
               </div>
             </div>
           </div>
@@ -1480,82 +2028,166 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           {/* 内訳 */}
           {result.breakdown && result.breakdown.length > 0 && (
             <div className="card" style={{ marginTop: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <h3 style={{ margin: 0 }}>費用内訳</h3>
-                <span style={{ fontSize: 11, color: '#888' }}>金額は直接修正できます（合計に自動反映）</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                <h3 style={{ margin: 0 }}>費用内訳（数量・単価つき）</h3>
+                <span style={{ fontSize: 11, color: '#888' }}>数量・単価・金額はどれも直接直せます（残りが自動で引き直されます）</span>
               </div>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>項目</th>
-                    <th style={{ textAlign: 'right' }}>概算金額</th>
-                    <th>備考</th>
-                    <th style={{ textAlign: 'center', width: 80 }}>発注書</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.breakdown.map((b: any, i: number) => (
-                    <tr key={i}>
-                      <td>{b.item}</td>
-                      <td style={{ textAlign: 'right' }}>
-                        <NumInput
-                          value={b.cost || 0}
-                          onValue={n => {
-                            const next = [...result.breakdown];
-                            next[i] = { ...next[i], cost: n };
-                            // 内訳は粗利込みの最終提示額なので、合計＝内訳の総和にそろえる
-                            const sum = next.reduce((s: number, r: any) => s + (Number(r.cost) || 0), 0);
-                            setResult({ ...result, breakdown: next, estimatedTotal: sum });
-                          }}
-                          style={{
-                            width: 130, padding: '6px 8px', textAlign: 'right', fontWeight: 'bold',
-                            border: '1px solid #ddd', borderRadius: 6, fontSize: 14, fontFamily: 'inherit',
-                          }}
-                        />
+              {Object.keys(takeoffByName).length > 0 && (
+                <div style={{ fontSize: 11, color: '#2e7d32', background: '#eaf6ee', border: '1px solid #cfe6d6', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+                  📐 のついた行は<strong>図面から拾った数量</strong>です。クリックすると計算式・寸法・出典（どの図面のどこか）が開きます。
+                </div>
+              )}
+              <div style={{ overflowX: 'auto' }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th style={{ minWidth: 180 }}>項目</th>
+                      <th style={{ width: 64 }}>区分</th>
+                      <th style={{ width: 92, textAlign: 'right' }}>数量</th>
+                      <th style={{ width: 46 }}>単位</th>
+                      <th style={{ width: 110, textAlign: 'right' }}>単価</th>
+                      <th style={{ width: 130, textAlign: 'right' }}>金額</th>
+                      <th style={{ minWidth: 140 }}>備考（根拠）</th>
+                      <th style={{ textAlign: 'center', width: 70 }}>発注書</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.breakdown.map((b: any, i: number) => {
+                      const src = b.takeoffRef ? takeoffByName[String(b.takeoffRef).trim()] : null;
+                      // 数量が無い行（AIが出し忘れ／古い見積ログ）は「1式」として扱う。
+                      // 0のまま表示すると「数量0・単価0」に見えてしまう。
+                      const qty = Number(b.quantity) > 0 ? Number(b.quantity) : 1;
+                      const unitPrice = Number(b.unitPrice) > 0 ? Number(b.unitPrice) : Math.round((Number(b.cost) || 0) / qty);
+                      return (
+                        <React.Fragment key={i}>
+                          <tr>
+                            <td>
+                              {b.item}
+                              {src && (
+                                <button
+                                  type="button"
+                                  onClick={() => setOpenBasis(openBasis === i ? null : i)}
+                                  title="この数量を図面のどこから拾ったか見る"
+                                  style={{
+                                    marginLeft: 6, border: '1px solid #cfe6d6', background: '#eaf6ee', color: '#2e7d32',
+                                    borderRadius: 10, fontSize: 10, padding: '1px 7px', cursor: 'pointer', fontWeight: 'bold',
+                                  }}
+                                >📐 図面 {openBasis === i ? '▲' : '▼'}</button>
+                              )}
+                            </td>
+                            <td style={{ fontSize: 11, color: '#78909c' }}>{b.category || '—'}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <NumInput
+                                value={qty}
+                                onValue={n => updateBreakdownRow(i, 'quantity', n)}
+                                style={{ width: 80, padding: '5px 6px', textAlign: 'right', border: '1px solid #ddd', borderRadius: 6, fontSize: 13, fontFamily: 'inherit' }}
+                              />
+                            </td>
+                            <td style={{ fontSize: 12, color: '#607d8b' }}>{b.unit || '式'}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <NumInput
+                                value={unitPrice}
+                                onValue={n => updateBreakdownRow(i, 'unitPrice', n)}
+                                style={{ width: 100, padding: '5px 6px', textAlign: 'right', border: '1px solid #ddd', borderRadius: 6, fontSize: 13, fontFamily: 'inherit' }}
+                              />
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <NumInput
+                                value={b.cost || 0}
+                                onValue={n => updateBreakdownRow(i, 'cost', n)}
+                                style={{
+                                  width: 120, padding: '6px 8px', textAlign: 'right', fontWeight: 'bold',
+                                  border: '1px solid #ddd', borderRadius: 6, fontSize: 14, fontFamily: 'inherit',
+                                }}
+                              />
+                            </td>
+                            <td style={{ color: '#888', fontSize: 12 }}>{b.note}</td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                title="この項目で発注書PDFを出力"
+                                onClick={async () => {
+                                  const today = new Date().toISOString().split('T')[0];
+                                  const po = {
+                                    id: 0,
+                                    vendor_name: '',
+                                    vendor_address: '',
+                                    issue_date: today,
+                                    delivery_date: '',
+                                    tax_rate: 0.1,
+                                    notes: '',
+                                    construction_title: result.workType || '',
+                                  };
+                                  // 数量・単位・単価が拾えている行は、その粒度のまま発注書に落とす
+                                  const items = [{
+                                    name: b.item,
+                                    quantity: qty > 0 ? qty : 1,
+                                    unit: b.unit || '式',
+                                    unit_price: qty > 0 ? unitPrice : (b.cost || 0),
+                                  }];
+                                  try {
+                                    await (window as any).api.generatePurchaseOrderPDF({ po, items });
+                                  } catch (e: any) {
+                                    alert('PDF生成に失敗: ' + (e.message || e));
+                                  }
+                                }}
+                                style={{
+                                  fontSize: 11, color: '#3498db', fontWeight: 'bold', cursor: 'pointer',
+                                  background: 'none', border: 'none', padding: '4px 6px',
+                                }}
+                              >📄 出力</button>
+                            </td>
+                          </tr>
+                          {src && openBasis === i && (
+                            <tr>
+                              <td colSpan={8} style={{ background: '#f6fbf7', borderLeft: '3px solid #66bb6a' }}>
+                                <div style={{ fontSize: 12, color: '#37474f', lineHeight: 1.9, padding: '4px 2px' }}>
+                                  <div><strong>拾い出し根拠</strong>（{src.part || '—'} ／ {src.method || '—'}）</div>
+                                  <div>計算式: <span style={{ fontFamily: 'monospace', color: '#2e7d32' }}>{src.formula || '—'}</span></div>
+                                  {src.dimensions && <div>使った寸法: {src.dimensions}</div>}
+                                  {src.deduction && <div>控除: {src.deduction}</div>}
+                                  {Number(src.lossRate) > 0 && <div>ロス: {Math.round(Number(src.lossRate) * 100)}%（発注数量 {src.quantityWithLoss}{src.unit || ''}）</div>}
+                                  <div>出典: {src.source || '—'}
+                                    {takeoffSource?.scale && <span style={{ color: '#78909c' }}>（縮尺 {takeoffSource.scale}）</span>}
+                                  </div>
+                                  {src.assumption && <div style={{ color: '#ef6c00' }}>仮定: {src.assumption}</div>}
+                                  <div>確度: <strong style={{ color: src.confidence === '高' ? '#2e7d32' : src.confidence === '中' ? '#ef6c00' : '#c62828' }}>{src.confidence || '—'}</strong></div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                    <tr style={{ background: '#f8f9fa' }}>
+                      <td style={{ fontWeight: 'bold' }} colSpan={5}>合計（内訳の総和）</td>
+                      <td style={{ textAlign: 'right', fontWeight: 'bold', paddingRight: 8 }}>
+                        {fmt(result.breakdown.reduce((s: number, r: any) => s + (Number(r.cost) || 0), 0))}
                       </td>
-                      <td style={{ color: '#888', fontSize: 12 }}>{b.note}</td>
-                      <td style={{ textAlign: 'center' }}>
-                        <button
-                          type="button"
-                          title="この項目で発注書PDFを出力"
-                          onClick={async () => {
-                            const today = new Date().toISOString().split('T')[0];
-                            const po = {
-                              id: 0,
-                              vendor_name: '',
-                              vendor_address: '',
-                              issue_date: today,
-                              delivery_date: '',
-                              tax_rate: 0.1,
-                              notes: '',
-                              construction_title: result.workType || '',
-                            };
-                            const items = [{ name: b.item, quantity: 1, unit: '式', unit_price: b.cost || 0 }];
-                            try {
-                              await (window as any).api.generatePurchaseOrderPDF({ po, items });
-                            } catch (e: any) {
-                              alert('PDF生成に失敗: ' + (e.message || e));
-                            }
-                          }}
-                          style={{
-                            fontSize: 11, color: '#3498db', fontWeight: 'bold', cursor: 'pointer',
-                            background: 'none', border: 'none', padding: '4px 6px',
-                          }}
-                        >📄 出力</button>
+                      <td colSpan={2} style={{ color: '#888', fontSize: 11 }}>
+                        上の「合計」欄と連動します
                       </td>
                     </tr>
-                  ))}
-                  <tr style={{ background: '#f8f9fa' }}>
-                    <td style={{ fontWeight: 'bold' }}>合計（内訳の総和）</td>
-                    <td style={{ textAlign: 'right', fontWeight: 'bold', paddingRight: 8 }}>
-                      {fmt(result.breakdown.reduce((s: number, r: any) => s + (Number(r.cost) || 0), 0))}
-                    </td>
-                    <td colSpan={2} style={{ color: '#888', fontSize: 11 }}>
-                      上の「合計」欄と連動します
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
+              {(takeoffSource?.items || []).length > 0 && (
+                <div style={{ marginTop: 10, textAlign: 'right' }}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await (window as any).api.generateTakeoffPDF({
+                          takeoff: takeoffSource,
+                          title: result.workType || takeoffSource.title || '',
+                          clientName,
+                        });
+                      } catch (e: any) { alert('PDF生成に失敗: ' + (e.message || e)); }
+                    }}
+                  >📐 数量拾い出し明細をPDFで出す（見積書の別紙）</button>
+                </div>
+              )}
             </div>
           )}
 
@@ -2123,6 +2755,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
                     <div style={{ fontSize: 14, fontWeight: 'bold', color: '#27ae60' }}>
                       {fmt(log.total)}
+                      {/* 金額を直して保存した履歴は、AIの原案がいくらだったかも見えるようにする */}
+                      {log.edited && (
+                        <span
+                          title={`AIの原案 ${fmt(log.aiTotal || 0)} から修正済み`}
+                          style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: '#b45309', background: '#fef3c7', borderRadius: 4, padding: '1px 4px', verticalAlign: 'middle' }}
+                        >修正済</span>
+                      )}
                     </div>
                     <button
                       onClick={(e) => {
