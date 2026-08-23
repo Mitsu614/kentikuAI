@@ -37,7 +37,13 @@ const SMTP_USER = Deno.env.get("SMTP_USER") || "";
 const SMTP_PASS = Deno.env.get("SMTP_PASS") || "";
 const OWNER_EMAIL = Deno.env.get("OWNER_EMAIL") || SMTP_USER;
 const MAIL_FROM = Deno.env.get("MAIL_FROM") || SMTP_USER;
-const MAIL_FROM_NAME = Deno.env.get("MAIL_FROM_NAME") || "建築ブースト";
+
+// 差出人名。シークレットに U+FFFD（置換文字）を含む壊れた値が入っていると、
+// 「建築ブース」＋文字化け3個 のまま全通知メールに乗り続ける。
+// 壊れた値は捨てて既定値へ戻す。（設定時のコンソール文字コードで化けた実績あり）
+const RAW_FROM_NAME = Deno.env.get("MAIL_FROM_NAME") || "建築ブースト";
+const FROM_NAME_BROKEN = [...RAW_FROM_NAME].some((c) => c.codePointAt(0) === 0xFFFD);
+const MAIL_FROM_NAME = FROM_NAME_BROKEN ? "建築ブースト" : RAW_FROM_NAME;
 
 // 添付の総量。Edge の実行時間とメモリを守るための上限（超えた分は捨てて本文だけ送る）。
 const MAX_ATTACH_BYTES = 8 * 1024 * 1024;
@@ -90,6 +96,73 @@ function isEmail(s: unknown): boolean {
   return typeof s === "string" && /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(s.trim());
 }
 
+// ───────────────────────────────────────────────────────────────
+// 件名（日本語）のヘッダーエンコード
+//
+// なぜ自前で組むのか:
+//   denomailer@1.6.0 の quotedPrintableEncodeInline() は、件名を
+//   =?utf-8?Q?...?= で包む前に「本文用」の quoted-printable エンコーダを通す。
+//   そのエンコーダは74文字ごとにソフト改行 "=\r\n" を挿入するが、
+//   RFC 2047 は encoded-word の内部に改行を置くことを禁じている。
+//   さらに折り返しループの最終断片に offset が適用されておらず
+//   （ret += encodedData.slice(lines * 74) ）、境界の "=" が1〜2文字欠落する。
+//   結果、Gmail はデコードを諦めて "=e3=80=90..." を生のまま表示する。
+//   （denomailer issue #90 / 同ライブラリは2023年以降ほぼ未メンテ）
+//
+// 回避のしかた:
+//   こちらで RFC 2047 の Base64 encoded-word を組み立てて渡す。
+//   ただし quotedPrintableEncodeInline() は「非ASCIIを含む」か
+//   「"=?" で始まる」文字列を再エンコードしてしまうため、そのままでは二重になる。
+//   → 先頭に半角空白を1つ置く。全体はASCIIのみ・"=?" 始まりでもなくなるので
+//     素通しされ、writeCmd("Subject: ", subject) でそのまま書き出される。
+//     ヘッダー値の先頭空白は RFC 5322 上フォールディング空白として無視される。
+//
+// 差出人名(From)はこの経路を通さない。54文字と短く74文字の折り返しに達しないため
+// denomailer 側でも壊れず、化けの原因はシークレットの値そのものだった（上の FROM_NAME_BROKEN）。
+// ───────────────────────────────────────────────────────────────
+
+// encoded-word 1個は全体で75文字以内（RFC 2047 §2）。
+// "=?UTF-8?B?"(10) + payload + "?="(2) = 12文字が固定なので payload は63文字まで。
+// Base64は4文字単位なので60文字＝45バイトを1チャンクの上限にする。
+const HEADER_CHUNK_BYTES = 45;
+
+function base64OfBytes(bytes: Uint8Array): string {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function encodeHeaderWord(input: string): string {
+  // ASCIIだけなら変換不要（denomailer もそのまま通す）
+  const hasNonAscii = [...input].some((c) => (c.codePointAt(0) ?? 0) > 127);
+  if (!hasNonAscii) return input;
+
+  const enc = new TextEncoder();
+
+  // マルチバイト文字を encoded-word の境界でまたがせない（RFC 2047 の要求）。
+  // バイト長で切るのではなく、必ず文字単位で積む。
+  const chunks: string[] = [];
+  let cur = "";
+  let curBytes = 0;
+  for (const ch of input) {
+    const n = enc.encode(ch).length;
+    if (curBytes + n > HEADER_CHUNK_BYTES && cur) {
+      chunks.push(cur);
+      cur = "";
+      curBytes = 0;
+    }
+    cur += ch;
+    curBytes += n;
+  }
+  if (cur) chunks.push(cur);
+
+  const words = chunks.map((c) => `=?UTF-8?B?${base64OfBytes(enc.encode(c))}?=`);
+
+  // 複数語は CRLF + 空白で折り返す（RFC 5322 のフォールディング）。
+  // 先頭の空白は denomailer の再エンコード判定を外すためのもの。
+  return " " + words.join("\r\n ");
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
@@ -107,7 +180,9 @@ Deno.serve(async (req) => {
     const lic = await resolveLicense(token);
     if (!lic) return json({ error: "invalid_token" }, 401);
 
-    const subject = String(body.subject || "").slice(0, 200);
+    // 改行は必ず落とす。denomailer は件名をヘッダーへ素通しするため
+    // （writeCmd("Subject: ", subject)）、改行を残すとヘッダー注入になる。
+    const subject = String(body.subject || "").replace(/[\r\n]+/g, " ").slice(0, 200);
     const text = String(body.text || "");
     if (!subject && !text) return json({ error: "empty_mail" }, 400);
 
@@ -152,7 +227,9 @@ Deno.serve(async (req) => {
       await client.send({
         from: `${MAIL_FROM_NAME} <${MAIL_FROM}>`,
         to,
-        subject,
+        // 日本語件名は自前で RFC 2047 encoded-word にする（encodeHeaderWord の説明を参照）。
+        // denomailer のヘッダーエンコードは壊れており、Gmail がデコードできない。
+        subject: encodeHeaderWord(subject),
         content: text,
         attachments: attachments.length ? attachments : undefined,
       });

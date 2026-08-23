@@ -18,6 +18,11 @@ supabase secrets set \
 
 - `MAIL_FROM` を省略すると `SMTP_USER` が差出人になる
 - `OWNER_EMAIL` を省略すると `SMTP_USER` に届く
+- ⚠️ **`MAIL_FROM_NAME` は文字化けしやすい。** PowerShell から `supabase secrets set` すると
+  コンソールの文字コード次第で日本語の末尾が壊れ、差出人名が「建築ブース□□□」になる。
+  実際に一度これが起きている。**設定後は必ずテスト送信して差出人名を目視確認する**こと。
+  化けた値が入っていた場合、関数側で検知して既定値「建築ブースト」に戻す実装にはしてあるが、
+  そもそも設定しない（省略して既定値に任せる）のがいちばん安全。
 - Google Workspace に移行したら `SMTP_USER` / `SMTP_PASS` / `OWNER_EMAIL` を
   `info@kentiku-boost.jp` 系に差し替えるだけでよい（アプリの再ビルドは不要）
 
@@ -40,6 +45,28 @@ curl -X POST 'https://<PROJECT>.supabase.co/functions/v1/send-mail' \
 ```
 
 `{"ok":true,"sent":1,...}` が返り、`OWNER_EMAIL` に届けば成功。
+
+**日本語の件名で必ず確認すること。** 受信したメールの件名が
+
+- ✅ 「【月次レポート送信】…」と読める → 正常
+- ❌ 「=?utf-8?Q?=e3=80=90…」と生で見える → ヘッダーエンコードが壊れている
+
+```bash
+-d '{"token":"<LICENSE_TOKEN>","subject":"【月次レポート送信】中野工務店 — 0件利用","text":"件名の文字化けテスト"}'
+```
+
+差出人名も併せて「建築ブースト」と表示されるか目視する。
+
+## 既知の落とし穴：denomailer のヘッダーエンコード
+
+送信に使っている `denomailer@1.6.0` は、**日本語の件名を正しくエンコードできない**。
+`quotedPrintableEncodeInline()` が「本文用」のQPエンコーダ（74文字ごとに `=\r\n` を挿入）で
+ヘッダーを包むため、RFC 2047 が禁じている「encoded-word 内部の改行」が発生する。
+加えて折り返しの最終断片で `=` が1〜2文字欠落するバグもある（issue #90／2023年以降ほぼ未メンテ）。
+
+→ **対策として、件名は `index.ts` の `encodeHeaderWord()` で自前に Base64 encoded-word 化している。**
+先頭に半角空白を1つ置いて denomailer の再エンコード判定（非ASCIIを含む／`=?` で始まる）を外し、
+そのままヘッダーへ通す仕組み。**この先頭空白を「無駄」と思って消すと、件名の文字化けが再発する。**
 
 ## 呼び出し仕様
 
