@@ -249,6 +249,7 @@ export default function SettingsPage() {
               <option value="painting">塗装工事業</option>
               <option value="equipment">設備工事業（水道・電気・空調）</option>
               <option value="plant">プラント設備工事業（配管・機器据付・計装）</option>
+              <option value="interior">内装仕上工事業（クロス・床・軽天ボード）</option>
             </select>
           </div>
         </div>
@@ -962,8 +963,8 @@ function UserManagement() {
 
   const plans: Record<string, { name: string; credits: number }> = {
     demo: { name: 'デモ', credits: 30 },
-    standard: { name: 'スタンダード', credits: 50 },
-    pro: { name: 'プロ', credits: 300 },
+    standard: { name: 'スタンダード', credits: 100 },
+    pro: { name: 'プロ', credits: 500 },
     enterprise: { name: '法人カスタム', credits: 9999 },
   };
 
@@ -1065,8 +1066,8 @@ function UserManagement() {
                   setTenantForm({ ...tenantForm, plan: p, credits: plans[p]?.credits || 20 });
                 }}>
                   <option value="demo">デモ（30単位）</option>
-                  <option value="standard">スタンダード（50単位/月）</option>
-                  <option value="pro">プロ（200単位/月）</option>
+                  <option value="standard">スタンダード（100単位/月）</option>
+                  <option value="pro">プロ（500単位/月）</option>
                   <option value="enterprise">法人カスタム</option>
                 </select>
               </div>

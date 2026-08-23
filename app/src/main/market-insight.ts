@@ -55,6 +55,7 @@ const INDUSTRY_DEFAULT: Record<string, string> = {
   heatshield: '遮熱シート',
   electrical: '電気設備',
   lease: '仮設・足場',
+  interior: '内装',
 };
 
 /** コメントと業種設定から、外に出しても安全な工事種別ラベルを1つ決める */
