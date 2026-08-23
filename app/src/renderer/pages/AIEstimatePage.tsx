@@ -390,6 +390,43 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   };
 
   // 費用内訳の1行を直す。数量・単価・金額のどれを触っても、残りが矛盾しないよう引き直す。
+  // ── 備考（単価の内訳）を、金額を直したあとの数字に追従させる ──
+  // 備考には「コンクリート 4,500円/㎡…」と要素ごとの単価が並ぶ。金額だけ直すと
+  // 内訳の合計と単価が合わなくなり、お客様に出したときに足し算が合わない書類になる。
+  // 要素の単価は根拠のある実額なので勝手に按分せず、差額を「調整」として明示する。
+  const restampNote = (note: string, opts: {
+    oldCost: number; newCost: number; oldUnitPrice: number; newUnitPrice: number; unit: string;
+  }): string => {
+    const base = String(note || '');
+    // 前回付けた注記は毎回消してから付け直す（編集のたびに積み上がらないように）
+    const cleaned = base.split('\n').filter(l => !l.startsWith('※金額を修正')).join('\n').replace(/\n+$/, '');
+    if (!(opts.newCost > 0) || Math.abs(opts.newCost - opts.oldCost) < 1) return cleaned;
+    const yen = (v: number) => Math.round(v).toLocaleString();
+    const u = opts.unit || '';
+    // 備考に並んでいる要素単価（"4,500円/㎡" 等）を拾って合計する。合計が取れたら差額を調整として出す。
+    const parts = cleaned.match(/([\d,]+)\s*円\s*\/\s*[^\s／/、（(]+/g) || [];
+    let partSum = 0;
+    for (const m of parts) {
+      const v = Number(String(m).replace(/[^\d]/g, ''));
+      if (v > 0) partSum += v;
+    }
+    let line = `※金額を修正: ${yen(opts.oldCost)}円 → ${yen(opts.newCost)}円`;
+    if (opts.newUnitPrice > 0 && opts.oldUnitPrice > 0 && opts.oldUnitPrice !== opts.newUnitPrice) {
+      line += `（単価 ${yen(opts.oldUnitPrice)} → ${yen(opts.newUnitPrice)}円/${u || '単位'}）`;
+    }
+    // partSum は「原価の要素単価の合計」。新しい単価が売価側なら比較しても意味が無いので、
+    // 差が単価の5割以内に収まっているときだけ調整行として出す（誤検出を避ける）。
+    if (partSum > 0 && opts.newUnitPrice > 0) {
+      const diff = opts.newUnitPrice - partSum;
+      if (Math.abs(diff) >= 1 && Math.abs(diff) <= partSum * 0.5) {
+        const qty = opts.newCost / opts.newUnitPrice;
+        line += `\n　内訳合計 ${yen(partSum)}円/${u || '単位'} との差 ${diff < 0 ? '▲' : '+'}${yen(Math.abs(diff))}円/${u || '単位'}`
+          + `（${diff < 0 ? '値引き' : '追加'}調整 ${diff < 0 ? '▲' : '+'}${yen(Math.abs(diff) * qty)}円）。上の内訳は修正前の単価です`;
+      }
+    }
+    return cleaned + (cleaned ? '\n' : '') + line;
+  };
+
   const updateBreakdownRow = (i: number, field: 'quantity' | 'unitPrice' | 'cost', n: number) => {
     if (!result || !Array.isArray(result.breakdown)) return;
     const next = [...result.breakdown];
@@ -413,6 +450,14 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     const oldCost = Number(next[i].cost) || 0;
     const oldBase = Number(next[i].costBase) || 0;
     if (oldCost > 0 && oldBase > 0) row.costBase = Math.round(oldBase * ((Number(row.cost) || 0) / oldCost));
+    // 備考の内訳と食い違ったままにしない（足し算の合わない見積書を出さないため）
+    row.note = restampNote(row.note, {
+      oldCost: Number(next[i].cost) || 0,
+      newCost: Number(row.cost) || 0,
+      oldUnitPrice: Number(next[i].unitPrice) || (Number(next[i].quantity) > 0 ? Math.round((Number(next[i].cost) || 0) / Number(next[i].quantity)) : 0),
+      newUnitPrice: Number(row.unitPrice) || 0,
+      unit: row.unit || next[i].unit || '',
+    });
     next[i] = row;
     const sum = next.reduce((acc: number, r: any) => acc + (Number(r.cost) || 0), 0);
     setResult({ ...result, breakdown: next, estimatedTotal: sum });
@@ -2047,7 +2092,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       <th style={{ width: 46 }}>単位</th>
                       <th style={{ width: 110, textAlign: 'right' }}>単価</th>
                       <th style={{ width: 130, textAlign: 'right' }}>金額</th>
-                      <th style={{ minWidth: 140 }}>備考（根拠）</th>
+                      <th style={{ minWidth: 260 }}>備考（単価の内訳・根拠）</th>
                       <th style={{ textAlign: 'center', width: 70 }}>発注書</th>
                     </tr>
                   </thead>
@@ -2101,7 +2146,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                                 }}
                               />
                             </td>
-                            <td style={{ color: '#888', fontSize: 12 }}>{b.note}</td>
+                            {/* 備考は「コンクリート 4,500円/㎡（…）」のように単価を割った複数行になる。
+                                改行を潰すと1行に繋がって読めないので pre-wrap でそのまま出す。 */}
+                            <td style={{ color: '#666', fontSize: 11.5, whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>{b.note}</td>
                             <td style={{ textAlign: 'center' }}>
                               <button
                                 type="button"

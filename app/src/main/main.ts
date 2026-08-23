@@ -955,6 +955,73 @@ function dropPricelessBreakdownRows(result: any): number {
   return dropped;
 }
 
+// ── 内訳1行ごとの整合を直す（2026-08-23に実データ監査で発見）──
+// 直近10件の見積を機械的に検算したところ、次の3種の壊れ方が出ていた。
+//   ① 数量×単価 ≠ 金額（例: 16人工×26,100=417,600 なのに金額 521,000）
+//      → 新設した「数量・単価」列がそのまま足し算の合わない見積書になる。
+//   ② costBase == cost（粗利ゼロ）。プロンプトで禁止しているがAIは守り切れない。
+//   ③ costBase > cost（＝その行は赤字）。例: 原価112,444 に対し売価64,000。
+// ①②は機械で直せる。③は「原価が高すぎる」のではなく「売価が安すぎる」possibility が高く、
+// 勝手に原価を下げると赤字を隠すことになるので**直さず警告**し、承認式の修正候補だけ出す。
+function repairRowConsistency(result: any, context: string, fallbackMarkup: number): string[] {
+  if (!result || !Array.isArray(result.breakdown)) return [];
+  const warns: string[] = [];
+  const markup = Number(result.markupRate) > 1 ? Number(result.markupRate) : fallbackMarkup;
+  const yen = (v: number) => Math.round(v).toLocaleString();
+
+  const arithFixed: string[] = [];
+  const zeroMargin: string[] = [];
+  const underwater: { item: string; costBase: number; cost: number }[] = [];
+
+  for (const b of result.breakdown) {
+    const name = String(b?.item || '（項目名なし）');
+    const q = Number(b?.quantity) || 0;
+    const up = Number(b?.unitPrice) || 0;
+    const cost = Number(b?.cost) || 0;
+    const base = Number(b?.costBase) || 0;
+
+    // ① 数量×単価 と 金額 が合わない → 金額(お金)を正とし、単価を引き直す。
+    //    金額を動かすと総額が変わってしまうため、表示用の単価side を合わせる。
+    if (q > 0 && up > 0 && cost > 0 && Math.abs(q * up - cost) > Math.max(2, cost * 0.01)) {
+      const newUp = Math.round(cost / q);
+      arithFixed.push(`${name}（${q}${b.unit || ''}×${yen(up)}円=${yen(q * up)}円 ≠ 金額${yen(cost)}円 → 単価を${yen(newUp)}円に）`);
+      b.unitPrice = newUp;
+    }
+
+    // ② 原価と売価が同額 → 粗利ゼロ。掛率で割り戻して原価を作る（売価は動かさない＝総額不変）。
+    if (base > 0 && cost > 0 && Math.abs(base - cost) < 1) {
+      b.costBase = Math.max(1, Math.round(cost / markup));
+      zeroMargin.push(`${name}（原価=売価 ${yen(cost)}円 → 原価を${yen(b.costBase)}円に）`);
+    } else if (base > cost && cost > 0) {
+      // ③ 原価が売価を超えている＝この行は赤字。数字は動かさない。
+      underwater.push({ item: name, costBase: base, cost });
+    }
+  }
+
+  if (arithFixed.length > 0) {
+    warns.push(`数量×単価と金額が合わない行を直しました（金額は変えず単価を引き直し）: ${arithFixed.join(' / ')}`);
+  }
+  if (zeroMargin.length > 0) {
+    warns.push(`原価と売価が同額（粗利ゼロ）の行を直しました: ${zeroMargin.join(' / ')}`);
+  }
+  if (underwater.length > 0) {
+    const total = underwater.reduce((s, u) => s + (u.costBase - u.cost), 0);
+    const detail = underwater.map(u => `${u.item}（原価${yen(u.costBase)}円 > 売価${yen(u.cost)}円）`).join(' / ');
+    warns.push(`★赤字の行があります: ${detail}。合計で ${yen(total)}円 の持ち出しです。${NO_CHANGE_NOTE}`);
+    // 承認式の修正候補: 赤字行だけ売価を「原価×掛率」に引き上げる
+    const raised = underwater.reduce((s, u) => s + (Math.round(u.costBase * markup) - u.cost), 0);
+    (result.estimateFixes = result.estimateFixes || []).push({
+      kind: 'margin',
+      factor: markup,
+      items: underwater.map(u => u.item),
+      label: `赤字の${underwater.length}行を原価×掛率${markup.toFixed(2)}まで引き上げる（+${yen(raised)}円）`,
+    });
+  }
+
+  if (warns.length > 0) console.warn(`[${context}] 内訳の整合を検査: ${warns.join(' || ')}`);
+  return warns;
+}
+
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
   // 「こちらに変更する」候補は毎回作り直す（補正を当てて積み直すと、解消した警告は再出しない）
@@ -974,6 +1041,7 @@ function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = D
     ...pinHeatshieldScalePrices(result, context),   // ★最後: 標準4費目を規模アンカーで確定（費目落ち・振り子を止める）
     ...repairDigitDrops(result, context),
     ...enforceHeatshieldQuantity(result, context),
+    ...repairRowConsistency(result, context, fallbackMarkup),
   ];
   if (warns.length) result.estimateWarnings = warns;
   const sum = result.breakdown.reduce((s: number, b: any) => s + (Number(b?.cost) || 0), 0);
@@ -1046,6 +1114,18 @@ function applyEstimateFix(result: any, fix: any, context: string): any {
         if (Number(r?.manDays) > 0) r.manDays = Math.round(Number(r.manDays) * factor * 100) / 100;
         if (Number(r?.days) > 0) r.days = Math.round(Number(r.days) * factor * 100) / 100;
       }
+    }
+  } else if (fix.kind === 'margin') {
+    // 赤字行（原価>売価）の売価を「原価×掛率」まで引き上げる。対象行だけを触る。
+    const targets: string[] = Array.isArray(fix.items) ? fix.items.map((x: any) => String(x)) : [];
+    for (const b of result.breakdown) {
+      const nm = String(b?.item || '');
+      if (targets.length > 0 && !targets.includes(nm)) continue;
+      const base = Number(b?.costBase) || 0;
+      const cost = Number(b?.cost) || 0;
+      if (!(base > cost) || !(base > 0)) continue;
+      b.cost = Math.round(base * factor);
+      if (Number(b.quantity) > 0) b.unitPrice = Math.round(Number(b.cost) / Number(b.quantity));
     }
   } else if (fix.kind === 'labor') {
     // 人件費不整合: 施工費の行だけを factor 倍して、人件費を人工の積み上げに合わせる
@@ -6307,7 +6387,29 @@ ${fastMode ? '' : `### ルールE': お客様への時間の説明（customerSch
 - 分からないから曖昧にする、は禁止。工種・数量・人工から算出した根拠のある時間を書け。`}
 
 ### ルールE: breakdownの書き方
-- 各項目に「数量×単価」の根拠をnoteに記載（材料の行は "7m²×5,570円/m²"、施工費の行は "3人工×2日×25,000円"）
+- ★★★noteは「単価の中身が分かる」ところまで必ず割れ★★★
+  「86㎡×14,000円/㎡（材料原価：コンクリート・鉄筋・型枠・砕石・防湿シート）」のように
+  **材料名を並べただけで単価を割らないのは禁止**。それでは何がいくらなのか誰にも検算できない。
+  複合単価（材工共・一式の㎡単価）は、**構成要素ごとに「何円/㎡」まで分解**し、
+  各要素に**規格・仕様・数量の根拠**を添えろ。分解した単価の合計は必ず元の単価に一致させろ。
+  noteは改行して次の形で書け（改行はそのまま画面に出る）:
+    1行目: 数量×単価＝金額（原価）
+    2行目: 「内訳:」で始め、要素を「名称 ◯,◯◯◯円/㎡（規格・数量の根拠）」の形で / 区切りで並べる
+    3行目: 「→ 売価」数量×売価単価＝金額（掛率◯.◯◯）
+    4行目: 仕様・出典（図面注記、実績、相場DB のどれによるか）
+  【材料の書き方の例（ベタ基礎）】
+    86㎡×14,000円/㎡＝1,204,000円（原価）
+    内訳: コンクリート 4,500円/㎡（18-15-20 スラブt150+立上り 0.21m³/㎡×21,400円/m³）／
+    鉄筋 3,200円/㎡（D13@200 ダブル 11.2kg/㎡×285円/kg）／型枠 2,800円/㎡（立上り両面 0.62m²/㎡×4,500円/m²）／
+    砕石・転圧 1,200円/㎡（C-40 t100 0.1m³/㎡×9,800円/m³＋転圧）／防湿シート・捨てコン 1,100円/㎡（PE t0.15＋捨てコンt50）／
+    アンカーボルト・基礎パッキン 1,200円/㎡（M12 @2,000＋パッキン全周）
+    → 売価 86㎡×18,000円/㎡＝1,548,000円（掛率1.29）
+    ベタ基礎・基礎パッキン仕様（図面注記より）
+  【施工費の書き方の例】
+    3人工×2日×25,000円＝150,000円（原価）
+    内訳: 型枠大工 2人×2日 25,000円/人日（歩掛 型枠 約25㎡/人日）／鉄筋工 1人×1日 26,000円/人日（歩掛 約0.9t/人日）
+    → 売価 195,000円（掛率1.30）
+- 単価を割る根拠が無い要素は、無理に数字を作らず「一式」と書いたうえで**何が含まれるか**を必ず列挙しろ。
 - 設備機器は型番相当のグレードをnoteに記載（例: "TOTO同等品中級グレード"）
 - ★各項目に category を必ず付けろ。値は "材料" / "施工費" / "仮設" / "経費" の4つのいずれか。
   ・"材料": 材料そのもの　・"施工費": 職人の人工　・"仮設": 足場・養生・仮囲い・誘導員・重機回送
@@ -6361,7 +6463,7 @@ ${fastMode ? '' : `  "customerSchedule": {
     {"trade": "職種名", "workers": 人数, "days": 日数, "manDays": 人工数, "dailyRate": 日額単価, "basis": "★なぜこの日数・人工になるのかの根拠を必ず記入。歩掛（1人が1日にこなす標準作業量）から算出した式で書く。例: '屋根400㎡ ÷ 2人 ÷ 約66㎡/人日 ≒ 3日' / 'コンセント30箇所 ÷ @15箇所/人日 = 2人工'。数量が無い管理系（現場管理・雑工）は '工期◯日に対し常駐0.5人' のように据え置き根拠を書く"}
   ],
   "breakdown": [
-    {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "quantity": 数量（数値。式なら1）, "unit": "単位（m2/式/箇所 等）", "unitPrice": 売価の単価（数値、円。cost ÷ quantity に必ず一致させること）, "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい。**必ず quantity × unitPrice と一致させること。桁を落とすな**）, "note": "数量×単価の根拠（例: 13.3m²×5,570円）。図面拾い出しがある行は、その計算式をそのまま引き写せ", "takeoffRef": "この行の数量の出どころ。図面拾い出しの行を使ったなら、その拾い出し行の name をそのまま入れる。拾い出しと無関係な行（仮設・運搬・諸経費など）は null"}
+    {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "quantity": 数量（数値。式なら1）, "unit": "単位（m2/式/箇所 等）", "unitPrice": 売価の単価（数値、円。cost ÷ quantity に必ず一致させること）, "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい。**必ず quantity × unitPrice と一致させること。桁を落とすな**）, "note": "★単価の中身まで割った根拠★ ルールEの書き方に必ず従い、複合単価は構成要素ごとに「何円/㎡（規格・数量の根拠）」まで分解して改行区切りで書く。材料名を並べるだけ・数量×単価だけで終わらせるのは禁止。図面拾い出しがある行は、その計算式をそのまま引き写せ", "takeoffRef": "この行の数量の出どころ。図面拾い出しの行を使ったなら、その拾い出し行の name をそのまま入れる。拾い出しと無関係な行（仮設・運搬・諸経費など）は null"}
   ],
   "roofAreaM2": ★遮熱シート工事で折板・波板屋根のときのみ★ 屋根面積(数値、㎡)。それ以外は null,
   "quantityM2": ★遮熱シート工事で折板・波板屋根のときのみ★ 見積数量(数値、㎡。展開係数を掛けた後)。×1.4しなかったなら roofAreaM2 と同じ値。それ以外は null,
