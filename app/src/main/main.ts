@@ -1044,30 +1044,34 @@ function enforceStatutoryWelfare(result: any, context: string, fallbackMarkup: n
     .reduce((s: number, b: any) => s + baseOf(b), 0);
   if (laborBase <= 0) return [];
 
-  const noteOf = (base: number) =>
-    `労務費原価 ${laborBase.toLocaleString()}円 × 16%（健康保険約5.0%＋介護保険約0.8%＋厚生年金9.15%＋雇用保険約0.95%＋労災保険約0.95%）＝ ${base.toLocaleString()}円`;
   const minBase = Math.round(laborBase * WELFARE_MIN_RATE);
   const fixBase = Math.round(laborBase * WELFARE_RATE);
   const fixCost = Math.round(fixBase * markup);
   const row = rows.find((b) => /福利厚生|法定福利/.test(String(b?.item || '')));
+  const before = row ? (Number(row.cost) || 0) : 0;
+  const curBase = row ? baseOf(row) : 0;
+  if (row && curBase >= minBase) return [];
+
+  // ★勝手に増額しない。金額はここでは変えず、「こちらに変更する」を押されたときだけ当てる
+  //   （減額は自動・増額は承認、という既存の方針に合わせる）。
+  (result.estimateFixes = result.estimateFixes || []).push({
+    kind: 'welfare',
+    factor: WELFARE_RATE,
+    laborBase,
+    newBase: fixBase,
+    newCost: fixCost,
+    label: row
+      ? `法定福利費を労務費の16%（${fixCost.toLocaleString()}円）に直す（+${(fixCost - before).toLocaleString()}円）`
+      : `法定福利費を追加する（労務費の16%＝${fixCost.toLocaleString()}円）`,
+  });
 
   if (!row) {
-    rows.push({
-      item: '福利厚生費（法定福利費）', category: '経費',
-      quantity: 1, unit: '式', unitPrice: fixCost, cost: fixCost, costBase: fixBase, note: noteOf(fixBase),
-    });
-    console.warn(`[${context}] 法定福利費が未計上 → 労務費原価${laborBase}の16%=${fixCost}で追加`);
-    return [`法定福利費が計上されていなかったため、労務費原価の16%（${fixCost.toLocaleString()}円）で追加しました。`];
+    console.warn(`[${context}] 法定福利費が未計上（自動修正しません） → 労務費原価${laborBase}の16%=${fixCost}が目安`);
+    return [`法定福利費が計上されていません。建設業の事業主負担は労務費のおよそ16%（健康保険5.0%＋介護保険0.8%＋厚生年金9.15%＋雇用保険0.95%＋労災保険0.95%）で、労務費原価 ${laborBase.toLocaleString()}円 なら ${fixCost.toLocaleString()}円 が目安です。元請へ提出する見積では内訳明示を求められます。${NO_CHANGE_NOTE}`];
   }
-
-  const curBase = baseOf(row);
-  if (curBase >= minBase) return [];
-  const before = Number(row.cost) || 0;
   const curRate = Math.round((curBase / laborBase) * 1000) / 10;
-  row.quantity = 1; row.unit = '式';
-  row.unitPrice = fixCost; row.cost = fixCost; row.costBase = fixBase; row.note = noteOf(fixBase);
-  console.warn(`[${context}] 法定福利費が過少(${curRate}%) → 16%に引き上げ ${before}→${fixCost}`);
-  return [`法定福利費が労務費の${curRate}%と過少だったため、16%（${before.toLocaleString()}円 → ${fixCost.toLocaleString()}円）に引き上げました。`];
+  console.warn(`[${context}] 法定福利費が過少(${curRate}%、自動修正しません) → 16%なら ${fixCost}`);
+  return [`法定福利費が労務費の${curRate}%と過少です。建設業の事業主負担は労務費のおよそ16%（健康保険5.0%＋介護保険0.8%＋厚生年金9.15%＋雇用保険0.95%＋労災保険0.95%）で、${before.toLocaleString()}円 → ${fixCost.toLocaleString()}円 が目安です。${NO_CHANGE_NOTE}`];
 }
 
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
@@ -1175,6 +1179,22 @@ function applyEstimateFix(result: any, fix: any, context: string): any {
       if (!(base > cost) || !(base > 0)) continue;
       b.cost = Math.round(base * factor);
       if (Number(b.quantity) > 0) b.unitPrice = Math.round(Number(b.cost) / Number(b.quantity));
+    }
+  } else if (fix.kind === 'welfare') {
+    // 法定福利費を労務費原価の16%に直す。無ければ行ごと追加する。
+    const newBase = Number(fix.newBase) || 0;
+    const newCost = Number(fix.newCost) || 0;
+    if (newCost <= 0) return result;
+    const note = `労務費原価 ${(Number(fix.laborBase) || 0).toLocaleString()}円 × 16%（健康保険約5.0%＋介護保険約0.8%＋厚生年金9.15%＋雇用保険約0.95%＋労災保険約0.95%）＝ ${newBase.toLocaleString()}円`;
+    const row = result.breakdown.find((b: any) => /福利厚生|法定福利/.test(String(b?.item || '')));
+    if (row) {
+      row.quantity = 1; row.unit = '式';
+      row.unitPrice = newCost; row.cost = newCost; row.costBase = newBase; row.note = note;
+    } else {
+      result.breakdown.push({
+        item: '福利厚生費（法定福利費）', category: '経費',
+        quantity: 1, unit: '式', unitPrice: newCost, cost: newCost, costBase: newBase, note,
+      });
     }
   } else if (fix.kind === 'labor') {
     // 人件費不整合: 施工費の行だけを factor 倍して、人件費を人工の積み上げに合わせる

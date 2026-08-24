@@ -2410,10 +2410,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8 }}>
                 {result.estimateWarnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
               </ul>
-              {/* 実際に直したときだけ「下げました」と書く。何も直していないのに
-                  「自動で下げました」と出て、警告文の「金額は変更していません」と矛盾していた */}
+              {/* 実際に直したときだけ書く。何も直していないのに「自動で下げました」と出て、
+                  警告文の「金額は変更していません」と矛盾していた。
+                  さらに、粗利ゼロ行の引き上げなど「上げる」自動修正もあるため、
+                  方向を決めつけず「直しました」と書く（下げたと言いながら増えていた） */}
               <div style={{ fontSize: 12, color: '#7b241c', marginTop: 8 }}>
-                {result.estimateAutoFixed && '金額が過大になる誤りは自動で下げました。'}
+                {result.estimateAutoFixed && '検算で見つかった誤りは自動で直しました。'}
                 {result.estimateAdvisoryOnly && 'ここに出ている金額はまだ変えていません。勝手に増額せず、下のボタンを押したときだけ直します。'}
                 <strong>提出前に必ず内訳の数量と金額を確認してください。</strong>
               </div>
