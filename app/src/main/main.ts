@@ -6869,21 +6869,40 @@ ${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対�
 
 items は拾えた分だけでよい（無理に埋めるな）。読めない図面なら items を空配列にし、unreadable に理由を書け。` });
 
-    const response = await client.messages.create({
+    // ★ストリーム＋大きめの上限で受ける。
+    //   create + max_tokens 12000 だと、部屋数の多い図面（老人ホーム1階=約55室）で出力が上限に当たり、
+    //   JSONが途中で切れていた。切れたJSONは parseLenientJson が括弧を補って通してしまうため、
+    //   **拾えたはずの部屋が黙って消えた拾い出し表**が画面に出るという最悪の壊れ方をしていた。
+    //   拾い出しは1行が長い（式・寸法・出典・仮定つき）ので、見積より出力が伸びる。
+    //   claude-sonnet-4-6 の出力上限は128K。ストリームならHTTPタイムアウトを気にせず大きく取れるので
+    //   64Kまで引き上げて、そもそも切らせない（見積側 analyze が同じ理由でストリーム化済み）。
+    const stream = client.messages.stream({
       model: 'claude-sonnet-4-6',
-      max_tokens: 12000,
+      max_tokens: 64000,
       temperature: 0,
       system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
       messages: [{ role: 'user', content }],
     });
+    const response = await stream.finalMessage();
 
-    const text = response.content[0].type === 'text' ? response.content[0].text : '';
+    const text = response.content
+      .filter((c: any) => c.type === 'text')
+      .map((c: any) => c.text)
+      .join('');
+    // 64Kでも切れた場合は、結果を捨てずに出す（拾えた分は使えるため）。ただし黙って通さず、
+    // 「途中で切れている」ことを警告として画面に必ず出す（欠けた行に気づけないのが一番危ない）。
+    const truncated = response.stop_reason === 'max_tokens';
+    if (truncated) console.warn(`[takeoff] 出力が上限(64K)に達して切れました（${text.length}文字）`);
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('図面を読み取れませんでした。図面が鮮明か、寸法が写っているかご確認ください。');
     let takeoff: any = null;
     try { takeoff = JSON.parse(jsonMatch[1] || jsonMatch[0]); }
     catch (_) { takeoff = parseLenientJson(jsonMatch[1] || jsonMatch[0]); }
     if (!takeoff) throw new Error('図面の読み取り結果を解析できませんでした。');
+    if (truncated) {
+      takeoff.warnings = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
+      takeoff.warnings.unshift('★この拾い出しは、項目が多く出力の途中で切れています。表の末尾に抜けがあります。「拾ってほしい対象」欄で部位を絞る（例:「床と幅木だけ」）か、図面を分けて拾い直してください。');
+    }
 
     // 数量の整合は機械側で担保する（AIは quantityWithLoss の掛け忘れ・桁落ちをやる）
     takeoff.items = Array.isArray(takeoff.items) ? takeoff.items.map((it: any) => {
