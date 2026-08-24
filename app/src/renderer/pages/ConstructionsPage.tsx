@@ -18,9 +18,12 @@ export default function ConstructionsPage({ highlightId, onHighlightClear }: { h
   const [addUnitPrice, setAddUnitPrice] = useState<string>('');
   // 手入力モード
   const [search, setSearch] = useState('');
-  const [addMode, setAddMode] = useState<'select' | 'manual'>('select');
+  const [addMode, setAddMode] = useState<'select' | 'manual' | 'discount'>('select');
   const [manualName, setManualName] = useState('');
   const [manualUnit, setManualUnit] = useState('式');
+  // 値引き（商談で決めた「お勉強」分）。入力は正の数で受け、マイナス単価の行として登録する。
+  const [discountName, setDiscountName] = useState('値引き');
+  const [discountAmount, setDiscountAmount] = useState('');
 
   useEffect(() => { load(); }, []);
 
@@ -111,6 +114,31 @@ export default function ConstructionsPage({ highlightId, onHighlightClear }: { h
   // 手入力用: まず材料マスタに登録してからconstruction_materialsに追加
   const addMaterial = async () => {
     if (!showDetail) return;
+
+    // ── 値引き ──
+    // 商談で決めた値引きは「原価が安くなった」わけではないので、category='値引き' の
+    // マイナス単価の行として入れる。main 側でこの行だけ原価の集計から外し、売価から引く。
+    // （原価に混ぜると掛率のぶん余計に引かれ、AIも「材料が安い」と誤学習する）
+    if (addMode === 'discount') {
+      const amount = Math.abs(Number(discountAmount) || 0);
+      if (amount <= 0) return;
+      const matId = await window.api.createMaterial({
+        name: discountName.trim() || '値引き',
+        category: '値引き',
+        unit: '式',
+        unitPrice: -amount,
+        notes: '商談による値引き（原価には計上しません）',
+      });
+      await window.api.addConstructionMaterial({
+        constructionId: showDetail.id, materialId: matId, quantity: 1, unitPrice: -amount,
+      });
+      setDiscountAmount('');
+      const m = await window.api.listMaterials();
+      setMaterials(m);
+      loadDetail(showDetail.id);
+      return;
+    }
+
     const qty = Number(addQuantity) || 0;
     const price = Number(addUnitPrice) || 0;
     if (qty <= 0 || price < 0) return;
@@ -293,14 +321,42 @@ export default function ConstructionsPage({ highlightId, onHighlightClear }: { h
                   onClick={() => setAddMode('manual')}
                   style={{
                     padding: '6px 16px', border: '1px solid #ddd', borderLeft: 'none', cursor: 'pointer', fontSize: 13,
-                    borderRadius: '0 6px 6px 0',
                     background: addMode === 'manual' ? '#3a7bd5' : '#fff',
                     color: addMode === 'manual' ? '#fff' : '#333',
                   }}
                 >手入力</button>
+                <button
+                  onClick={() => setAddMode('discount')}
+                  style={{
+                    padding: '6px 16px', border: '1px solid #ddd', borderLeft: 'none', cursor: 'pointer', fontSize: 13,
+                    borderRadius: '0 6px 6px 0',
+                    background: addMode === 'discount' ? '#c0392b' : '#fff',
+                    color: addMode === 'discount' ? '#fff' : '#333',
+                  }}
+                >値引き</button>
               </div>
 
-              {addMode === 'select' ? (
+              {addMode === 'discount' ? (
+                /* 値引きモード: 正の数で入力させ、マイナス単価の行として登録する */
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                    <div className="form-group" style={{ flex: 2, marginBottom: 0, minWidth: 180 }}>
+                      <label>名目</label>
+                      <input value={discountName} onChange={e => setDiscountName(e.target.value)} placeholder="例: 値引き、お客様サービス、端数調整" />
+                    </div>
+                    <div className="form-group" style={{ flex: 1, marginBottom: 0, minWidth: 140 }}>
+                      <label>値引き額 (円・税抜)</label>
+                      <input type="number" value={discountAmount} onChange={e => setDiscountAmount(e.target.value)} min={0} step={1000} placeholder="500000" />
+                    </div>
+                    <button className="btn btn-danger" onClick={addMaterial} style={{ height: 36 }}>値引きを入れる</button>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#666', marginTop: 6, background: '#fdf3f2', border: '1px solid #f0c6c2', borderRadius: 6, padding: '8px 12px' }}>
+                    値引きは<strong>売価からだけ引きます</strong>。原価には入らないので、粗利がそのぶん正しく減ります。<br />
+                    <strong>AIの学習にも「材料が安く済んだ」とは伝わりません</strong>（値引きは商談の結果であって、実際にかかった原価ではないため）。<br />
+                    金額は<strong>プラスの数字</strong>で入れてください（{discountAmount ? `▲¥${Math.abs(Number(discountAmount) || 0).toLocaleString()} として計上` : '例: 500000 → ▲¥500,000'}）。
+                  </div>
+                </div>
+              ) : addMode === 'select' ? (
                 /* マスタ選択モード */
                 <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
                   <div className="form-group" style={{ flex: 2, marginBottom: 0, minWidth: 200 }}>
@@ -533,13 +589,20 @@ function EditableRow({ dm, onSave, onDelete }: { dm: any; onSave: (d: any) => vo
     );
   }
 
+  // 値引き行は金額がマイナス。原価ではなく売価からの差し引きなので、ひと目で分かるように赤の▲で出す
+  const isDiscount = dm.category === '値引き' || Number(dm.unit_price) < 0;
+  const amount = Number(dm.quantity) * Number(dm.unit_price);
+  const money = (n: number) => (n < 0 ? '▲¥' + Math.abs(Math.round(n)).toLocaleString() : fmt(n));
+
   return (
-    <tr onDoubleClick={() => setEditing(true)} style={{ cursor: 'pointer' }} title="ダブルクリックで編集">
+    <tr onDoubleClick={() => setEditing(true)}
+        style={{ cursor: 'pointer', background: isDiscount ? '#fdf3f2' : undefined, color: isDiscount ? '#c0392b' : undefined }}
+        title="ダブルクリックで編集">
       <td>{dm.category}</td>
       <td>{dm.material_name}</td>
       <td>{dm.quantity} {dm.unit}</td>
-      <td>{fmt(dm.unit_price)}</td>
-      <td><strong>{fmt(dm.quantity * dm.unit_price)}</strong></td>
+      <td>{money(dm.unit_price)}</td>
+      <td><strong>{money(amount)}</strong></td>
       <td>
         <button className="btn btn-sm btn-secondary" onClick={() => setEditing(true)} style={{ marginRight: 2 }}>✏</button>
         <button className="btn btn-sm btn-danger" onClick={onDelete}>×</button>

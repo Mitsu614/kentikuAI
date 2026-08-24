@@ -2567,6 +2567,21 @@ app.whenReady().then(async () => {
   //   実原価（材料・人件費・経費）から算出する。人件費が分かれる普通のテナントも、材工共で
   //   ai_labor_cost=0になる山下さん(遮熱)も、同じ計算で正しく出る。
   //   手動作成の工事は従来どおり materials 合計(=原価入力)＋labor_cost で算出。
+  // 値引き行（materials.category='値引き'・マイナス単価）は「原価」ではなく「売価からの差し引き」。
+  // 原価の合計に混ぜると、①掛率を掛けたぶん余計に値引きされる（50万の値引きが65万引きになる）
+  // ②AIが「材料が安く済んだ」と誤学習して、次から安く見積もる癖がつく——の2つが起きる。
+  // そのため必ず分けて集計し、売価の側でだけ引く。
+  function materialTotals(constructionId: number): { matCost: number; discount: number } {
+    const r = queryOne(`
+      SELECT
+        COALESCE(SUM(CASE WHEN COALESCE(m.category,'') = '値引き' THEN 0 ELSE cm.quantity * cm.unit_price END), 0) AS mat,
+        COALESCE(SUM(CASE WHEN COALESCE(m.category,'') = '値引き' THEN cm.quantity * cm.unit_price ELSE 0 END), 0) AS disc
+      FROM construction_materials cm
+      LEFT JOIN materials m ON cm.material_id = m.id
+      WHERE cm.construction_id = ?`, [constructionId]);
+    return { matCost: Number(r?.mat) || 0, discount: Number(r?.disc) || 0 };
+  }
+
   function computeConstructionEconomics(c: any): { matCost: number; laborCost: number; expenseCost: number; cost: number; selling: number; profit: number } {
     const est = queryOne(`SELECT ai_material_cost, ai_labor_cost, ai_total, ai_json,
       edited_material_cost, edited_labor_cost, edited_expense_cost, edited_total, edited_at
@@ -2586,11 +2601,12 @@ app.whenReady().then(async () => {
       try { const j = JSON.parse(est.ai_json || '{}'); expenseCost = Number(j.estimatedExpenseCost) || 0; } catch (_) {}
       selling = c.fixed_selling_price || est.ai_total || 0;
     } else {
-      const mat = queryOne('SELECT COALESCE(SUM(quantity * unit_price),0) as total FROM construction_materials WHERE construction_id = ?', [c.id]);
-      matCost = mat?.total || 0;
+      const t = materialTotals(c.id);
+      matCost = t.matCost;
       laborCost = c.labor_cost || 0;
       const baseCost = matCost + laborCost;
-      selling = c.fixed_selling_price || Math.ceil(baseCost * (c.markup_rate || 1.3));
+      // 値引き（負の数）は原価ではなく売価から引く
+      selling = c.fixed_selling_price || (Math.ceil(baseCost * (c.markup_rate || 1.3)) + t.discount);
     }
     const cost = matCost + laborCost + expenseCost;
     return { matCost, laborCost, expenseCost, cost, selling, profit: selling - cost };
@@ -2600,7 +2616,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('constructions:list', () => {
     const rows = queryAll(`
       SELECT c.*, p.name as property_name,
-        (SELECT COALESCE(SUM(cm.quantity * cm.unit_price), 0) FROM construction_materials cm WHERE cm.construction_id = c.id) as material_cost
+        -- 値引き行(materials.category='値引き')は原価ではないので材料費に含めない
+        (SELECT COALESCE(SUM(cm.quantity * cm.unit_price), 0) FROM construction_materials cm
+           LEFT JOIN materials mm ON cm.material_id = mm.id
+          WHERE cm.construction_id = c.id AND COALESCE(mm.category,'') != '値引き') as material_cost
       FROM constructions c
       LEFT JOIN properties p ON c.property_id = p.id
       WHERE c.tenant_id = ?
@@ -2674,11 +2693,11 @@ app.whenReady().then(async () => {
   function recalcConstruction(constructionId: number) {
     const c = queryOne('SELECT * FROM constructions WHERE id = ?', [constructionId]);
     if (!c) return;
-    const mat = queryOne('SELECT SUM(quantity * unit_price) as total FROM construction_materials WHERE construction_id = ?', [constructionId]);
-    const matCost = mat?.total || 0;
+    const { matCost, discount } = materialTotals(constructionId);
     const laborCost = c.labor_cost || 0;
     const markupRate = c.markup_rate || 1.3;
-    const sellingPrice = Math.ceil((matCost + laborCost) * markupRate);
+    // 値引きは掛率を掛けたあとの売価から引く（原価に混ぜると掛率のぶん余計に引かれる）
+    const sellingPrice = Math.ceil((matCost + laborCost) * markupRate) + discount;
     // 価格・請求書は毎回すぐ更新（表示のため）
     runSql('UPDATE constructions SET fixed_selling_price = ? WHERE id = ?', [sellingPrice, constructionId]);
     runSql('UPDATE invoices SET amount = ? WHERE construction_id = ?', [sellingPrice, constructionId]);
@@ -2696,11 +2715,12 @@ app.whenReady().then(async () => {
   function learnFromConstruction(constructionId: number) {
     const c = queryOne('SELECT * FROM constructions WHERE id = ?', [constructionId]);
     if (!c) return;
-    const mat = queryOne('SELECT SUM(quantity * unit_price) as total FROM construction_materials WHERE construction_id = ?', [constructionId]);
-    const matCost = mat?.total || 0;
+    // ★学習に渡す原価には値引きを含めない。含めると「材料が安く済んだ」と誤学習し、
+    //   次回以降その工種を安く見積もる癖がつく。値引きは商談の結果であって実勢原価ではない。
+    const { matCost, discount } = materialTotals(constructionId);
     const laborCost = c.labor_cost || 0;
     const markupRate = c.markup_rate || 1.3;
-    const sellingPrice = Math.ceil((matCost + laborCost) * markupRate);
+    const sellingPrice = Math.ceil((matCost + laborCost) * markupRate) + discount;
 
     const log = queryOne('SELECT id, ai_material_cost, ai_labor_cost, ai_total, work_type, actual_material_cost, actual_labor_cost, actual_selling_price, edited_labor_cost FROM estimate_log WHERE construction_id = ?', [constructionId]);
     if (!log) return;
@@ -2876,7 +2896,10 @@ app.whenReady().then(async () => {
     const rows = queryAll(`
       SELECT i.*, c.title as construction_title, c.labor_cost, c.markup_rate, c.fixed_selling_price,
         p.name as property_name,
-        (SELECT COALESCE(SUM(cm.quantity * cm.unit_price), 0) FROM construction_materials cm WHERE cm.construction_id = c.id) as material_cost
+        -- 値引き行(materials.category='値引き')は原価ではないので材料費に含めない
+        (SELECT COALESCE(SUM(cm.quantity * cm.unit_price), 0) FROM construction_materials cm
+           LEFT JOIN materials mm ON cm.material_id = mm.id
+          WHERE cm.construction_id = c.id AND COALESCE(mm.category,'') != '値引き') as material_cost
       FROM invoices i
       LEFT JOIN constructions c ON i.construction_id = c.id
       LEFT JOIN properties p ON c.property_id = p.id
