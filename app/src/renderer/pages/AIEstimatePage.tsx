@@ -56,6 +56,47 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [extraImages, setExtraImages] = useState<string[]>([]);
   const MAX_IMAGES = 6;
   const isPdfData = (x: any) => typeof x === 'string' && x.startsWith('data:application/pdf');
+
+  // ── 業種の確認（初回のみ） ──
+  // 業種で積算の中身が丸ごと変わる。設定しないまま使うと、内装屋さんに建物まるごとの
+  // 金額が出るような事故になる。ライセンスには業種が乗らないので、送って入れてもらう運用だと
+  // 誰も設定しないまま使い始めてしまう。そこで「最初の見積の前に1度だけ」必ず選んでもらう。
+  const INDUSTRIES: { v: string; label: string; hint: string }[] = [
+    { v: 'interior',   label: '内装仕上工事業', hint: 'クロス・床・軽天ボード・幅木。ゼネコンの下請け' },
+    { v: 'general',    label: '総合建設業',     hint: '工務店・リフォーム。迷ったらこれ' },
+    { v: 'building',   label: '建築一式工事業', hint: '新築・増改築を元請で。建物まるごとを科目別に積算' },
+    { v: 'equipment',  label: '設備工事業',     hint: '水道・電気・空調。器具や数量ベース' },
+    { v: 'painting',   label: '塗装工事業',     hint: '塗装面積・塗料グレード・足場' },
+    { v: 'exterior',   label: '外構・エクステリア業', hint: '駐車場・フェンス・門扉・植栽' },
+    { v: 'demolition', label: '解体工事業',     hint: '解体坪単価・産廃処理・重機回送' },
+    { v: 'plant',      label: 'プラント設備工事業', hint: '配管・機器据付・計装。工場やプラント' },
+    { v: 'lease',      label: '仮設工事リース業', hint: '足場・仮設のリース。日数×日額で積算' },
+  ];
+  const [askIndustry, setAskIndustry] = useState(false);
+  const [industryChoice, setIndustryChoice] = useState('');
+  const [industrySaving, setIndustrySaving] = useState(false);
+  const pendingAnalyze = useRef<null | (() => void)>(null);
+
+  // 業種が未確認なら true。確認済みなら false（一度選べば二度と聞かない）
+  const needsIndustry = async () => {
+    try {
+      const c = await (window as any).api.loadConfig();
+      return !c?.industryConfirmed;
+    } catch (_) { return false; }   // 読めないときは邪魔しない
+  };
+  const saveIndustry = async () => {
+    if (!industryChoice || industrySaving) return;
+    setIndustrySaving(true);
+    try {
+      const c = await (window as any).api.loadConfig();
+      await (window as any).api.saveConfig({ ...c, industryType: industryChoice, industryConfirmed: true });
+      setAskIndustry(false);
+      const go = pendingAnalyze.current; pendingAnalyze.current = null;
+      if (go) go();
+    } catch (e: any) {
+      setError(e?.message || '業種の保存に失敗しました');
+    } finally { setIndustrySaving(false); }
+  };
   const [beforeImage, setBeforeImage] = useState<string | null>(null);
   const [afterImage, setAfterImage] = useState<string | null>(null);
   const [mode, setMode] = useState<'single' | 'beforeafter' | 'chat'>('single');
@@ -654,6 +695,14 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
 
   // opts.forceFresh: 同じ入力でも前回の見積を再利用せず、AIで作り直す（ストックを消費する）
   const analyze = async (areaOverride?: string, opts?: { forceFresh?: boolean }) => {
+    // 業種が未確認なら、先に選んでもらう（選んだらそのまま見積に進む）
+    if (!opts?.forceFresh && await needsIndustry()) {
+      const cfg = await (window as any).api.loadConfig().catch(() => ({}));
+      setIndustryChoice(cfg?.industryType || '');
+      pendingAnalyze.current = () => analyze(areaOverride, opts);
+      setAskIndustry(true);
+      return;
+    }
     if (!canAnalyze) return;
     setAreaCheck(null);
     // 結果画面から「この面積で再計算」した場合は上書き値を使い、入力欄にも反映
@@ -1137,6 +1186,48 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               setChatLoading(false);
               setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
             }} style={{ padding: '12px 24px', fontSize: 16, borderRadius: 24, minHeight: 48 }}>送信</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── 業種の確認（初回の見積の前に1度だけ） ── */}
+      {askIndustry && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(20,28,40,.62)', zIndex: 4000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+        }}>
+          <div className="card" style={{ maxWidth: 620, width: '100%', maxHeight: '88vh', overflowY: 'auto', padding: '22px 26px' }}>
+            <h3 style={{ margin: '0 0 6px', color: '#1a2b4a', fontSize: 19 }}>はじめに、御社の業種を教えてください</h3>
+            <div style={{ fontSize: 13, color: '#5a6675', lineHeight: 1.8, marginBottom: 14 }}>
+              <b>この設定で、見積の中身が変わります。</b>
+              たとえば内装仕上工事業を選ぶと、躯体・外装・設備は金額に入りません。<br />
+              一度だけの確認です。<b>あとから設定画面でいつでも変更できます。</b>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {INDUSTRIES.map(o => (
+                <label key={o.v}
+                  onClick={() => setIndustryChoice(o.v)}
+                  style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer',
+                    border: `2px solid ${industryChoice === o.v ? '#3a7bd5' : '#e0e6ee'}`,
+                    background: industryChoice === o.v ? '#eef4fc' : '#fff',
+                    borderRadius: 8, padding: '10px 13px',
+                  }}>
+                  <input type="radio" name="industry" checked={industryChoice === o.v}
+                    onChange={() => setIndustryChoice(o.v)} style={{ marginTop: 4 }} />
+                  <span>
+                    <span style={{ fontWeight: 'bold', fontSize: 14.5, color: '#1a2b4a' }}>{o.label}</span>
+                    <span style={{ display: 'block', fontSize: 12, color: '#6b7787', marginTop: 2 }}>{o.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div style={{ marginTop: 16, textAlign: 'right' }}>
+              <button className="btn btn-primary" onClick={saveIndustry}
+                disabled={!industryChoice || industrySaving}>
+                {industrySaving ? '保存中…' : 'この業種で見積もる'}
+              </button>
+            </div>
           </div>
         </div>
       )}
