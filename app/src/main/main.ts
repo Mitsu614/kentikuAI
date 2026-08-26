@@ -1532,6 +1532,17 @@ ${lines}
 坪で指定された場合のみ ㎡ に換算してよい（1坪 = 3.30578㎡）。換算したことを note に書け。
 見出しの無い数字は床面積として渡している。壁・天井・屋根の面積は、そう明記されたものだけである。
 
+### ★★数量をこの面積にぴったり合わせろ（一番よく外すところ）★★
+- **床面積が指定されているなら、床仕上げの数量の合計を、指定された床面積とぴったり一致させろ。**
+  仕上げ材の種類ごとに行を分けるのはよいが（防滑シート／長尺シート／タイルカーペット等）、
+  **その合計が指定面積と一致していなければ誤り**。1,209.35㎡と指定されたら、床の行の合計も1,209.35㎡だ。
+- **仕上げをしない部分を除くときは、引き算を必ず書け。**
+  例: note に「1,209.35㎡ − EV 8.50㎡ − 階段 12.00㎡ ＝ 1,188.85㎡」。
+  **黙って少ない数量にするな。**勝手に3割落として出すのが一番多い誤りで、客が電卓を当てれば一発で分かる。
+- 壁面積・天井面積が指定されている場合も同じ。その面積を数量にそのまま使え。
+- **出力する前に足し算して検算しろ。**床の行の数量を全部足して、指定面積（または上の引き算の答え）と
+  一致することを確かめてから出せ。
+
 `;
 }
 
@@ -7553,6 +7564,7 @@ ${FLOOR_SCALE_GUIDE}
   "coversWholeRoof": true か false。対象の輪郭が写真に収まっているか（roof=四隅と棟から軒 / wall=建物の間口と高さ / floor=部屋の四隅）,
   "missingPart": coversWholeRoof が false のとき、何が写っていないか。true なら null,
   "askUserFor": coversWholeRoof が false のとき、1つ聞けば面積が確定する情報。true なら null,
+  "statedAreaM2": ★図面内の表記（例「1階床面積 1,209.35㎡」）や依頼文に、対象の面積そのものが数値で書かれていればその数値(㎡)。書かれていなければ null。★推測値を入れるな。書いてある数字だけ。これがあるときは寸法からの計算より必ず優先される,
   "scaleRef": "基準にした物とその実寸（例: 折板の山ピッチ 500mm）。対象と同じ平面上の物に限る",
   "widthM": 間口方向の水平投影長さ(m、数値。roofは軒の出・けらばの出を含む),
   "lengthM": 奥行方向の水平投影長さ(m、数値。roofは軒の出を含む),
@@ -7639,13 +7651,24 @@ ${FLOOR_SCALE_GUIDE}
       raw = w * l * slope * develop;   // floor は slope=develop=1 なので単純な床面積
     }
 
+    // ★図面や依頼文に面積が明記されているなら、それが答え。寸法からの計算も較正も一切かけない。
+    //   この図面はL字型で、外接の長方形(52m×40m=2,080㎡)で計算すると中庭・テラスまで床に入り、
+    //   図面に明記された1,209.35㎡に対して1.57倍に膨らんでいた。
+    //   較正係数は「AIが寸法を目測したときの癖」を直すためのもので、書いてある数字に当てるものではない。
+    const stated = Number(result.statedAreaM2) || 0;
+    const useStated = stated > 0;
+    if (useStated) {
+      raw = stated;
+      result.calibrationSkipped = true;
+    }
     if (raw > 0) {
-      const q = raw * AREA_CALIBRATION;
+      const q = useStated ? raw : raw * AREA_CALIBRATION;
       result.quantityM2 = Math.round(q * 10) / 10;
       result.rawM2 = Math.round(raw * 10) / 10;
       if (target === 'roof') {
-        result.planAreaM2 = Math.round(w * l * AREA_CALIBRATION * 10) / 10;
-        result.roofAreaM2 = Math.round(w * l * AREA_CALIBRATION * slope * 10) / 10;
+        const cal2 = useStated ? 1 : AREA_CALIBRATION;
+        result.planAreaM2 = Math.round(w * l * cal2 * 10) / 10;
+        result.roofAreaM2 = Math.round(w * l * cal2 * slope * 10) / 10;
       } else if (target === 'floor') {
         result.planAreaM2 = result.quantityM2;
       }
@@ -7654,7 +7677,7 @@ ${FLOOR_SCALE_GUIDE}
       result.rangeMinM2 = Math.round(result.quantityM2 * 0.75);
       result.rangeMaxM2 = Math.round(result.quantityM2 * 1.35);
     }
-    result.calibration = AREA_CALIBRATION;
+    result.calibration = useStated ? 1 : AREA_CALIBRATION;
     result.calibrationSamples = cal.samples;
 
     // 対象が判別できないなら、数字を作らない。根拠のない面積を出すほうが有害
