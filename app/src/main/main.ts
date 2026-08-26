@@ -8319,6 +8319,250 @@ ${pastWork || 'まだ実績なし'}`;
   ipcMain.handle('ai:applyEstimateFix', (_e, data: { result: any; fix: any }) =>
     applyEstimateFix(data?.result, data?.fix, 'apply-fix'));
 
+  // ────────────────────────────────────────────────────────────
+  // 研修モード（THINKING）— 次世代への技術継承
+  //
+  // 見積に残るのは「いくらか」だけで、「なぜその材料が・何個・何のために要り、どう使うのか」は
+  // ベテランの頭の中にしか無い。それを、この現場の見積そのものを教材にして若手向けの研修文にする。
+  //
+  // ★数量の根拠はAIに作らせない。breakdown の note（数量×単価の式）と manDaysBreakdown の basis を
+  //   そのまま引き写させる。見積と研修文で数字が食い違うのが一番まずい（若手が現場で覚え違える）。
+  // ────────────────────────────────────────────────────────────
+  const trainingGuideCore = async (data: { result: any; comment?: string; location?: string; level?: string }) => {
+    const r = data?.result || {};
+    const rows: any[] = Array.isArray(r.breakdown) ? r.breakdown : [];
+    if (rows.length === 0) throw new Error('ERROR: 見積の内訳がありません。先にAI見積を作成してください。');
+
+    // クレジット（研修モード = 1ストック。見積の再解析より軽い）
+    await syncRemoteLicense(false);
+    const trainingCredit = useCreditsSynced(1, '研修モード');
+    if (!trainingCredit.success) {
+      if (trainingCredit.limitReached) await sendLimitNotification('研修モード');
+      throw new Error('ERROR: 今月のAIストックの上限に達しました。管理者に連絡済みです。追加ストックについてはご連絡をお待ちください。');
+    }
+    syncCreditsToRemote();
+
+    const config = loadApiConfig();
+    if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。サポートにお問い合わせください。');
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: config.anthropicKey });
+
+    // 誰に読ませる資料か。同じ現場でも、1年目と職長候補では書く深さが違う。
+    const level = String(data?.level || '新人');
+    const levelGuide =
+      level === '職長候補'
+        ? '読み手は「職長・現場代理人を任される手前の職人」。手順だけでなく、段取り（どの順で何を先に手配するか）・他業種との取り合い・数量を自分で拾えるようになる考え方まで踏み込め。歩掛と原価の意味も説明してよい。'
+        : level === '2〜3年目'
+        ? '読み手は「作業はひと通りできるが、なぜそうするかを説明できない2〜3年目」。手を動かす手順に加えて、その材料が無いと後工程で何が起きるか、規格・厚み・ピッチをなぜその値にするのかを説明しろ。'
+        : '読み手は「入社1年目・現場に入って日が浅い新人」。専門用語は初出で必ず（かっこ）で言い換えろ。まず「これは何をするための物か」から書き、手順は動作が目に浮かぶ言葉で書け。';
+
+    // 見積の行をそのまま渡す（数量・単位・根拠の式）。ここが「数字を作らせない」ための土台。
+    const matLines = rows.map((b: any, i: number) => {
+      const q = (b.quantity !== undefined && b.quantity !== null) ? `${b.quantity}${b.unit || ''}` : '（数量の記載なし）';
+      return `${i + 1}. [${b.category || '区分なし'}] ${b.item || '（項目名なし）'} / 数量: ${q} / 見積の根拠: ${String(b.note || '（根拠の記載なし）').replace(/\n/g, ' ／ ')}`;
+    }).join('\n');
+
+    const laborLines = (Array.isArray(r.manDaysBreakdown) ? r.manDaysBreakdown : []).map((m: any) =>
+      `- ${m.trade || '職種不明'}: ${m.workers || '?'}人 × ${m.days || '?'}日 = ${m.manDays || '?'}人工 / 歩掛の根拠: ${m.basis || '（記載なし）'}`
+    ).join('\n');
+
+    const industryType = config.industryType || '';
+    const sys = 'あなたは大阪の建設会社で30年やってきた職長です。若手に技術を伝えるのが仕事で、いま手元の見積を教材にして研修資料を作っています。知ったかぶりをせず、現場で本当にやっていることだけを書きます。';
+
+    const prompt = `この工事の見積を教材にして、若手向けの研修資料を作ってください。
+
+## この工事
+- 工事種別: ${r.workType || '（不明）'}
+- 内容: ${r.description || '（記載なし）'}
+- 規模: ${r.estimatedScale || '（記載なし）'}
+- 主要数量: ${r.assumedArea || '（記載なし）'}
+- 工期: ${r.estimatedDuration || '（記載なし）'}
+${data?.location ? `- 現場: ${data.location}\n` : ''}${data?.comment ? `- 依頼内容: ${data.comment}\n` : ''}${industryType ? `- 自社の業種: ${industryType}\n` : ''}
+## 見積の内訳（★この行だけを教材にしろ。行を勝手に足すな・減らすな）
+${matLines}
+
+${laborLines ? `## 職人の人工（施工費の中身）\n${laborLines}\n` : ''}
+## 読み手
+${levelGuide}
+
+## 絶対のルール
+1. ★数量と根拠は上の見積からそのまま持ってこい。あなたが計算し直すな・別の数字を作るな。
+   「なぜこの数量か」は、見積の note に書かれた式（例: 屋根400㎡ ÷ @66㎡/人日）を若手に分かる日本語にほどいて説明するだけでいい。
+   note に根拠が書かれていない行は、正直に「この現場では一式で見ている。数量の拾い方は先輩に確認」と書け。作り話で埋めるな。
+2. ★「材料」「仮設」の行は materials に、「施工費」の行は labor に入れろ。経費（現場管理費・福利厚生費）は materials に入れず、costEducation で一言だけ触れろ。
+3. 金額は書くな。研修で伝えたいのは金額ではなく「何が・何個・何のために要るか」だ。数量と単位だけ書け。
+   （原価意識だけは costEducation に3行以内でまとめてよい）
+4. 断定できないことは書くな。「現場の納まりによる」「先輩に確認」と正直に書け。憶測を事実のように書くのが一番の害だ。
+5. 安全は必ず具体的に。「気をつける」ではなく「何が危ないか・どうなるか・だから何をするか」を書け。該当する法令名（労働安全衛生規則○条、石綿事前調査 等）が明確なものだけ添えろ。うろ覚えの条番号は書くな。
+
+## 出力形式（このJSONだけを返す。説明文は不要）
+{
+  "title": "研修資料のタイトル（例: 折板屋根 遮熱シート張り — 材料と数量の考え方）",
+  "workType": "工事種別",
+  "level": "${level}",
+  "overview": "この工事は何をする工事か。どこから手をつけて何で終わるか。若手向けに4〜6行",
+  "flow": [
+    {"step": "①〜の順番（例: ①足場を組む）", "what": "その工程で実際にやること（1〜2行）", "why": "なぜこの順番なのか。先にやらないと後で何が起きるか", "watch": "新人がここで見ておくべきポイント・先輩が見ている所"}
+  ],
+  "materials": [
+    {
+      "name": "材料名（見積の項目名をそのまま）",
+      "quantity": "数量（見積の値をそのまま。単位込みの文字列。例: '450㎡'）",
+      "role": "★何に使う物か★ この材料が現場で果たす役目を1〜2行。物を知らない人にも伝わる言葉で",
+      "why": "★なぜ必要か★ これが無いと何が起きるか（雨が入る・下地が持たない・検査が通らない 等）を具体的に",
+      "howMany": "★なぜこの数量か★ 見積の根拠の式を日本語にほどいて説明。ロス・重ね代・働き幅など数量が増える理由があれば必ず書く。根拠が無い行は『一式計上。拾い方は先輩に確認』と正直に",
+      "howToUse": "★どう使うか★ 実際の使い方を作業順で3〜5行。手順ごとに改行。動作が目に浮かぶ言葉で",
+      "tools": "使う道具・機械（例: インパクト、ハンドカッター、墨つぼ）。分からなければ null",
+      "mistakes": "よくある失敗と、それをやるとどうなるか。1〜2件",
+      "seniorTip": "ベテランのコツ・現場の一言（無理に作らず、書けるものだけ。無ければ null）"
+    }
+  ],
+  "labor": [
+    {"trade": "職種（例: 板金工）", "manDays": "人工（見積の値。例: '2人×3日=6人工'）", "whatTheyDo": "その職人が現場で何をするか（1〜2行）", "whyThisManDays": "なぜこの人数・日数なのか。歩掛（1人が1日にこなせる量）の考え方で説明"}
+  ],
+  "safety": ["この工事で本当に危ない所と、その対策。3〜6項目。『何が危ない→どうなる→だからこうする』の形で"],
+  "costEducation": "若手に持ってほしい原価の感覚を3行以内（例: 材料を1枚無駄にすると◯㎡分の粗利が飛ぶ、手待ちの1時間が人工◯分の損 等）。金額は書かない",
+  "quiz": [
+    {"q": "この資料を読んだ若手に出す確認問題（3〜5問）", "a": "答えと、なぜそうなるかの一言"}
+  ],
+  "closing": "現場に出る若手への、職長からの一言（3行以内）"
+}`;
+
+    let text = '';
+    try {
+      // THINKINGモード: 数量の根拠を追う工程なので、考えさせてから書かせる。
+      // thinking を使うので temperature は送らない（新世代モデルでは 400 になる）。
+      const response = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 16000,
+        thinking: { type: 'enabled', budget_tokens: 4000 },
+        system: sys,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+      });
+      text = ((response.content as any[]).find((b: any) => b?.type === 'text') || {}).text || '';
+    } catch (e: any) {
+      // thinking が使えない環境・モデルでも研修文だけは出す（機能ごと落とさない）
+      logAiError('training-thinking', e, { workType: r.workType });
+      const fallback = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 16000,
+        system: sys,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+      });
+      text = ((fallback.content as any[]).find((b: any) => b?.type === 'text') || {}).text || '';
+    }
+
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('研修文の作成に失敗しました。もう一度お試しください。');
+    const guide = parseLenientJson(match[0]);
+    if (!guide || !Array.isArray(guide.materials)) throw new Error('研修文の作成に失敗しました。もう一度お試しください。');
+
+    // 見積の材料・仮設の行数（画面で「見積◯行 → 解説◯件」の食い違いに気づけるようにする）
+    guide.sourceItemCount = rows.filter((b: any) => b.category === '材料' || b.category === '仮設').length;
+    guide.generatedAt = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
+    return guide;
+  };
+  ipcMain.handle('ai:trainingGuide', async (_e, data: any) => {
+    try { return await trainingGuideCore(data); }
+    catch (e: any) { logAiError('training', e, { level: data?.level }); throw e; }
+  });
+
+  // 研修資料のPDF出力（そのまま印刷して新人に配れる・現場に持って行ける）
+  ipcMain.handle('training:generatePDF', async (_e, data: any) => {
+    const g = data?.guide || {};
+    const mats: any[] = Array.isArray(g.materials) ? g.materials : [];
+    if (mats.length === 0) throw new Error('研修文がありません。');
+    const cfg = loadApiConfig();
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
+    const nl2br = (s: any) => escapeHtml(String(s || '')).replace(/\n/g, '<br>');
+
+    const flowHtml = (Array.isArray(g.flow) ? g.flow : []).map((f: any) => `
+      <tr>
+        <td style="font-weight:bold;white-space:nowrap">${escapeHtml(f.step || '')}</td>
+        <td>${nl2br(f.what)}</td>
+        <td style="color:#555">${nl2br(f.why)}</td>
+        <td style="color:#1f6f3f">${nl2br(f.watch)}</td>
+      </tr>`).join('');
+
+    const matHtml = mats.map((m: any, i: number) => `
+      <div class="mat">
+        <div class="mat-head"><span class="no">${i + 1}</span><span class="name">${escapeHtml(m.name || '')}</span><span class="qty">${escapeHtml(String(m.quantity || ''))}</span></div>
+        <table class="mat-body">
+          <tr><th>何に使うか</th><td>${nl2br(m.role)}</td></tr>
+          <tr><th>なぜ必要か</th><td>${nl2br(m.why)}</td></tr>
+          <tr><th>なぜこの数量か</th><td>${nl2br(m.howMany)}</td></tr>
+          <tr><th>どう使うか</th><td>${nl2br(m.howToUse)}</td></tr>
+          ${m.tools ? `<tr><th>使う道具</th><td>${nl2br(m.tools)}</td></tr>` : ''}
+          ${m.mistakes ? `<tr><th class="warn">よくある失敗</th><td class="warn-td">${nl2br(m.mistakes)}</td></tr>` : ''}
+          ${m.seniorTip ? `<tr><th class="tip">先輩のコツ</th><td class="tip-td">${nl2br(m.seniorTip)}</td></tr>` : ''}
+        </table>
+      </div>`).join('');
+
+    const laborHtml = (Array.isArray(g.labor) ? g.labor : []).map((l: any) => `
+      <tr><td style="font-weight:bold;white-space:nowrap">${escapeHtml(l.trade || '')}</td>
+      <td style="white-space:nowrap">${escapeHtml(String(l.manDays || ''))}</td>
+      <td>${nl2br(l.whatTheyDo)}</td><td style="color:#555">${nl2br(l.whyThisManDays)}</td></tr>`).join('');
+
+    const safetyHtml = (Array.isArray(g.safety) ? g.safety : []).map((s: any) => `<li>${nl2br(s)}</li>`).join('');
+    const quizHtml = (Array.isArray(g.quiz) ? g.quiz : []).map((q: any, i: number) =>
+      `<div class="quiz"><div class="q">Q${i + 1}. ${nl2br(q.q)}</div><div class="a">A. ${nl2br(q.a)}</div></div>`).join('');
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:26px 24px;color:#26313d;font-size:10.5px;line-height:1.7}
+h1{font-size:19px;border-bottom:3px solid #2e4057;padding-bottom:6px;margin-bottom:4px}
+.sub{font-size:10px;color:#6b7785;margin-bottom:12px}
+h2{font-size:13px;background:#2e4057;color:#fff;padding:5px 10px;border-radius:3px;margin:16px 0 8px}
+.overview{background:#f4f7fa;border-left:4px solid #2e4057;padding:10px 12px;border-radius:0 4px 4px 0;margin-bottom:6px;white-space:pre-wrap}
+table{width:100%;border-collapse:collapse}
+.flow th,.labor th{background:#e8eef4;padding:5px 8px;text-align:left;font-size:9.5px;border:1px solid #d3dde6}
+.flow td,.labor td{padding:6px 8px;border:1px solid #e3e9ee;vertical-align:top;font-size:9.5px}
+.mat{border:1px solid #d3dde6;border-radius:5px;margin-bottom:10px;page-break-inside:avoid}
+.mat-head{background:#eef3f8;padding:6px 10px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #d3dde6}
+.mat-head .no{background:#2e4057;color:#fff;width:18px;height:18px;border-radius:50%;text-align:center;line-height:18px;font-size:10px;flex:none}
+.mat-head .name{font-weight:bold;font-size:12px;flex:1}
+.mat-head .qty{background:#fff;border:1px solid #b9c9d6;border-radius:3px;padding:2px 8px;font-size:10px;font-weight:bold}
+.mat-body th{width:88px;background:#fafbfc;padding:5px 8px;text-align:left;font-size:9.5px;color:#4a5b6b;border-bottom:1px solid #eef2f5;vertical-align:top;white-space:nowrap}
+.mat-body td{padding:5px 8px;border-bottom:1px solid #eef2f5;font-size:9.5px;vertical-align:top}
+.warn{color:#a8442a}.warn-td{background:#fff8f5}.tip{color:#1f6f3f}.tip-td{background:#f5fbf7}
+ul{margin-left:16px}li{margin-bottom:4px}
+.safety{background:#fff8f0;border:1px solid #f0d8b8;border-radius:4px;padding:9px 12px}
+.cost{background:#f4f7fa;border:1px solid #d9e2ea;border-radius:4px;padding:9px 12px;white-space:pre-wrap}
+.quiz{border-bottom:1px dashed #d3dde6;padding:6px 0}.quiz .q{font-weight:bold}.quiz .a{color:#4a5b6b;margin-top:2px}
+.closing{margin-top:14px;background:#2e4057;color:#fff;border-radius:5px;padding:11px 14px;white-space:pre-wrap;font-size:11px}
+.foot{margin-top:14px;font-size:8.5px;color:#8b95a1;border-top:1px solid #e3e9ee;padding-top:7px;line-height:1.6}</style>
+</head><body>
+<h1>${escapeHtml(g.title || '研修資料')}</h1>
+<div class="sub">${escapeHtml(g.workType || '')}${g.level ? ` ／ 対象: ${escapeHtml(String(g.level))}` : ''} ／ 作成日: ${today}${cfg.companyName ? ` ／ ${escapeHtml(cfg.companyName)}` : ''}</div>
+${g.overview ? `<div class="overview">${nl2br(g.overview)}</div>` : ''}
+${flowHtml ? `<h2>1. 工事の流れ — どの順で、なぜその順番か</h2><table class="flow"><thead><tr><th style="width:80px">工程</th><th style="width:150px">やること</th><th>なぜこの順番か</th><th style="width:150px">見ておくポイント</th></tr></thead><tbody>${flowHtml}</tbody></table>` : ''}
+<h2>2. 材料 — なぜ要るのか・何個要るのか・どう使うのか</h2>
+${matHtml}
+${laborHtml ? `<h2>3. 職人 — 誰が何をして、なぜその人数・日数か</h2><table class="labor"><thead><tr><th style="width:90px">職種</th><th style="width:100px">人工</th><th style="width:190px">やること</th><th>なぜこの人数・日数か</th></tr></thead><tbody>${laborHtml}</tbody></table>` : ''}
+${safetyHtml ? `<h2>4. 安全 — ここで人が死ぬ・怪我をする</h2><div class="safety"><ul>${safetyHtml}</ul></div>` : ''}
+${g.costEducation ? `<h2>5. 原価の感覚</h2><div class="cost">${nl2br(g.costEducation)}</div>` : ''}
+${quizHtml ? `<h2>6. 確認問題</h2>${quizHtml}` : ''}
+${g.closing ? `<div class="closing">${nl2br(g.closing)}</div>` : ''}
+<div class="foot">
+・この資料は、実際の見積の数量をそのまま教材にしています。数量・根拠は見積書と同じ値です。<br>
+・現場の納まり・仕様により手順が変わることがあります。最終判断は現場の職長・元請の指示に従ってください。<br>
+・安全に関する記載は要点のみです。法令・社内基準・KY（危険予知）活動が優先します。
+</div>
+</body></html>`;
+
+    const tmpHtml = path.join(app.getPath('temp'), `training_${Date.now()}.html`);
+    const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+    fs.writeFileSync(tmpHtml, Buffer.concat([bom, Buffer.from(html, 'utf-8')]));
+    const pdfWin = new BrowserWindow({ show: false, width: 794, height: 1123, webPreferences: { defaultEncoding: 'utf-8' } });
+    await pdfWin.loadURL(`file:///${tmpHtml.replace(/\\/g, '/')}`);
+    await new Promise<void>(rs => setTimeout(rs, 1000));
+    const pdf = await pdfWin.webContents.printToPDF({ printBackground: true, margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 } });
+    pdfWin.close();
+    try { fs.unlinkSync(tmpHtml); } catch (_) {}
+    const savePath = await dialog.showSaveDialog({ defaultPath: `研修資料_${(g.workType || '工事')}_${today}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (!savePath.canceled && savePath.filePath) { fs.writeFileSync(savePath.filePath, pdf); shell.openPath(savePath.filePath); }
+    return true;
+  });
+
   // ── 顧客プロフィール（職業・趣味）— 見積提案のパーソナライズ用 ──
   // 顧客名（テナント内で一意）をキーに職業・趣味を保存/読込する。
   ipcMain.handle('customers:findByName', (_e, name: string) => {

@@ -19,6 +19,10 @@ interface Window {
     takeoffHistory: () => Promise<any[]>;
     generateTakeoffPDF: (data: { takeoff: any; title?: string; clientName?: string }) => Promise<boolean>;
 
+    // 研修モード（THINKING）— 見積を教材に、若手向けの解説を作る
+    trainingGuide: (data: { result: any; comment?: string; location?: string; level?: string }) => Promise<any>;
+    generateTrainingPDF: (data: { guide: any }) => Promise<boolean>;
+
     listMaterials: () => Promise<any[]>;
     createMaterial: (data: any) => Promise<number>;
     updateMaterial: (data: any) => Promise<void>;

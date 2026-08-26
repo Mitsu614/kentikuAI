@@ -156,6 +156,10 @@ contextBridge.exposeInMainWorld('api', {
   autoCreateFromEstimate: (data: any) => ipcRenderer.invoke('ai:autoCreate', data),
   applyEstimateFix: (data: any) => ipcRenderer.invoke('ai:applyEstimateFix', data),
 
+  // 研修モード（THINKING）— 見積を教材に、若手向けの解説を作る
+  trainingGuide: (data: any) => ipcRenderer.invoke('ai:trainingGuide', data),
+  generateTrainingPDF: (data: any) => ipcRenderer.invoke('training:generatePDF', data),
+
   // データエクスポート/インポート
   exportData: () => ipcRenderer.invoke('data:export'),
   importData: () => ipcRenderer.invoke('data:import'),

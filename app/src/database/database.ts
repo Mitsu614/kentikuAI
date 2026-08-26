@@ -91,6 +91,7 @@ export const CREDIT_COSTS: Record<string, number> = {
   '画像生成':          3,
   'チャット見積':      1,
   'ビフォーアフター見積': 2,
+  '研修モード':        1,
   'PDF出力':          0,
   '一括登録':          0,
 };

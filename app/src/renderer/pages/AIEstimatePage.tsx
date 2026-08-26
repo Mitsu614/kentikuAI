@@ -12,6 +12,7 @@ const AREA_SEC = 15;        // 写真からの面積読み取り
 const IMAGE_SEC = 40;       // 完成イメージ生成
 const AUTOCREATE_SEC = 12;  // 物件・施工・請求書の自動登録
 const TAKEOFF_SEC = 45;     // 図面からの数量拾い出し（PDFはページ数ぶん重い）
+const TRAINING_SEC = 150;   // 研修モード（実測: 内訳6行の屋根工事で約143秒。考えさせるぶん見積より長い）
 
 // 待っている間に出す「いま何をしているか」の一言。固定POPと画面内カードで同じ文言を使う。
 const analyzeStep = (sec: number) =>
@@ -164,6 +165,16 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [autoCreated, setAutoCreated] = useState<any>(null);
   const [creating, setCreating] = useState(false);
   const [applyingFix, setApplyingFix] = useState(false);
+  // 研修モード（THINKING）— 次世代への技術継承。見積を教材に「なぜこの材料が何個要るのか」を解説する
+  const [training, setTraining] = useState<any>(null);
+  // どの見積に対する解説かを覚えておく（再解析したら自動で消える＝古い解説が残らない）
+  const [trainingSrc, setTrainingSrc] = useState<any>(null);
+  const [trainingLoading, setTrainingLoading] = useState(false);
+  const [trainingLevel, setTrainingLevel] = useState('新人');
+  const [trainingErr, setTrainingErr] = useState('');
+  // 解説を出してよいのは「いま画面に出ている見積に対して作った解説」だけ。
+  // 再解析したら参照が変わるので自動で引っ込む（古い現場の解説が残ると事故になる）。
+  const trainingShown = !!training && trainingSrc === result;
   const [estimateLog, setEstimateLog] = useState<any[]>([]);
   const [selectedLog, setSelectedLog] = useState<number | null>(null);
   const [logPO, setLogPO] = useState<any>(null);
@@ -184,6 +195,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const trainingRef = useRef<HTMLDivElement>(null);
 
   // DB からログ読み込み
   useEffect(() => {
@@ -589,6 +601,80 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     else setError(res?.error || 'テナントを切り替えられませんでした');
   };
 
+  // ── 研修モード（THINKING）— 次世代への技術継承 ──
+  // 見積に残るのは金額だけ。「なぜその材料が・何個・何のために要り、どう使うのか」は
+  // ベテランの頭の中にしか無いので、この現場の見積をそのまま教材にして若手向けの文章にする。
+  const makeTraining = async () => {
+    if (!result || trainingLoading) return;
+    setTrainingLoading(true);
+    setTrainingErr('');
+    startBusy({
+      key: 'training',
+      title: '研修モードで解説を作っています',
+      etaSec: TRAINING_SEC,
+      sub: trainingLevel + '向けに、材料の使い道と数量の根拠をまとめています',
+      note: '1〜3分かかります。見積の数量をそのまま教材にします（数字は作り直しません）',
+    });
+    try {
+      const g = await (window as any).api.trainingGuide({ result, comment, location, level: trainingLevel });
+      setTraining(g);
+      setTrainingSrc(result);
+      endBusy();
+      setTimeout(() => trainingRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+    } catch (e: any) {
+      endBusy({ ok: false });
+      setTrainingErr(String(e?.message || e).replace(/^Error invoking remote method '[^']+': /, '').replace(/^Error: /, '').replace(/^ERROR: /, ''));
+    } finally {
+      setTrainingLoading(false);
+    }
+  };
+
+  // 画面の解説を、社内チャット・メールにそのまま貼れるテキストにする
+  const trainingToText = (g: any) => {
+    if (!g) return '';
+    const L: string[] = [];
+    L.push('【' + (g.title || '研修資料') + '】');
+    if (g.workType) L.push('工事: ' + g.workType + (g.level ? '　対象: ' + g.level : ''));
+    if (g.overview) L.push('\n' + g.overview);
+    if ((g.flow || []).length > 0) {
+      L.push('\n■ 工事の流れ');
+      (g.flow || []).forEach((f: any) => {
+        L.push('・' + (f.step || '') + ' … ' + (f.what || ''));
+        if (f.why) L.push('　なぜこの順番: ' + f.why);
+        if (f.watch) L.push('　見ておく所: ' + f.watch);
+      });
+    }
+    L.push('\n■ 材料 — なぜ要るのか・何個要るのか・どう使うのか');
+    (g.materials || []).forEach((m: any, i: number) => {
+      L.push('\n' + (i + 1) + '. ' + (m.name || '') + '　【数量】' + (m.quantity || ''));
+      if (m.role) L.push('　何に使う: ' + m.role);
+      if (m.why) L.push('　なぜ必要: ' + m.why);
+      if (m.howMany) L.push('　なぜこの数量: ' + m.howMany);
+      if (m.howToUse) L.push('　どう使う:\n' + String(m.howToUse).split('\n').map((x: string) => '　　' + x).join('\n'));
+      if (m.tools) L.push('　使う道具: ' + m.tools);
+      if (m.mistakes) L.push('　よくある失敗: ' + m.mistakes);
+      if (m.seniorTip) L.push('　先輩のコツ: ' + m.seniorTip);
+    });
+    if ((g.labor || []).length > 0) {
+      L.push('\n■ 職人 — 誰が何をして、なぜその人数・日数か');
+      (g.labor || []).forEach((l: any) => {
+        L.push('・' + (l.trade || '') + '（' + (l.manDays || '') + '）: ' + (l.whatTheyDo || ''));
+        if (l.whyThisManDays) L.push('　人工の根拠: ' + l.whyThisManDays);
+      });
+    }
+    if ((g.safety || []).length > 0) {
+      L.push('\n■ 安全');
+      (g.safety || []).forEach((x: any) => L.push('・' + x));
+    }
+    if (g.costEducation) L.push('\n■ 原価の感覚\n' + g.costEducation);
+    if ((g.quiz || []).length > 0) {
+      L.push('\n■ 確認問題');
+      (g.quiz || []).forEach((q: any, i: number) => { L.push('Q' + (i + 1) + '. ' + (q.q || '')); L.push('A. ' + (q.a || '')); });
+    }
+    if (g.closing) L.push('\n' + g.closing);
+    return L.join('\n');
+  };
+
   const startEstimate = async () => {
     if (!canAnalyze) return;
     const mainImage = mode === 'beforeafter' ? (afterImage || beforeImage) : imageData;
@@ -968,6 +1054,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           { icon: '📸', title: 'STEP 1：現場写真をアップロード', desc: '施工前の写真や図面を選択してください。テキストだけでの見積もりも可能です。', sub: 'ビフォーアフターモードで2枚の写真から見積もることもできます' },
           { icon: '🤖', title: 'STEP 2：AIが自動で見積作成', desc: 'AIが写真を解析し、材料・数量・単価・人件費を自動算出します。', sub: '過去の実績データを学習し、精度が向上していきます' },
           { icon: '📋', title: 'STEP 3：施工案件として登録', desc: '見積結果をワンクリックで施工案件に登録。請求書や発注書も自動生成できます。' },
+          { icon: '🎓', title: 'STEP 4：研修モードで若手に残す', desc: '見積結果の下の「研修モード」で、なぜその材料が何個要るのか・どう使うのかを解説にできます。', sub: 'PDFにして新人に配れます（AIストック1／数量は見積の値をそのまま使います）' },
         ]} />
       </div>
 
@@ -2727,6 +2814,188 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               <p style={{ fontSize: 14, lineHeight: 1.7 }}>{result.recommendations}</p>
             </div>
           )}
+
+          {/* 研修モード（THINKING）— 次世代への技術継承 */}
+          <div ref={trainingRef} className="card" style={{ marginTop: 16, background: '#f3f7fb', border: '2px solid #2e4057' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <h3 style={{ margin: 0, color: '#2e4057' }}>🎓 研修モード（次世代への技術継承）</h3>
+              {trainingShown && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 12, padding: '4px 12px' }}
+                    onClick={() => { try { navigator.clipboard?.writeText(trainingToText(training)); } catch (_) {} }}
+                  >📋 コピー</button>
+                  <button
+                    className="btn"
+                    style={{ fontSize: 12, padding: '4px 12px' }}
+                    onClick={async () => {
+                      try { await (window as any).api.generateTrainingPDF({ guide: training }); }
+                      catch (e: any) { alert('PDFを作れませんでした: ' + String(e?.message || e).replace(/^Error invoking remote method '[^']+': /, '').replace(/^Error: /, '')); }
+                    }}
+                  >📄 PDFで配る</button>
+                </div>
+              )}
+            </div>
+
+            {!trainingShown && (
+              <>
+                <p style={{ fontSize: 13, color: '#4a5b6b', lineHeight: 1.8, margin: '8px 0 10px' }}>
+                  この見積を教材にして、<strong>なぜその材料が・何個・何のために要り、どう使うのか</strong>を若手向けの文章にします。
+                  数量はこの見積の値をそのまま使うので、資料と現場で数字がズレません。
+                </p>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, color: '#4a5b6b' }}>読ませる相手:</span>
+                  <select
+                    value={trainingLevel}
+                    onChange={e => setTrainingLevel(e.target.value)}
+                    style={{ padding: '7px 10px', border: '1px solid #c3d0da', borderRadius: 8, fontSize: 13, background: '#fff', color: '#1e293b' }}
+                  >
+                    <option value="新人">新人（入社1年目）</option>
+                    <option value="2〜3年目">2〜3年目</option>
+                    <option value="職長候補">職長候補</option>
+                  </select>
+                  <button className="btn btn-primary" onClick={makeTraining} disabled={trainingLoading}>
+                    {trainingLoading ? '解説を作っています…' : '🎓 解説を作る'}
+                  </button>
+                  <span style={{ fontSize: 11, color: '#8b95a1' }}>AIストック 1</span>
+                </div>
+              </>
+            )}
+
+            {trainingErr && (
+              <div style={{ marginTop: 8, fontSize: 12, color: '#c0392b', background: '#fdf2f0', border: '1px solid #f0c8c0', borderRadius: 6, padding: '8px 10px' }}>
+                {trainingErr}
+              </div>
+            )}
+
+            {trainingShown && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 15, fontWeight: 'bold', color: '#2e4057' }}>{training.title || '研修資料'}</div>
+                <div style={{ fontSize: 11, color: '#8b95a1', marginBottom: 8 }}>
+                  {training.workType || ''}{training.level ? '　対象: ' + training.level : ''}{training.generatedAt ? '　作成: ' + training.generatedAt : ''}
+                </div>
+
+                {training.overview && (
+                  <div style={{ background: '#fff', border: '1px solid #d9e2ea', borderLeft: '4px solid #2e4057', borderRadius: '0 8px 8px 0', padding: '10px 12px', fontSize: 13, lineHeight: 1.8, whiteSpace: 'pre-wrap', color: '#26313d' }}>
+                    {training.overview}
+                  </div>
+                )}
+
+                {(training.flow || []).length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 13, fontWeight: 'bold', color: '#2e4057', marginBottom: 6 }}>1. 工事の流れ — どの順で、なぜその順番か</div>
+                    {(training.flow || []).map((f: any, i: number) => (
+                      <div key={i} style={{ background: '#fff', border: '1px solid #e3e9ee', borderRadius: 8, padding: '8px 12px', marginBottom: 6 }}>
+                        <div style={{ fontSize: 13, fontWeight: 'bold', color: '#26313d' }}>{f.step} <span style={{ fontWeight: 'normal' }}>{f.what}</span></div>
+                        {f.why && <div style={{ fontSize: 12, color: '#556575', marginTop: 3 }}>なぜこの順番: {f.why}</div>}
+                        {f.watch && <div style={{ fontSize: 12, color: '#1f6f3f', marginTop: 2 }}>👁 見ておく所: {f.watch}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 'bold', color: '#2e4057', marginBottom: 6 }}>
+                    2. 材料 — なぜ要るのか・何個要るのか・どう使うのか
+                    <span style={{ fontWeight: 'normal', fontSize: 11, color: '#8b95a1', marginLeft: 6 }}>
+                      解説 {(training.materials || []).length}件{training.sourceItemCount ? '／見積の材料・仮設 ' + training.sourceItemCount + '行' : ''}
+                    </span>
+                  </div>
+                  {(training.materials || []).map((m: any, i: number) => (
+                    <div key={i} style={{ background: '#fff', border: '1px solid #d9e2ea', borderRadius: 8, marginBottom: 8, overflow: 'hidden' }}>
+                      <div style={{ background: '#eef3f8', padding: '7px 12px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid #d9e2ea' }}>
+                        <span style={{ background: '#2e4057', color: '#fff', width: 20, height: 20, borderRadius: '50%', textAlign: 'center', lineHeight: '20px', fontSize: 11, flex: 'none' }}>{i + 1}</span>
+                        <span style={{ fontWeight: 'bold', fontSize: 14, flex: 1, color: '#26313d' }}>{m.name}</span>
+                        {m.quantity && <span style={{ background: '#fff', border: '1px solid #b9c9d6', borderRadius: 4, padding: '2px 10px', fontSize: 12, fontWeight: 'bold', color: '#2e4057' }}>{m.quantity}</span>}
+                      </div>
+                      <div style={{ padding: '8px 12px', fontSize: 13, lineHeight: 1.8, color: '#26313d' }}>
+                        {m.role && <div style={{ marginBottom: 5 }}><span style={{ color: '#4a5b6b', fontSize: 11 }}>何に使うか</span><br />{m.role}</div>}
+                        {m.why && <div style={{ marginBottom: 5 }}><span style={{ color: '#4a5b6b', fontSize: 11 }}>なぜ必要か</span><br />{m.why}</div>}
+                        {m.howMany && (
+                          <div style={{ marginBottom: 5, background: '#f4f7fa', borderRadius: 6, padding: '6px 9px' }}>
+                            <span style={{ color: '#4a5b6b', fontSize: 11 }}>なぜこの数量か</span><br />{m.howMany}
+                          </div>
+                        )}
+                        {m.howToUse && (
+                          <div style={{ marginBottom: 5 }}>
+                            <span style={{ color: '#4a5b6b', fontSize: 11 }}>どう使うか</span>
+                            <div style={{ whiteSpace: 'pre-wrap' }}>{m.howToUse}</div>
+                          </div>
+                        )}
+                        {m.tools && <div style={{ fontSize: 12, color: '#556575' }}>🔧 使う道具: {m.tools}</div>}
+                        {m.mistakes && <div style={{ fontSize: 12, color: '#a8442a', background: '#fff8f5', borderRadius: 6, padding: '5px 9px', marginTop: 4 }}>⚠ よくある失敗: {m.mistakes}</div>}
+                        {m.seniorTip && <div style={{ fontSize: 12, color: '#1f6f3f', background: '#f5fbf7', borderRadius: 6, padding: '5px 9px', marginTop: 4 }}>💡 先輩のコツ: {m.seniorTip}</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {(training.labor || []).length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 13, fontWeight: 'bold', color: '#2e4057', marginBottom: 6 }}>3. 職人 — 誰が何をして、なぜその人数・日数か</div>
+                    {(training.labor || []).map((l: any, i: number) => (
+                      <div key={i} style={{ background: '#fff', border: '1px solid #e3e9ee', borderRadius: 8, padding: '8px 12px', marginBottom: 6, fontSize: 13, lineHeight: 1.8, color: '#26313d' }}>
+                        <div><strong>{l.trade}</strong> <span style={{ color: '#2e4057', fontSize: 12 }}>{l.manDays}</span></div>
+                        {l.whatTheyDo && <div>{l.whatTheyDo}</div>}
+                        {l.whyThisManDays && <div style={{ fontSize: 12, color: '#556575' }}>人工の根拠: {l.whyThisManDays}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {(training.safety || []).length > 0 && (
+                  <div style={{ marginTop: 12, background: '#fff8f0', border: '1px solid #f0d8b8', borderRadius: 8, padding: '10px 12px' }}>
+                    <div style={{ fontSize: 13, fontWeight: 'bold', color: '#a8442a', marginBottom: 5 }}>4. 安全 — ここで人が死ぬ・怪我をする</div>
+                    <ul style={{ margin: '0 0 0 18px', fontSize: 13, lineHeight: 1.8, color: '#26313d' }}>
+                      {(training.safety || []).map((x: any, i: number) => <li key={i}>{x}</li>)}
+                    </ul>
+                  </div>
+                )}
+
+                {training.costEducation && (
+                  <div style={{ marginTop: 12, background: '#fff', border: '1px solid #d9e2ea', borderRadius: 8, padding: '10px 12px' }}>
+                    <div style={{ fontSize: 13, fontWeight: 'bold', color: '#2e4057', marginBottom: 4 }}>5. 原価の感覚</div>
+                    <div style={{ fontSize: 13, lineHeight: 1.8, whiteSpace: 'pre-wrap', color: '#26313d' }}>{training.costEducation}</div>
+                  </div>
+                )}
+
+                {(training.quiz || []).length > 0 && (
+                  <div style={{ marginTop: 12, background: '#fff', border: '1px solid #d9e2ea', borderRadius: 8, padding: '10px 12px' }}>
+                    <div style={{ fontSize: 13, fontWeight: 'bold', color: '#2e4057', marginBottom: 4 }}>6. 確認問題</div>
+                    {(training.quiz || []).map((q: any, i: number) => (
+                      <div key={i} style={{ borderBottom: '1px dashed #e3e9ee', padding: '6px 0', fontSize: 13, lineHeight: 1.7, color: '#26313d' }}>
+                        <div style={{ fontWeight: 'bold' }}>Q{i + 1}. {q.q}</div>
+                        <div style={{ color: '#4a5b6b' }}>A. {q.a}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {training.closing && (
+                  <div style={{ marginTop: 12, background: '#2e4057', color: '#fff', borderRadius: 8, padding: '11px 14px', fontSize: 13, lineHeight: 1.8, whiteSpace: 'pre-wrap' }}>
+                    {training.closing}
+                  </div>
+                )}
+
+                <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <select
+                    value={trainingLevel}
+                    onChange={e => setTrainingLevel(e.target.value)}
+                    style={{ padding: '6px 10px', border: '1px solid #c3d0da', borderRadius: 8, fontSize: 12, background: '#fff', color: '#1e293b' }}
+                  >
+                    <option value="新人">新人（入社1年目）</option>
+                    <option value="2〜3年目">2〜3年目</option>
+                    <option value="職長候補">職長候補</option>
+                  </select>
+                  <button className="btn" style={{ fontSize: 12, padding: '6px 14px' }} onClick={makeTraining} disabled={trainingLoading}>
+                    {trainingLoading ? '作成中…' : '🔄 この相手向けに作り直す'}
+                  </button>
+                  <span style={{ fontSize: 11, color: '#8b95a1' }}>※数量は見積の値をそのまま使っています。手順・安全は現場の職長の指示が優先です。</span>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* 再解析・チャット相談 */}
           <div className="card" style={{ marginTop: 16, textAlign: 'center', background: '#f8f9fa' }}>
