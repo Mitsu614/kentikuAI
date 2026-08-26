@@ -1,0 +1,5 @@
+# 計測のたびに書き換わる出力。リポジトリには残さない（正解ファイル truth/ とコードだけ残す）
+accuracy-result.json
+last-runs.json
+raw-*.json
+raw-*.txt

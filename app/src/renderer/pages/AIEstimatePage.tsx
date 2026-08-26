@@ -55,6 +55,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 追加の写真（1枚目は imageData。面積推定・完成イメージ・サムネは従来どおり1枚目を使う）
   const [extraImages, setExtraImages] = useState<string[]>([]);
   const MAX_IMAGES = 6;
+  const isPdfData = (x: any) => typeof x === 'string' && x.startsWith('data:application/pdf');
   const [beforeImage, setBeforeImage] = useState<string | null>(null);
   const [afterImage, setAfterImage] = useState<string | null>(null);
   const [mode, setMode] = useState<'single' | 'beforeafter' | 'chat'>('single');
@@ -211,7 +212,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   }, []);
 
   const selectImage = async () => {
-    const img = await window.api.selectImage();
+    // PDF（ゼネコンから来る図面はたいていPDF）も選べるようにする。
+    // selectPdf は PDF・JPG・PNG のどれでも data URL で返す。
+    const picked = await (window as any).api.selectPdf();
+    const img = Array.isArray(picked) && picked[0] ? picked[0].data : null;
     if (img) {
       setImageData(img);
       setExtraImages([]);   // 現場を変えたときに前の追加写真が残らないようにする
@@ -226,7 +230,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const addExtraImage = async () => {
     if (!imageData) { await selectImage(); return; }
     if (1 + extraImages.length >= MAX_IMAGES) { setError(`写真は${MAX_IMAGES}枚までです`); return; }
-    const img = await window.api.selectImage();
+    const picked = await (window as any).api.selectPdf();
+    const img = Array.isArray(picked) && picked[0] ? picked[0].data : null;
     if (img) { setExtraImages(list => [...list, img]); setResult(null); setError(''); setAutoCreated(null); }
   };
   const removeExtraImage = (i: number) => {
@@ -266,7 +271,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setDragTarget(null);
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith('image/')) { setError('画像ファイル（JPG/PNG等）をドロップしてください'); return; }
+    if (!file.type.startsWith('image/') && file.type !== 'application/pdf') { setError('画像（JPG/PNG等）またはPDFをドロップしてください'); return; }
     try {
       const dataUrl = await readFileAsDataUrl(file);
       applyDroppedImage(dataUrl, target);
@@ -1152,20 +1157,44 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               onMouseOut={e => { if (dragTarget) return; (e.currentTarget as HTMLElement).style.borderColor = '#ccc'; (e.currentTarget as HTMLElement).style.color = '#aaa'; }}
             >
               <div style={{ fontSize: 48, marginBottom: 12 }}>{dragTarget === 'single' ? '📥' : '📷'}</div>
-              <div style={{ fontSize: 18, fontWeight: 'bold' }}>{dragTarget === 'single' ? 'ここにドロップ' : '写真・図面をドラッグ&ドロップ'}</div>
-              <div style={{ fontSize: 13, marginTop: 8, color: '#666' }}>現場写真 / 間取り図 / 平面図 / 設計図 / 立面図 OK</div>
+              <div style={{ fontSize: 18, fontWeight: 'bold' }}>{dragTarget === 'single' ? 'ここにドロップ' : '写真・図面（PDF可）をドラッグ&ドロップ'}</div>
+              <div style={{ fontSize: 13, marginTop: 8, color: '#666' }}>現場写真 / 間取り図 / 平面図 / 設計図 / 立面図 OK（PDFのまま入れられます）</div>
               <div style={{ fontSize: 12, marginTop: 4 }}>ドラッグ&ドロップ、またはクリックして選択（なくてもコメントだけで見積可能）</div>
             </div>
           ) : (
             <div {...dropZoneProps('single')} style={{ borderRadius: 8, outline: dragTarget === 'single' ? '3px dashed #3a7bd5' : 'none', outlineOffset: 4 }}>
-              <img src={imageData} style={{ maxWidth: '100%', maxHeight: 350, borderRadius: 8, border: '1px solid #ddd' }} alt="uploaded" />
+              {isPdfData(imageData) ? (
+                <div style={{
+                  border: '2px solid #c62828', background: '#fdf3f2', borderRadius: 10,
+                  padding: '26px 20px', maxWidth: 420, margin: '0 auto',
+                }}>
+                  <div style={{ fontSize: 40 }}>📄</div>
+                  <div style={{ fontSize: 16, fontWeight: 'bold', color: '#a5342f', marginTop: 6 }}>PDFを読み込みました</div>
+                  <div style={{ fontSize: 12, color: '#7b241c', marginTop: 6, lineHeight: 1.7 }}>
+                    図面PDFはそのままAIが読みます（画像に変換する必要はありません）。<br />
+                    ページ数が多いPDFは、必要なページだけに分けて入れると精度が上がります。
+                  </div>
+                </div>
+              ) : (
+                <img src={imageData} style={{ maxWidth: '100%', maxHeight: 350, borderRadius: 8, border: '1px solid #ddd' }} alt="uploaded" />
+              )}
               {/* 追加写真のサムネイル（外壁4面・屋根・室内など、1枚に収まらない現場向け） */}
               {extraImages.length > 0 && (
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 10 }}>
                   {extraImages.map((img, i) => (
                     <div key={i} style={{ position: 'relative' }}>
-                      <img src={img} alt={`追加写真${i + 2}`}
-                        style={{ width: 104, height: 78, objectFit: 'cover', borderRadius: 6, border: '1px solid #ddd' }} />
+                      {isPdfData(img) ? (
+                        <div style={{
+                          width: 104, height: 78, borderRadius: 6, border: '1px solid #e0b4b0', background: '#fdf3f2',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#a5342f',
+                        }}>
+                          <div style={{ fontSize: 22 }}>📄</div>
+                          <div style={{ fontSize: 10, fontWeight: 'bold' }}>PDF</div>
+                        </div>
+                      ) : (
+                        <img src={img} alt={`追加資料${i + 2}`}
+                          style={{ width: 104, height: 78, objectFit: 'cover', borderRadius: 6, border: '1px solid #ddd' }} />
+                      )}
                       <span style={{
                         position: 'absolute', left: 4, bottom: 4, background: 'rgba(0,0,0,.62)', color: '#fff',
                         fontSize: 10, padding: '1px 6px', borderRadius: 8,
