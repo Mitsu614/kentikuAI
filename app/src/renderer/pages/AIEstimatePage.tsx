@@ -631,7 +631,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setTakeoff({ ...takeoff, items: (takeoff.items || []).filter((_: any, j: number) => j !== i) });
   };
 
-  const analyze = async (areaOverride?: string) => {
+  // opts.forceFresh: 同じ入力でも前回の見積を再利用せず、AIで作り直す（ストックを消費する）
+  const analyze = async (areaOverride?: string, opts?: { forceFresh?: boolean }) => {
     if (!canAnalyze) return;
     setAreaCheck(null);
     // 結果画面から「この面積で再計算」した場合は上書き値を使い、入力欄にも反映
@@ -678,6 +679,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       const payload = mode === 'beforeafter'
         ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode }
         : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode };
+      if (opts?.forceFresh) (payload as any).forceFresh = true;
       const res = await (window as any).api.analyzeImage(payload);
       endBusy();
       setResult(res);
@@ -1927,6 +1929,31 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 </button>
               </div>
               <div style={{ fontSize: 11, color: '#999', marginTop: 6 }}>実測値を入れて再計算すると、信頼度が上がり金額が正確になります。合っていればそのままでOKです。</div>
+            </div>
+          )}
+
+          {/* 前回とまったく同じ依頼だったので、計算し直さず同じ金額を出した */}
+          {result.reusedFrom && (
+            <div className="card" style={{ marginTop: 16, background: '#eef6ff', border: '2px solid #3a7bd5' }}>
+              <h3 style={{ margin: '0 0 6px', color: '#1a4f8a', fontSize: 16 }}>📌 前回と同じ工事です</h3>
+              <div style={{ fontSize: 13.5, lineHeight: 1.8 }}>
+                入力がまったく同じだったため、<b>{result.reusedFrom.date} に出した見積</b>と<b>同じ金額</b>で表示しています。
+                計算し直していないので<b>AIストックは消費していません</b>。
+                {result.reusedFrom.edited && (
+                  <div style={{ marginTop: 6, background: '#fff7e6', border: '1px solid #f0c14b', borderRadius: 6, padding: '7px 11px' }}>
+                    ✏️ この見積は<b>{result.reusedFrom.editedDate} に金額を手直し</b>されています。
+                    <b>AIの原案ではなく、直したあとの金額</b>を出しています。
+                  </div>
+                )}
+                <div style={{ color: '#666', marginTop: 4 }}>
+                  ※ 同じ工事なら同じ金額になるようにしています。単価や仕様を変えたい場合は、条件を書き換えるか下のボタンで出し直してください。
+                </div>
+              </div>
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ marginTop: 10 }}
+                onClick={() => analyze(undefined, { forceFresh: true })}
+              >🔄 新しく見積もり直す（ストックを1〜2消費）</button>
             </div>
           )}
 

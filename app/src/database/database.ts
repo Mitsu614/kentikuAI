@@ -837,6 +837,11 @@ function migrate() {
     if (!elCols2.find((c: any) => c.name === 'edited_at')) {
       db.run('ALTER TABLE estimate_log ADD COLUMN edited_at TEXT');
     }
+    // 見積入力の指紋。同じ依頼が来たときに前回と同じ金額を返すための鍵。
+    if (!elCols2.find((c: any) => c.name === 'input_fingerprint')) {
+      db.run('ALTER TABLE estimate_log ADD COLUMN input_fingerprint TEXT');
+      db.run('CREATE INDEX IF NOT EXISTS idx_estimate_log_fingerprint ON estimate_log(tenant_id, input_fingerprint)');
+    }
   } catch (_) {}
   // マイナス単価の「諸経費」を「値引き」にリネーム
   try {

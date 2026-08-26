@@ -1074,6 +1074,94 @@ function enforceStatutoryWelfare(result: any, context: string, fallbackMarkup: n
   return [`法定福利費が労務費の${curRate}%と過少です。建設業の事業主負担は労務費のおよそ16%（健康保険5.0%＋介護保険0.8%＋厚生年金9.15%＋雇用保険0.95%＋労災保険0.95%）で、${before.toLocaleString()}円 → ${fixCost.toLocaleString()}円 が目安です。${NO_CHANGE_NOTE}`];
 }
 
+// ── 同じ工事は同じ金額で出す（見積の指紋） ─────────────────────────────
+// 「先週と同じ工事なのに金額が違う」は、この道具で一番信用を失う壊れ方。
+// AIは temperature 0 でも同じ入力から毎回まったく同じ数量を出すとは限らない（図面に書いて
+// いない数量を推定する余地があるため、実測で壁1.2倍・LGS7倍の振れが出た）。
+// そこで「入力が完全に一致したら、計算し直さずに前回の答えをそのまま返す」ようにする。
+//
+// 指紋に入れるのは “見積の内容を決める入力” だけ。日時・画面の状態などは入れない
+// （入れると毎回違う指紋になり、二度と一致しなくなる）。
+function normalizeForFingerprint(s: any): string {
+  return String(s ?? '')
+    .normalize('NFKC')            // 全角/半角・丸数字などの表記ゆれを吸収
+    .replace(/\s+/g, ' ')         // 改行・連続空白は1つの空白に
+    .trim()
+    .toLowerCase();
+}
+function estimateFingerprint(input: {
+  tenantId: number; industryType: string; comment?: string; location?: string; area?: string;
+  structure?: string; buildingAge?: string; roofType?: string; siteConditions?: any;
+  clientAttrs?: any; takeoff?: any; imageBase64?: string; beforeImage?: string; afterImage?: string;
+}): string {
+  // 画像は中身そのもので照合する（撮り直した写真は別物として扱う＝それが正しい）
+  const imgHash = (b64: any) => {
+    const s = String(b64 || '');
+    if (!s) return '';
+    return crypto.createHash('sha256').update(s).digest('hex').slice(0, 32);
+  };
+  // 拾い出しは「何をいくつ」だけを見る。式や出典の文言差では別物にしない。
+  const takeoffKey = Array.isArray(input.takeoff?.items)
+    ? input.takeoff.items
+        .map((it: any) => `${normalizeForFingerprint(it?.name)}:${Number(it?.quantity) || 0}${normalizeForFingerprint(it?.unit)}`)
+        .sort()
+        .join('|')
+    : '';
+  const parts = [
+    'v1',
+    String(input.tenantId),
+    normalizeForFingerprint(input.industryType),
+    normalizeForFingerprint(input.comment),
+    normalizeForFingerprint(input.location),
+    normalizeForFingerprint(input.area),
+    normalizeForFingerprint(input.structure),
+    normalizeForFingerprint(input.buildingAge),
+    normalizeForFingerprint(input.roofType),
+    normalizeForFingerprint(input.siteConditions && JSON.stringify(input.siteConditions)),
+    normalizeForFingerprint(input.clientAttrs && JSON.stringify(input.clientAttrs)),
+    takeoffKey,
+    imgHash(input.imageBase64),
+    imgHash(input.beforeImage),
+    imgHash(input.afterImage),
+  ];
+  return crypto.createHash('sha256').update(parts.join('')).digest('hex');
+}
+
+// 松竹梅（gradeOptions）を、積み直したあとの総額に必ず合わせ直す。
+// AIは estimatedTotal を内訳合計と違う数字で書いてくることがあり、その場合 reconcile が総額を
+// 内訳合計のほうへ直す。ところが gradeOptions はAIが書いた数字のまま残るため、
+// **「竹（この見積）」だけがお見積金額と食い違って表示される**（実測で299万円のズレ）。
+// 竹は定義上「この見積そのもの」なので総額と同額・差額0に固定する。
+// 松梅は spec に「何を変えていくら」と根拠を書いてあるので、差額(diff)のほうを保って総額を引き直す。
+function reanchorGradeOptions(result: any, context: string): string[] {
+  const opts = result?.gradeOptions;
+  if (!Array.isArray(opts) || opts.length === 0) return [];
+  const total = Number(result.estimatedTotal) || 0;
+  if (total <= 0) return [];
+  const take = opts.find((o: any) => String(o?.grade) === '竹');
+  const before = Number(take?.total) || 0;
+
+  for (const o of opts) {
+    const g = String(o?.grade || '');
+    if (g === '竹') { o.total = total; o.diff = 0; continue; }
+    // 差額が空なら、AIが書いた総額と竹の差から復元する
+    let diff = Number(o.diff) || 0;
+    if (!diff && before > 0) diff = (Number(o.total) || 0) - before;
+    // 松は必ず増額・梅は必ず減額（符号を取り違えて出してくることがある）
+    if (g === '松' && diff < 0) diff = Math.abs(diff);
+    if (g === '梅' && diff > 0) diff = -diff;
+    o.diff = diff;
+    o.total = Math.max(0, total + diff);
+  }
+
+  // ズレが誤差の範囲（総額の1%未満）なら黙って直す。商談で見せる金額が変わるほどの
+  // 食い違いのときだけ、検算の欄に出して人に知らせる。
+  const gap = Math.abs(before - total);
+  if (before <= 0 || gap < total * 0.01) return [];
+  console.warn(`[${context}] 松竹梅の竹が総額と不一致: 申告${before} → 総額${total} に合わせ直し`);
+  return [`松竹梅の「竹（この見積）」が、お見積金額と ${gap.toLocaleString()}円 食い違っていたため、3案とも実際の総額に合わせ直しました。`];
+}
+
 function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = DEFAULT_MARKUP): any {
   if (!result || !Array.isArray(result.breakdown) || result.breakdown.length === 0) return result;
   // 「こちらに変更する」候補は毎回作り直す（補正を当てて積み直すと、解消した警告は再出しない）
@@ -1124,6 +1212,10 @@ function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = D
   result.estimatedLaborCost = baseBy('施工費');
   // 仮設は材料費でも人件費でもないため画面から消えていた。経費としてまとめて表示する。
   result.estimatedExpenseCost = baseBy('仮設') + baseBy('経費');
+
+  // 総額が確定したこの時点で松竹梅を合わせ直す（竹＝この見積、が崩れたまま画面に出るのを防ぐ）
+  const gradeWarns = reanchorGradeOptions(result, context);
+  if (gradeWarns.length) (result.estimateWarnings = result.estimateWarnings || []).push(...gradeWarns);
 
   const laborWarn = checkLaborAgainstManDays(result, context);
   if (laborWarn) (result.estimateWarnings = result.estimateWarnings || []).push(laborWarn);
@@ -1401,6 +1493,44 @@ function getOcrFilesDir(dbFilePath: string) {
 // ── 図面拾い出しの結果を、見積プロンプトに載せる形へ整形する ──
 // 拾い出しは「図面の寸法から計算式つきで出た数量」なので、AIの目測推定より必ず強い。
 // ただしユーザーが現場で測った実測値(area)には勝たせない（順序: 実測値 > 図面拾い出し > 推定）。
+// コメント本文に書かれた面積（例「1階平面図（床面積1,209.35㎡）」）を拾い出す。
+// 依頼者が図面を見て書いた数字は、AIが写真・図面から目測した値より確かなので、確定値として扱う。
+// ここを拾わないと、コメントに面積を書いても AI が勝手に別の面積を推定して金額がぶれる。
+function extractAreasFromComment(comment: string): { label: string; value: number; unit: string }[] {
+  const text = String(comment || '').normalize('NFKC');
+  if (!text) return [];
+  const out: { label: string; value: number; unit: string }[] = [];
+  const seen = new Set<string>();
+  // 「〇〇面積 1,209.35㎡」「延床 120m2」「45坪」など。単位の直前の数値と、その手前の見出し語を拾う。
+  const re = /(床面積|延床面積|延床|施工面積|対象面積|壁面積|天井面積|屋根面積|外壁面積|塗装面積|面積)?\s*[:：]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(㎡|m2|m²|平米|坪)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const value = Number(String(m[2]).replace(/,/g, ''));
+    if (!(value > 0) || value > 1000000) continue;   // 桁違いの誤検出は捨てる
+    const unit = m[3] === '坪' ? '坪' : '㎡';
+    const label = m[1] || '面積';
+    const key = `${label}:${value}${unit}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ label, value, unit });
+  }
+  return out;
+}
+
+function formatCommentAreasForPrompt(comment: string): string {
+  const areas = extractAreasFromComment(comment);
+  if (areas.length === 0) return '';
+  const lines = areas.map(a => `- ${a.label}: ${a.value.toLocaleString()}${a.unit}`).join('\n');
+  return `## ★依頼文で指定された面積（依頼者の申告値・最優先で使え）★
+${lines}
+これは依頼者が図面・現場を見て書いた確定値である。**写真や図面からの目測・推定でこの数字を上書きするな。**
+この面積を基準に数量を組み立て、assumedArea と estimatedScale にも必ずこの数字をそのまま書け（勝手に丸めるな）。
+図面から読み取れる値と食い違う場合も、**指定された面積を採用**し、その食い違いを recommendations に一言書いて確認を促せ。
+坪で指定された場合のみ ㎡ に換算してよい（1坪 = 3.30578㎡）。換算したことを note に書け。
+
+`;
+}
+
 function formatTakeoffForPrompt(takeoff: any): string {
   if (!takeoff || !Array.isArray(takeoff.items) || takeoff.items.length === 0) return '';
   const lines = takeoff.items.map((it: any, i: number) => {
@@ -5640,11 +5770,78 @@ ${pages}</body></html>`;
     let { imageBase64, beforeImage, afterImage, comment, location, area, clientAttrs, roofType, structure, buildingAge, siteConditions, desiredDeadline, takeoff, fastMode } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null, structure: '', buildingAge: '', siteConditions: null, desiredDeadline: '', takeoff: null, fastMode: false } : data;
     // 図面拾い出し（PDF図面から計算式つきで拾った数量）。あれば推定より必ず優先させる。
     const takeoffSection = formatTakeoffForPrompt(takeoff);
+    // 依頼文に面積が書かれていれば、それを確定値として最優先で渡す（AIの目測より確か）
+    const commentAreaSection = formatCommentAreasForPrompt(comment);
     // スマホ写真は数MBあり、Anthropicの5MB上限で400になるため送信前に縮小する
     imageBase64 = shrinkImageForAI(imageBase64);
     beforeImage = shrinkImageForAI(beforeImage);
     afterImage = shrinkImageForAI(afterImage);
     const isBeforeAfter = beforeImage && afterImage;
+
+    // ── 同じ工事なら、計算し直さずに前回と同じ金額を返す ──
+    // 入力が1文字でも違えば別の指紋になるので、ここに来るのは「完全に同じ依頼」のときだけ。
+    // 「見積もり直す」を押されたとき(forceFresh)は素通りしてAIを呼ぶ。
+    const fpTenant = getCurrentTenant();
+    const fpIndustry = getTenantProfile(fpTenant).industryType || loadApiConfig().industryType || 'general';
+    const fingerprint = estimateFingerprint({
+      tenantId: fpTenant, industryType: fpIndustry, comment, location, area,
+      structure, buildingAge, roofType, siteConditions, clientAttrs, takeoff,
+      imageBase64, beforeImage, afterImage,
+    });
+    if (!data?.forceFresh) {
+      try {
+        // 人が金額を直した見積(edited_at)を最優先で拾う。人の判断が入った金額が一番正しいため。
+        const prior = queryOne(
+          `SELECT id, ai_json, ai_total, edited_material_cost, edited_labor_cost, edited_expense_cost,
+                  edited_total, edited_at, created_at
+             FROM estimate_log
+            WHERE tenant_id = ? AND input_fingerprint = ? AND ai_json IS NOT NULL AND ai_json != ''
+            ORDER BY CASE WHEN edited_at IS NOT NULL THEN 0 ELSE 1 END, id DESC
+            LIMIT 1`,
+          [fpTenant, fingerprint]
+        );
+        if (prior?.ai_json) {
+          const reused = JSON.parse(prior.ai_json);
+          // ★人が直していたら、AIの原案ではなく「直したあとの金額」を返す。
+          //   ai_json はAIの原案のまま残り、修正額は edited_* 列に別で入る仕様なので、
+          //   ここで当て直さないと「直したはずの金額がまた元に戻る」ことになる。
+          const editedTotal = Number(prior.edited_total) || 0;
+          const wasEdited = !!prior.edited_at && editedTotal > 0;
+          if (wasEdited) {
+            const aiTotal = Number(reused.estimatedTotal) || Number(prior.ai_total) || 0;
+            // 明細は総額の比で引き直す（編集保存が construction_materials に対してやるのと同じ方法）
+            if (aiTotal > 0 && Array.isArray(reused.breakdown)) {
+              const ratio = editedTotal / aiTotal;
+              for (const b of reused.breakdown) {
+                if (Number(b?.cost) > 0) b.cost = Math.round(Number(b.cost) * ratio);
+                if (Number(b?.costBase) > 0) b.costBase = Math.round(Number(b.costBase) * ratio);
+                if (Number(b?.quantity) > 0 && Number(b?.cost) > 0) b.unitPrice = Math.round(Number(b.cost) / Number(b.quantity));
+              }
+            }
+            // 原価の内訳は、人が入力した値をそのまま使う（比で割り戻さない）
+            reused.estimatedTotal = editedTotal;
+            reused.estimatedMaterialCost = Number(prior.edited_material_cost) || 0;
+            reused.estimatedLaborCost = Number(prior.edited_labor_cost) || 0;
+            reused.estimatedExpenseCost = Number(prior.edited_expense_cost) || 0;
+            reused.grossProfit = editedTotal
+              - reused.estimatedMaterialCost - reused.estimatedLaborCost - reused.estimatedExpenseCost;
+            reused.profitRate = Math.round((reused.grossProfit / editedTotal) * 1000) / 10;
+            // 松竹梅の「竹＝この見積」も直した総額に合わせ直す
+            reanchorGradeOptions(reused, 'reuse-edited');
+          }
+          reused.reusedFrom = {
+            logId: prior.id,
+            date: String(prior.created_at || '').slice(0, 10),
+            edited: wasEdited,
+            editedDate: prior.edited_at ? String(prior.edited_at).slice(0, 10) : null,
+            total: Number(reused.estimatedTotal) || 0,
+          };
+          reused.inputFingerprint = fingerprint;
+          console.log(`[見積] 同一入力のため過去の見積を再利用: log#${prior.id}（${reused.reusedFrom.date}）${wasEdited ? '※人が直した金額を採用' : ''} クレジット消費なし`);
+          return reused;
+        }
+      } catch (e) { console.error('過去見積の再利用チェックに失敗（通常どおりAIで見積もります）:', e); }
+    }
 
     // クレジット消費量
     const hasCommentInput = comment && comment.trim().length > 0;
@@ -6376,7 +6573,7 @@ ${COST_REFERENCE}
 ${hasLocation ? `## 現場場所\n${location}\n\n★重要: 上記の場所に基づいて「全国 地域別 工事費係数」テーブルから該当する都道府県の係数を適用し、金額を補正すること。大阪以外の場合は必ず地域係数を掛けて算出すること。\n` : ''}
 ${comment ? `## ユーザーが依頼した工事内容（★最重要★）\n${comment}\n` : ''}
 ${(area && String(area).trim()) ? `## ★実測値（面積・数量）— 最優先で使用★\n${String(area).trim()}\n★重要: これはユーザーが現場で測った/把握している確定値です。写真・図面・航空写真からの推定より必ずこの実測値を優先し、この数量で材料費・施工費を算出すること。推定でずらさないこと。実測値が与えられた項目は信頼度(confidence)を高めに扱い、recommendationsに「面積は推定です」等の断り書きを書かないこと。\n` : ''}
-${takeoffSection}${(roofType && roofType.developFactor > 0) ? `## ★屋根種別（お客様確認済み — 展開係数を必ずこれで）★\n屋根種別: ${roofType.label}。展開係数 = ×${roofType.developFactor}。\n★重要: 折板・波板の材料工事（遮熱シート・カバー工法など、材料が波形に沿って張るもの）では「見積数量 = 屋根面積 × ${roofType.developFactor}」で必ず拾い、developFactor には ${roofType.developFactor} を出力すること。これはお客様が確認した確定値なので、写真からの種別判定より優先する。塗装・葺き替えなど材料が波形に沿わない工事では、この係数は掛けず数量は屋根面積のままにすること。\n` : ''}
+${commentAreaSection}${takeoffSection}${(roofType && roofType.developFactor > 0) ? `## ★屋根種別（お客様確認済み — 展開係数を必ずこれで）★\n屋根種別: ${roofType.label}。展開係数 = ×${roofType.developFactor}。\n★重要: 折板・波板の材料工事（遮熱シート・カバー工法など、材料が波形に沿って張るもの）では「見積数量 = 屋根面積 × ${roofType.developFactor}」で必ず拾い、developFactor には ${roofType.developFactor} を出力すること。これはお客様が確認した確定値なので、写真からの種別判定より優先する。塗装・葺き替えなど材料が波形に沿わない工事では、この係数は掛けず数量は屋根面積のままにすること。\n` : ''}
 ${(structure && String(structure).trim()) ? `## ★建物構造（お客様確認済み）★
 構造: ${String(structure).trim()}。
 ★重要: この構造を前提に、解体・撤去の手間、下地・躯体の作り、施工方法、産廃量を判断しろ。木造・鉄骨造・RC造・SRC造で解体費・補強費・施工手間が大きく変わる（RC/SRCの解体・斫りは木造の数倍）。estimatedScale にこの構造を必ず反映しろ。
@@ -6472,6 +6669,9 @@ ${droneInfo}${droneCSVInfo}${industryPrompt}
    - 松 = 上位グレード。竹に対して「材料の格上げ・保証延長・付帯工事の追加」など具体的な仕様差で価格を上げる。妥当な範囲（目安 竹の +10〜30%）。
    - 梅 = コスト重視。竹に対して「汎用材へ変更・範囲限定・付帯省略」など具体的な仕様差で価格を下げる（目安 竹の −10〜25%）。★手抜き・法令違反・安全/下地/防水など品質の根幹を削る減額は絶対にするな。
    - spec は「竹と何が違うか」を施主にわかる言葉で書け。抽象語（"高品質""お得"）だけは禁止。松梅とも金額差の根拠が spec から読み取れること。
+   - ★spec の各行に金額（例「（+約80万円）」）を書いたら、**その合計を diff と必ず一致させろ**。
+     spec を足すと160万なのに diff が255万、のような食い違いは客の前で必ず突かれる。書いたら足して検算しろ。
+   - ★松の diff と梅の diff を同じ絶対値にするな。上げ幅と下げ幅は別々に、それぞれの spec の積み上げから決めろ。
    - 新築・特殊工事などグレード差が意味を成さない工事では gradeOptions を null にしてよい（無理に3案作るな）。
 
 ## 過去の施工実績（${totalCount}件のデータベースから集約）
@@ -6740,6 +6940,10 @@ manDaysBreakdownの書き方例:
       // 図面拾い出しを見積結果にぶら下げる。estimate_log の ai_json ごと保存されるので、
       // あとから見積ログを開いても「この数量はどの図面のどの寸法から出たか」を辿れる。
       if (takeoff && Array.isArray(takeoff.items) && takeoff.items.length > 0) estimateResult.takeoff = takeoff;
+
+      // 入力の指紋を結果にぶら下げる。保存時に estimate_log へ入り、次に同じ依頼が来たときに
+      // ここで作った金額をそのまま返す（＝同じ工事は必ず同じ金額）ための鍵になる。
+      estimateResult.inputFingerprint = fingerprint;
 
       // メール通知（写真・コメント・見積詳細を含む）
       const notifyImages: { filename: string; content: string }[] = [];
@@ -7852,12 +8056,14 @@ ${pastWork || 'まだ実績なし'}`;
       // アップロード画像はディスク保存し、DBにはサムネ＋パスのみ
       const { thumb: upThumb, filePath: upPath } = saveImageToDiskWithThumb(imageBase64, 'up');
       runSql(
-        'INSERT INTO estimate_log (tenant_id, construction_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, created_at, uploaded_image, uploaded_image_path, building_age, structure) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO estimate_log (tenant_id, construction_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, created_at, uploaded_image, uploaded_image_path, building_age, structure, input_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [getCurrentTenant(), constructionId, result.workType || '',
          result.estimatedMaterialCost || 0, result.estimatedLaborCost || 0,
          result.estimatedTotal || 0, (result.markupRate || 1),
          JSON.stringify(result), jstNow, upThumb, upPath,
-         Number(result.buildingAge) > 0 ? Number(result.buildingAge) : null, result.structure || null]
+         Number(result.buildingAge) > 0 ? Number(result.buildingAge) : null, result.structure || null,
+         // 同じ依頼が来たときに、この見積の金額をそのまま返すための鍵
+         result.inputFingerprint || null]
       );
     } catch (e) { console.error('Estimate log insert failed:', e); }
 
