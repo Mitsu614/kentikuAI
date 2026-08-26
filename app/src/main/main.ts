@@ -1508,7 +1508,10 @@ function extractAreasFromComment(comment: string): { label: string; value: numbe
     const value = Number(String(m[2]).replace(/,/g, ''));
     if (!(value > 0) || value > 1000000) continue;   // 桁違いの誤検出は捨てる
     const unit = m[3] === '坪' ? '坪' : '㎡';
-    const label = m[1] || '面積';
+    // 見出しが無い数字（「120㎡」「45坪」）や、ただ「面積」とだけ書かれたものは床面積とみなす。
+    // 現場で面積と言えば普通は床面積で、壁・天井・屋根のときは必ずその語が付くため。
+    const raw = m[1] || '';
+    const label = (!raw || raw === '面積') ? '床面積' : raw;
     const key = `${label}:${value}${unit}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -1527,6 +1530,7 @@ ${lines}
 この面積を基準に数量を組み立て、assumedArea と estimatedScale にも必ずこの数字をそのまま書け（勝手に丸めるな）。
 図面から読み取れる値と食い違う場合も、**指定された面積を採用**し、その食い違いを recommendations に一言書いて確認を促せ。
 坪で指定された場合のみ ㎡ に換算してよい（1坪 = 3.30578㎡）。換算したことを note に書け。
+見出しの無い数字は床面積として渡している。壁・天井・屋根の面積は、そう明記されたものだけである。
 
 `;
 }
