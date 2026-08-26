@@ -1557,7 +1557,17 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                             <tr key={i}>
                               <td style={{ color: '#607d8b' }}>{it.part || '—'}</td>
                               <td>
-                                <div>{it.name}</div>
+                                <div>
+                                  {it.name}
+                                  {Number(it.unitPrice) > 0 && (
+                                    <span style={{
+                                      marginLeft: 6, background: '#e7f6ec', border: '1px solid #a8d8ba', color: '#14603a',
+                                      fontSize: 10, fontWeight: 'bold', padding: '1px 6px', borderRadius: 8, whiteSpace: 'nowrap',
+                                    }} title={it.priceSource || '資料に記載された単価'}>
+                                      資料の単価 {Math.round(Number(it.unitPrice)).toLocaleString()}円/{it.unit || ''}
+                                    </span>
+                                  )}
+                                </div>
                                 {(it.dimensions || it.deduction || it.assumption || Number(it.lossRate) > 0) && (
                                   <div style={{ fontSize: 10, color: '#90a4ae', marginTop: 2 }}>
                                     {it.dimensions ? `寸法 ${it.dimensions}` : ''}
@@ -2128,6 +2138,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           <div style={{ marginTop: 16 }}>
             <div className="card" style={{ background: '#f0fff4', border: '3px solid #27ae60', padding: '20px 24px' }}>
               <div style={{ textAlign: 'center', marginBottom: 16 }}>
+                {result.usedIndustryType && (
+                  <div style={{ fontSize: 11.5, color: '#7a8697', marginBottom: 6 }}>
+                    この見積は「<b style={{ color: '#4a5666' }}>
+                      {(INDUSTRIES.find(o => o.v === result.usedIndustryType) || { label: result.usedIndustryType }).label}
+                    </b>」として計算しています（変更は設定から）
+                  </div>
+                )}
                 <div style={{ fontSize: 14, color: '#888', marginBottom: 4 }}>お見積金額（税抜・利益込）</div>
                 <div style={{ fontSize: 36, fontWeight: 'bold', color: '#27ae60' }}>{fmt(result.estimatedTotal)}</div>
                 {/* 消費税10%。端数は円未満切り捨て（請求書の慣行に合わせる） */}

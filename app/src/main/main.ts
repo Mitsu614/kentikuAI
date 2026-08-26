@@ -1553,9 +1553,12 @@ function formatTakeoffForPrompt(takeoff: any): string {
   const lines = takeoff.items.map((it: any, i: number) => {
     const q = Number(it.quantityWithLoss) || Number(it.quantity) || 0;
     const loss = Number(it.lossRate) || 0;
+    const price = Number(it.unitPrice) > 0
+      ? ` / ★資料記載の単価 ${Math.round(Number(it.unitPrice)).toLocaleString()}円/${it.unit || ''}（${it.priceSource || '資料より'}）`
+      : '';
     return `${i + 1}. [${it.part || '—'}] ${it.name || '（名称なし）'} … ${q}${it.unit || ''}`
       + `（式: ${it.formula || '—'}${loss > 0 ? ` / ロス${Math.round(loss * 100)}%込` : ''}`
-      + `${it.deduction ? ` / ${it.deduction}` : ''} / 出典: ${it.source || '—'} / 確度: ${it.confidence || '—'}）`;
+      + `${it.deduction ? ` / ${it.deduction}` : ''} / 出典: ${it.source || '—'} / 確度: ${it.confidence || '—'}${price}）`;
   }).join('\n');
   const b = takeoff.building || {};
   const head = [
@@ -1573,6 +1576,10 @@ function formatTakeoffForPrompt(takeoff: any): string {
     ? '\n【図面上の注意】\n- ' + (takeoff.warnings || []).join('\n- ')
     : '';
   return `## ★図面からの拾い出し数量（確定値・最優先で使え）★
+★行に「資料記載の単価」が付いているものは、**その単価を必ず使え。**相場データ・自社実績・推測より優先する。
+　元請の内訳書やお客様の単価表に書かれていた数字なので、こちらで作り替えると話が合わなくなる。
+　note に「単価は内訳書の記載（◯◯円/㎡）」と書いて、どこから来た金額か分かるようにしろ。
+　単価が付いていない行だけ、相場・自社実績から単価を置け。
 ${head}
 ${lines}${unreadable}${warn}
 
@@ -6997,6 +7004,9 @@ manDaysBreakdownの書き方例:
       // 入力の指紋を結果にぶら下げる。保存時に estimate_log へ入り、次に同じ依頼が来たときに
       // ここで作った金額をそのまま返す（＝同じ工事は必ず同じ金額）ための鍵になる。
       estimateResult.inputFingerprint = fingerprint;
+      // どの業種で計算したかを結果に残す。業種を選び間違えると金額が丸ごと変わるが、
+      // 出た金額を見ただけでは原因にたどり着けない。画面に小さく出すための情報。
+      estimateResult.usedIndustryType = industryType;
 
       // メール通知（写真・コメント・見積詳細を含む）
       const notifyImages: { filename: string; content: string }[] = [];
@@ -7069,7 +7079,12 @@ manDaysBreakdownの書き方例:
     const takeoffAreaSection = formatCommentAreasForPrompt([data?.comment, data?.targets].filter(Boolean).join(' '));
     content.push({ type: 'text', text: `あなたは建築の積算士（拾い出し20年）です。上の資料から**材料・工種ごとの数量**を拾い出してください。
 資料は**図面**の場合と、**すでに数量が書かれた表**（材料一覧表・数量拾い表・内訳書・Excelの画面を写したもの等）の場合があります。
-金額・単価は絶対に出さないでください（ここは数量だけの工程です）。
+
+★**単価・金額を自分で作るな**（相場を思い出して埋めるな。ここは数量の工程だ）。
+★ただし**資料に単価が書かれていれば、その数字はそのまま写せ**。元請の内訳書や御社の単価表に
+　単価が入っていることがある。**それは推測ではなく資料の記載なので、拾うのが正しい。**
+　unitPrice に数値（円）で入れ、priceSource にどこから取ったか（例「資料2 内訳書 12行目」）を書け。
+　書かれていない行は unitPrice を null にしろ。**空欄を埋めようとするな。**
 
 ## ★★資料が「表」だったときの読み方（図面の鉄則より優先）★★
 材料一覧表・数量拾い表・内訳書・Excelの表など、**すでに数量が書かれている資料**を渡された場合:
@@ -7242,6 +7257,8 @@ ${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★�
       "deduction": "開口部などの控除の有無と内容（例: 'サッシ6箇所 計9.8㎡を控除'）。控除対象外なら null",
       "lossRate": ロス率（数値。0.05 = 5%。掛けないなら 0）,
       "quantityWithLoss": 発注数量（数値。quantity×(1+lossRate) を四捨五入）,
+      "unitPrice": 資料に単価が書かれていればその数値（円／unitあたり）。書かれていなければ null。★相場から推測して埋めるな,
+      "priceSource": "unitPrice をどこから取ったか（例: '資料2 内訳書 12行目 材工共'）。unitPrice が null なら null",
       "source": "出典（例: 'P1 1階平面図 X1〜X3通り'、'P2 南立面図'）",
       "confidence": "高/中/低",
       "assumption": "この行で仮定した点（例: '天井高2,400と仮定'）。仮定が無ければ null"
