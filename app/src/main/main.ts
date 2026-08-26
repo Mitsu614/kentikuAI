@@ -1093,6 +1093,7 @@ function estimateFingerprint(input: {
   tenantId: number; industryType: string; comment?: string; location?: string; area?: string;
   structure?: string; buildingAge?: string; roofType?: string; siteConditions?: any;
   clientAttrs?: any; takeoff?: any; imageBase64?: string; beforeImage?: string; afterImage?: string;
+  extraImages?: string[];
 }): string {
   // 画像は中身そのもので照合する（撮り直した写真は別物として扱う＝それが正しい）
   const imgHash = (b64: any) => {
@@ -1123,6 +1124,7 @@ function estimateFingerprint(input: {
     imgHash(input.imageBase64),
     imgHash(input.beforeImage),
     imgHash(input.afterImage),
+    (input.extraImages || []).map(imgHash).join(','),
   ];
   return crypto.createHash('sha256').update(parts.join('')).digest('hex');
 }
@@ -5782,13 +5784,22 @@ ${pages}</body></html>`;
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
   // AI見積もりのコア処理。デスクトップ(IPC)とスマホ(内蔵Webサーバー)の両方から呼ぶ
   const analyzeImageCore = async (data: any) => {
-    let { imageBase64, beforeImage, afterImage, comment, location, area, clientAttrs, roofType, structure, buildingAge, siteConditions, desiredDeadline, takeoff, fastMode } = typeof data === 'string' ? { imageBase64: data, beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null, structure: '', buildingAge: '', siteConditions: null, desiredDeadline: '', takeoff: null, fastMode: false } : data;
+    let { imageBase64, images, beforeImage, afterImage, comment, location, area, clientAttrs, roofType, structure, buildingAge, siteConditions, desiredDeadline, takeoff, fastMode } = typeof data === 'string' ? { imageBase64: data, images: [], beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null, structure: '', buildingAge: '', siteConditions: null, desiredDeadline: '', takeoff: null, fastMode: false } : data;
     // 図面拾い出し（PDF図面から計算式つきで拾った数量）。あれば推定より必ず優先させる。
     const takeoffSection = formatTakeoffForPrompt(takeoff);
     // 依頼文に面積が書かれていれば、それを確定値として最優先で渡す（AIの目測より確か）
     const commentAreaSection = formatCommentAreasForPrompt(comment);
     // スマホ写真は数MBあり、Anthropicの5MB上限で400になるため送信前に縮小する
     imageBase64 = shrinkImageForAI(imageBase64);
+    // 追加写真（外壁4面・屋根・室内など）。1枚目は imageBase64 と同じものが入っているので重複を除く。
+    // 面積推定・完成イメージ・保存サムネは従来どおり1枚目(imageBase64)を使う。
+    const MAX_IMAGES = 6;
+    const extraShots: string[] = (Array.isArray(images) ? images : [])
+      .filter((x: any) => typeof x === 'string' && x)
+      .slice(0, MAX_IMAGES)
+      .slice(1)
+      .map((x: string) => shrinkImageForAI(x))
+      .filter((x: any) => typeof x === 'string' && x);
     beforeImage = shrinkImageForAI(beforeImage);
     afterImage = shrinkImageForAI(afterImage);
     const isBeforeAfter = beforeImage && afterImage;
@@ -5802,6 +5813,7 @@ ${pages}</body></html>`;
       tenantId: fpTenant, industryType: fpIndustry, comment, location, area,
       structure, buildingAge, roofType, siteConditions, clientAttrs, takeoff,
       imageBase64, beforeImage, afterImage,
+      extraImages: extraShots,
     });
     if (!data?.forceFresh) {
       try {
@@ -6529,9 +6541,21 @@ ${pages}</body></html>`;
         source: { type: 'base64', media_type: detectMediaType(afterImage), data: afterImage.replace(/^data:image\/\w+;base64,/, '') },
       });
     } else if (hasImage) {
-      userContent.push({
-        type: 'image',
-        source: { type: 'base64', media_type: detectMediaType(imageBase64), data: imageBase64.replace(/^data:image\/\w+;base64,/, '') },
+      const shots = [imageBase64, ...extraShots];
+      // 複数枚のときは「何枚目か」を添える。添えないと同じ壁を別の面と誤認して二重に拾う。
+      if (shots.length > 1) {
+        userContent.push({
+          type: 'text',
+          text: `【現場写真 ${shots.length}枚】同じ現場を別の角度・別の場所から撮ったものです。`
+            + `全部を見て1件の工事として見積もってください。**同じ部位が複数の写真に写っている場合、二重に数量を拾わないこと。**`,
+        });
+      }
+      shots.forEach((img: string, i: number) => {
+        if (shots.length > 1) userContent.push({ type: 'text', text: `［写真${i + 1}］` });
+        userContent.push({
+          type: 'image',
+          source: { type: 'base64', media_type: detectMediaType(img), data: String(img).replace(/^data:image\/\w+;base64,/, '') },
+        });
       });
     }
 
@@ -6995,7 +7019,7 @@ manDaysBreakdownの書き方例:
     comment?: string; scaleHint?: string; targets?: string;
   }) => {
     const files = (data?.files || []).filter((f: any) => f && f.data);
-    if (files.length === 0) throw new Error('ERROR: 図面ファイル（PDFまたは画像）を選択してください。');
+    if (files.length === 0) throw new Error('ERROR: 図面または材料一覧表のファイル（PDFまたは画像）を選択してください。');
     if (files.length > 6) throw new Error('ERROR: 図面は一度に6ファイルまでです。分けて拾ってください。');
 
     // クレジット（拾い出し = 2ストック。図面は入力トークンが写真の数倍かかる）
@@ -7026,8 +7050,22 @@ manDaysBreakdownの書き方例:
       }
     });
 
-    content.push({ type: 'text', text: `あなたは建築の積算士（拾い出し20年）です。上の図面から**材料・工種ごとの数量**を拾い出してください。
+    content.push({ type: 'text', text: `あなたは建築の積算士（拾い出し20年）です。上の資料から**材料・工種ごとの数量**を拾い出してください。
+資料は**図面**の場合と、**すでに数量が書かれた表**（材料一覧表・数量拾い表・内訳書・Excelの画面を写したもの等）の場合があります。
 金額・単価は絶対に出さないでください（ここは数量だけの工程です）。
+
+## ★★資料が「表」だったときの読み方（図面の鉄則より優先）★★
+材料一覧表・数量拾い表・内訳書・Excelの表など、**すでに数量が書かれている資料**を渡された場合:
+- **書いてある数字をそのまま使え。目測も推定も換算もするな。**表の数量が答えだ。
+- 表の1行を items の1行にせよ。**行を勝手にまとめるな・省くな。**空欄や読めない行があれば unreadable に回せ。
+- 列の見出し（品名／名称／摘要／数量／単位／備考 等）を見て、どの列が何かを判断しろ。
+  見出しが無ければ、数値の列＝数量、その左＝名称、数値の右＝単位、と読むのが普通だ。
+- **formula には「表に記載（◯行目）」と書け。**計算していないのに計算式をでっち上げるな。
+- source は「材料一覧表」「内訳書」等、資料の種類を書け。confidence は、数字がはっきり読めた行は「高」。
+- **小計・合計・総計の行は items に入れるな。**明細行だけを拾え（合計を入れると二重計上になる）。
+- 数量に「ロスを含む」旨の記載が無い限り lossRate は 0 にし、quantityWithLoss は quantity と同じにしろ。
+  **すでに拾われた表に、こちらでロスを上乗せするな。**
+- 表と図面の両方を渡された場合は、**表の数量を優先**し、図面は仕様・部位の確認に使え。
 ${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
 ## 拾い出しの鉄則（違反したら拾い出しとして失格）
 1. **寸法数値が最優先**。図面に寸法線の数値（例 8,190）があれば必ずそれを使え。縮尺からの目測は、寸法数値が無い部位でだけ使い、その行の confidence を「低」にしろ。
@@ -7044,14 +7082,14 @@ ${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対�
    quantityWithLoss に必ず反映し、掛けない項目は lossRate を 0 にしろ。折板屋根に張る材料の展開係数（×1.41等）は
    ロスではなく数量そのものなので formula の中に書け。
 9. **図面種別で拾える範囲が違う**。平面図＝床面積・内壁長さ・建具数・設備位置／立面図＝外壁面積・開口／屋根伏図＝屋根面積・軒樋長さ／
-   断面図・矩計図＝階高・勾配／建具表＝建具の数量と寸法。無い図面から拾ったことにするな。
+   断面図・矩計図＝階高・勾配／建具表＝建具の数量と寸法／**材料一覧表・数量拾い表・内訳書＝そこに書かれた数量そのもの**。無い図面から拾ったことにするな。
 10. 行ごとに confidence（高/中/低）を必ず付けろ。「高」は図示寸法から直接計算した行だけだ。
 
 ## 出力形式（必ずこのJSONだけを返す）
 \`\`\`json
 {
   "title": "図面から読み取った工事名・物件名（無ければnull）",
-  "drawingTypes": ["読み取った図面の種類（平面図/立面図/断面図/矩計図/屋根伏図/展開図/建具表/仕様書/配置図/不明）"],
+  "drawingTypes": ["読み取った資料の種類（平面図/立面図/断面図/矩計図/屋根伏図/展開図/建具表/仕様書/配置図/材料一覧表/数量拾い表/内訳書/不明）"],
   "scale": "確定した縮尺（例: '1/100'）。図面ごとに違うなら代表値。取れなければnull",
   "scaleSource": "縮尺をどう確定したか（'図面内のS=1/100表記' / '通り芯8,190mmから逆算' / '不明'）",
   "building": {
@@ -7086,7 +7124,7 @@ ${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対�
 }
 \`\`\`
 
-items は拾えた分だけでよい（無理に埋めるな）。読めない図面なら items を空配列にし、unreadable に理由を書け。` });
+items は拾えた分だけでよい（無理に埋めるな）。読めない資料なら items を空配列にし、unreadable に理由を書け。` });
 
     // ★ストリーム＋大きめの上限で受ける。
     //   create + max_tokens 12000 だと、部屋数の多い図面（老人ホーム1階=約55室）で出力が上限に当たり、
@@ -7113,7 +7151,7 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
     const truncated = response.stop_reason === 'max_tokens';
     if (truncated) console.warn(`[takeoff] 出力が上限(64K)に達して切れました（${text.length}文字）`);
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('図面を読み取れませんでした。図面が鮮明か、寸法が写っているかご確認ください。');
+    if (!jsonMatch) throw new Error('資料を読み取れませんでした。画像が鮮明か、寸法または数量が写っているかご確認ください。');
     let takeoff: any = null;
     try { takeoff = JSON.parse(jsonMatch[1] || jsonMatch[0]); }
     catch (_) { takeoff = parseLenientJson(jsonMatch[1] || jsonMatch[0]); }

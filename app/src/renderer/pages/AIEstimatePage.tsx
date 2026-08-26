@@ -52,6 +52,9 @@ function NumInput({ value, onValue, style, min }: {
 
 export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigateToConstruction?: (id: number) => void }) {
   const [imageData, setImageData] = useState<string | null>(null);
+  // 追加の写真（1枚目は imageData。面積推定・完成イメージ・サムネは従来どおり1枚目を使う）
+  const [extraImages, setExtraImages] = useState<string[]>([]);
+  const MAX_IMAGES = 6;
   const [beforeImage, setBeforeImage] = useState<string | null>(null);
   const [afterImage, setAfterImage] = useState<string | null>(null);
   const [mode, setMode] = useState<'single' | 'beforeafter' | 'chat'>('single');
@@ -211,11 +214,24 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     const img = await window.api.selectImage();
     if (img) {
       setImageData(img);
+      setExtraImages([]);   // 現場を変えたときに前の追加写真が残らないようにする
       setResult(null);
       setGeneratedImage(null);
       setError('');
       setAutoCreated(null);
     }
+  };
+
+  // 写真を追加する（外壁4面・屋根・室内など、1枚に収まらない現場向け）
+  const addExtraImage = async () => {
+    if (!imageData) { await selectImage(); return; }
+    if (1 + extraImages.length >= MAX_IMAGES) { setError(`写真は${MAX_IMAGES}枚までです`); return; }
+    const img = await window.api.selectImage();
+    if (img) { setExtraImages(list => [...list, img]); setResult(null); setError(''); setAutoCreated(null); }
+  };
+  const removeExtraImage = (i: number) => {
+    setExtraImages(list => list.filter((_, idx) => idx !== i));
+    setResult(null); setAutoCreated(null);
   };
 
   const selectBeforeImage = async () => {
@@ -571,7 +587,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setTakeoffDragging(false);
     const files = Array.from(e.dataTransfer?.files || []);
     const ok = files.filter(f => f.type === 'application/pdf' || f.type.startsWith('image/'));
-    if (ok.length === 0) { setError('PDFまたは画像の図面をドロップしてください'); return; }
+    if (ok.length === 0) { setError('PDFまたは画像（図面・材料一覧表）をドロップしてください'); return; }
     try {
       const read = await Promise.all(ok.map(async f => ({
         type: f.type === 'application/pdf' ? 'pdf' : 'image',
@@ -604,7 +620,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       if (sum && !area.trim()) setArea(sum);
     } catch (e: any) {
       endBusy({ ok: false });
-      setError((e?.message || '図面の拾い出しに失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
+      setError((e?.message || '拾い出しに失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
     } finally {
       setTakeoffLoading(false);
     }
@@ -678,7 +694,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       const takeoffPayload = takeoff && (takeoff.items || []).length > 0 ? takeoff : null;
       const payload = mode === 'beforeafter'
         ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode }
-        : { imageBase64: imageData || null, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode };
+        : { imageBase64: imageData || null, images: imageData ? [imageData, ...extraImages] : [], comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode };
       if (opts?.forceFresh) (payload as any).forceFresh = true;
       const res = await (window as any).api.analyzeImage(payload);
       endBusy();
@@ -1143,9 +1159,39 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           ) : (
             <div {...dropZoneProps('single')} style={{ borderRadius: 8, outline: dragTarget === 'single' ? '3px dashed #3a7bd5' : 'none', outlineOffset: 4 }}>
               <img src={imageData} style={{ maxWidth: '100%', maxHeight: 350, borderRadius: 8, border: '1px solid #ddd' }} alt="uploaded" />
+              {/* 追加写真のサムネイル（外壁4面・屋根・室内など、1枚に収まらない現場向け） */}
+              {extraImages.length > 0 && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 10 }}>
+                  {extraImages.map((img, i) => (
+                    <div key={i} style={{ position: 'relative' }}>
+                      <img src={img} alt={`追加写真${i + 2}`}
+                        style={{ width: 104, height: 78, objectFit: 'cover', borderRadius: 6, border: '1px solid #ddd' }} />
+                      <span style={{
+                        position: 'absolute', left: 4, bottom: 4, background: 'rgba(0,0,0,.62)', color: '#fff',
+                        fontSize: 10, padding: '1px 6px', borderRadius: 8,
+                      }}>{i + 2}枚目</span>
+                      <button
+                        onClick={() => removeExtraImage(i)}
+                        title="この写真を外す"
+                        style={{
+                          position: 'absolute', top: -7, right: -7, width: 21, height: 21, borderRadius: '50%',
+                          border: 'none', background: '#c0392b', color: '#fff', fontSize: 12, cursor: 'pointer', lineHeight: '21px', padding: 0,
+                        }}
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div style={{ marginTop: 12 }}>
-                <button className="btn btn-secondary btn-sm" onClick={selectImage}>別の画像を選択</button>
-                <span style={{ fontSize: 11, color: '#aaa', marginLeft: 8 }}>ドロップで差し替えもOK</span>
+                <button className="btn btn-secondary btn-sm" onClick={selectImage}>1枚目を選び直す</button>
+                <button className="btn btn-primary btn-sm" onClick={addExtraImage} style={{ marginLeft: 6 }}
+                  disabled={1 + extraImages.length >= MAX_IMAGES}>
+                  ＋ 写真を追加（{1 + extraImages.length}/{MAX_IMAGES}）
+                </button>
+                <div style={{ fontSize: 11, color: '#888', marginTop: 6 }}>
+                  外壁4面・屋根・室内など、<strong>1枚に収まらない現場は複数枚入れてください。</strong>
+                  面積の読み取りと完成イメージには1枚目を使います。1枚目を選び直すと追加分は消えます。
+                </div>
               </div>
             </div>
           )}
@@ -1255,7 +1301,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               }}
             >
               <div style={{ fontSize: 13, fontWeight: 'bold', color: '#37474f' }}>
-                📐 図面から数量を拾う（PDF・画像）
+                📐 図面・材料一覧表から数量を拾う（PDF・画像）
                 {hasTakeoff && (
                   <span style={{ marginLeft: 8, fontSize: 11, color: '#2e7d32', fontWeight: 'bold' }}>
                     ✓ {(takeoff.items || []).length}項目を拾い出し済み
@@ -1268,7 +1314,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             {takeoffOpen && (
               <div style={{ padding: 12 }}>
                 <div style={{ fontSize: 11, color: '#607d8b', marginBottom: 8, lineHeight: 1.6 }}>
-                  平面図・立面図・屋根伏図・建具表などを入れると、寸法から<strong>計算式つきの数量</strong>を拾います。<br />
+<strong>図面</strong>（平面図・立面図・屋根伏図・建具表など）を入れると、寸法から<strong>計算式つきの数量</strong>を拾います。<br />
+                  <strong>すでに数量が書かれた表</strong>（材料一覧表・数量拾い表・内訳書・Excelの画面を撮ったもの）でもOK。その場合は<strong>書いてある数字をそのまま使います</strong>（勝手に換算・ロス上乗せはしません。小計行は除きます）。<br />
                   拾った数量は見積の確定値になります（写真からの推定で上書きされません）。読めない部分は推測せず「拾えなかった項目」として出します。
                 </div>
 
@@ -1283,10 +1330,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   }}
                 >
                   <div style={{ fontSize: 13, color: '#546e7a', marginBottom: 8 }}>
-                    ここに図面をドラッグ&ドロップ（PDF・JPG・PNG／6ファイルまで）
+                    ここに図面・材料一覧表をドラッグ&ドロップ（PDF・JPG・PNG／6ファイルまで）
                   </div>
                   <button className="btn btn-secondary btn-sm" type="button" onClick={addTakeoffFile} disabled={takeoffLoading}>
-                    📄 図面を選ぶ
+                    📄 図面・表を選ぶ
                   </button>
                 </div>
 
