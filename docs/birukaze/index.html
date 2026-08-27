@@ -344,6 +344,29 @@ dialog#about::backdrop{background:rgba(8,18,28,.6);backdrop-filter:blur(3px);}
 }
 .ab-foot a{color:var(--ink-2);}
 
+/* ── 利用登録フォーム ─────────────────────── */
+.regform{display:flex;flex-direction:column;gap:9px;margin-top:10px;}
+.regform label{display:flex;flex-direction:column;gap:4px;font-size:11.5px;color:var(--ink-2);}
+.regform .req{color:var(--bad);font-size:10.5px;}
+.regform input,.regform textarea{
+  font-family:var(--f-body);font-size:15px;padding:9px 12px;border-radius:9px;
+  border:1.5px solid var(--line);background:var(--card-2);color:var(--ink);width:100%;
+}
+.regform input::placeholder,.regform textarea::placeholder{color:var(--ink-3);}
+.regform textarea{resize:vertical;min-height:56px;line-height:1.6;}
+.regform .hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;}
+.regform button{
+  font-family:var(--f-disp);font-weight:700;font-size:14px;padding:11px 14px;
+  border-radius:10px;border:0;background:var(--me-bg);color:#fff;cursor:pointer;
+  transition:opacity .13s,transform .13s;
+}
+.regform button:disabled{opacity:.5;cursor:default;}
+.regform button:not(:disabled):active{transform:scale(.98);}
+.regnote{font-size:11px;line-height:1.7;color:var(--ink-2);}
+.regnote a{color:var(--accent);}
+.regerr{font-size:11.5px;line-height:1.6;color:var(--bad);}
+.regerr:empty{display:none;}
+
 .noscript{
   position:relative;z-index:2;max-width:640px;margin:0 auto;padding:56px 24px;
   color:var(--onwall-strong);font-size:15px;line-height:1.9;
@@ -454,8 +477,10 @@ dialog#about::backdrop{background:rgba(8,18,28,.6);backdrop-filter:blur(3px);}
     <div class="flag">風向別の出現頻度を分けずに全方位を一括で扱っており、周辺建物の個別配置や複数棟の複合効果は見ていません。風速増加率の推定式は公表文献の傾向を組み合わせた独自の簡易式で、<b>公的な基準式ではありません</b>。行政協議・近隣説明に用いる正式な評価には、境界層風洞実験またはCFD解析が必要です。</div>
 
     <h3>入力したデータの扱い</h3>
-    <p>計算はすべて<b>お使いのブラウザの中だけ</b>で完結します。入力した寸法や診断結果がサーバーに送信されることはありません。ログイン不要・無料でご利用いただけます。</p>
-    <p class="quiet">配色の設定のみ、次回の表示のためにブラウザ内に保存しています。</p>
+    <p>ビル風の計算はすべて<b>お使いのブラウザの中だけ</b>で行っています。サーバーへ送って計算しているわけではありません。無料でご利用いただけます。</p>
+    <p data-lead-only hidden>ただし、<b>診断結果をご覧いただく前にお名前をうかがっています。</b>そこで入力された会社名・お名前・メールアドレスと、その診断でお使いになった条件および結果は、建築ブーストへ送信されます。<b>ご連絡のためにのみ使用し、第三者へ提供することはありません。</b></p>
+    <p data-nolead-only>登録もログインも不要です。</p>
+    <p class="quiet">配色の設定を、次回の表示のためにブラウザ内に保存しています。<span data-lead-only hidden>登録済みかどうかも同様に保存し、2回目以降はお名前をうかがいません。</span></p>
 
     <h3>運営</h3>
     <p>建築ブースト（有限会社中野工務店）</p>
@@ -463,7 +488,8 @@ dialog#about::backdrop{background:rgba(8,18,28,.6);backdrop-filter:blur(3px);}
   <div class="ab-foot">
     <a href="https://mitsu614.github.io/kentikuAI/">建築ブースト</a>
     <a href="https://mitsu614.github.io/kentikuAI/%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%83%9D%E3%83%AA%E3%82%B7%E3%83%BC_%E5%BB%BA%E7%AF%89%E3%83%96%E3%83%BC%E3%82%B9%E3%83%88.html">プライバシーポリシー</a>
-    <span>無料・登録不要</span>
+    <span data-nolead-only>無料・登録不要</span>
+    <span data-lead-only hidden>無料</span>
   </div>
 </dialog>
 
@@ -471,11 +497,52 @@ dialog#about::backdrop{background:rgba(8,18,28,.6);backdrop-filter:blur(3px);}
 "use strict";
 
 /* ══════════════════════════════════════════════════════════════
+   0. 利用登録（診断結果を出す前にお名前をうかがう）の設定
+
+   ★endpoint に Edge Function の URL を入れると有効になります。
+     空のままなら登録フォームは一切出ず、誰でも最後まで無料で使えます。
+
+     supabase functions deploy birukaze-lead --no-verify-jwt
+     → https://<PROJECT>.supabase.co/functions/v1/birukaze-lead
+
+   URLに ?demo を付けると登録を求めません（商談で画面を見せるとき用）。
+   ══════════════════════════════════════════════════════════════ */
+const LEAD = {
+  endpoint: ""
+};
+
+const DEMO_MODE = new URLSearchParams(location.search).has("demo");
+const LEAD_ENABLED = /^https:\/\/[\w.-]+\/functions\/v1\/birukaze-lead$/.test(LEAD.endpoint) && !DEMO_MODE;
+const LEAD_KEY = "kaze-registered";
+
+const isRegistered = () => { try { return !!localStorage.getItem(LEAD_KEY); } catch (e) { return false; } };
+const markRegistered = v => { try { localStorage.setItem(LEAD_KEY, v); } catch (e) {} };
+
+/* ══════════════════════════════════════════════════════════════
    1. 風工学エンジン
    ── 評価手順は Isyumov & Davenport (1975)：
       風洞（ここでは推定式）で求めた風速比に、その土地の風の
       統計分布を掛け合わせて、年間の超過確率を出す。
    ══════════════════════════════════════════════════════════════ */
+
+/* ── 調整のつまみ ──────────────────────────
+   ここに集約してあるのは、ハーネス（app/tools/harness-birukaze/）から
+   差し替えて較正するため。値の根拠は各所のコメントと参考文献を参照。   */
+const TUNING = {
+  gain:     0.65,   // 風速増加率の全体係数
+  expH:     0.75,   // 突出率の指数 [Wise 1970]
+  expB:     0.30,   // 見付け幅の指数 [Tsang ら 2012]
+  refB:     30,     // 見付け幅の基準(m)
+  dBase:    1.12,   // 奥行比の切片
+  dSlope:   0.16,   // 奥行比の効き
+  pilotis:  1.18,   // ピロティの割増 [Blocken ら 2007-2008]
+  through:  1.25,   // 貫通通路の割増（ピロティより大きい）
+  bcrSlope: 0.010,  // 建蔽率1%あたりの風速比の低下 [Kubota ら 2008]
+  gustPeak: 3.0,    // ガストファクターのピーク係数
+  gustBump: 1.10,   // ビル風影響域での乱れの増し
+  mvrCap:   1.10,   // 歩行者レベル風速比の上限
+  nEff:     6       // 1日のうち独立とみなせる標本数
+};
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const fmt = (v, d = 1) => v.toFixed(d);
@@ -498,7 +565,7 @@ const weibullC   = (mean, k) => mean / gammaFn(1 + 1 / k);
 const pExceed    = (u, c, k) => Math.exp(-Math.pow(u / c, k));
 const quantile   = (p, c, k) => c * Math.pow(-Math.log(p), 1 / k);
 /* 日最大値の超過確率。1日24時間のうち独立とみなせる標本数を N_EFF とする */
-const N_EFF = 6;
+const N_EFF = TUNING.nEff;
 const pDailyMax  = (u, c, k) => 1 - Math.pow(1 - pExceed(u, c, k), N_EFF);
 
 /*
@@ -533,7 +600,7 @@ const REGIONS = [
 function baseRatio(rough, bcr){
   const R = ROUGH[rough];
   const ref = (bcr === null || bcr === undefined) ? R.bcr : bcr;
-  return clamp(R.kPed - 0.010 * (ref - R.bcr), 0.08, 0.95);
+  return clamp(R.kPed - TUNING.bcrSlope * (ref - R.bcr), 0.08, 0.95);
 }
 
 /* ── 風速増加率 ──────────────────────────────
@@ -544,12 +611,13 @@ function baseRatio(rough, bcr){
    f_R … 粗度区分の効き
    足元 … ピロティ・貫通通路（Beranek & van Koten 1979 / Blocken ら 2007-2008）  */
 function speedup(s){
-  const fH = Math.pow(clamp((s.H - s.Hs) / s.H, 0, 1), 0.75);
-  const fB = clamp(Math.pow(s.B / 30, 0.30), 0.70, 1.45);
-  const fD = 1.12 - 0.16 * clamp(s.D / s.B, 0.15, 1.5);
+  const T = TUNING;
+  const fH = Math.pow(clamp((s.H - s.Hs) / s.H, 0, 1), T.expH);
+  const fB = clamp(Math.pow(s.B / T.refB, T.expB), 0.70, 1.45);
+  const fD = T.dBase - T.dSlope * clamp(s.D / s.B, 0.15, 1.5);
   const fR = ROUGH[s.rough].fR;
-  let R = 1 + 0.65 * fH * fB * fD * fR;
-  const foot = s.form === "pilotis" ? 1.18 : s.form === "through" ? 1.25 : 1.00;
+  let R = 1 + T.gain * fH * fB * fD * fR;
+  const foot = s.form === "pilotis" ? T.pilotis : s.form === "through" ? T.through : 1.00;
   R *= foot;
   return {R: clamp(R, 1.0, 2.8), fH, fB, fD, fR, foot};
 }
@@ -671,12 +739,12 @@ function diagnose(s, ms){
   const R2   = applyMeasures(R, ms);
   const mvrB = mvr0;
   /* 歩行者レベルの風速比は、最も強い地点でも 1.1 程度が上限（風洞実験の報告値） */
-  const mvrA = clamp(mvr0 * R2, 0.05, 1.10);
+  const mvrA = clamp(mvr0 * R2, 0.05, TUNING.mvrCap);
 
   /* 乱れの強さ：ビル風の影響域では 10% 増しとする */
   const Iu   = ROUGH[s.rough].Iu;
-  const gfB  = 1 + 3.0 * Iu;
-  const gfA  = 1 + 3.0 * Iu * 1.10;
+  const gfB  = 1 + TUNING.gustPeak * Iu;
+  const gfA  = 1 + TUNING.gustPeak * Iu * TUNING.gustBump;
 
   const evalAt = (mvr, gf) => {
     const c = cMet * mvr;
@@ -695,6 +763,29 @@ function diagnose(s, ms){
 
   return {reg, k, cMet, mvr0, sp, R, R2, gfB, gfA, before, after,
           admin: adminHint(s.H, s.area)};
+}
+
+/* 入力の不確かさが判定をどれだけ動かすか。
+   ハーネス（app/tools/harness-birukaze/）の感度分析で、粗度区分の選び方だけで
+   村上ランクが3段階、建蔽率±20%で2段階動くと分かった。どちらも利用者が
+   正確には答えにくい項目で、建蔽率にいたっては「わからない」で飛ばせる。
+   点推定だけを出すと、ありもしない精度があるように見えてしまう。
+   粗度区分を上下1段、建蔽率を±10%振って、ランクの取りうる幅を併記する。 */
+function rankBand(s, ms){
+  const keys = ["I", "II", "III", "IV"];
+  const i = keys.indexOf(s.rough);
+  const roughs = [...new Set([keys[Math.max(0, i - 1)], s.rough, keys[Math.min(3, i + 1)]])];
+  const b0 = (s.bcr === null || s.bcr === undefined) ? ROUGH[s.rough].bcr : s.bcr;
+  const bcrs = [...new Set([Math.max(0, b0 - 10), b0, Math.min(90, b0 + 10)])];
+  let lo = 4, hi = 1;
+  for (const r of roughs){
+    for (const b of bcrs){
+      const k = diagnose(Object.assign({}, s, {rough:r, bcr:b}), ms).after.murakami.rank;
+      if (k < lo) lo = k;
+      if (k > hi) hi = k;
+    }
+  }
+  return {lo, hi, spread: hi - lo};
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -1132,6 +1223,7 @@ function renderCard(){
   result = d;
   const mA = d.after.murakami, nA = d.after.nen, lA = d.after.lawson;
   const jump = mA.rank - d.before.murakami.rank;
+  const band = rankBand(s, measures);
 
   return `
   <div class="card-hd">
@@ -1141,7 +1233,7 @@ function renderCard(){
 
   <div class="sect">
     <div class="verdicts">
-      <div class="vc ${RANK_STYLE[mA.rank]}"><div class="vl">村上ら 1986</div><div class="vv">ランク${mA.rank}</div><div class="vs">${mA.rank === 4 ? "基準外" : "適合上限"}</div></div>
+      <div class="vc ${RANK_STYLE[mA.rank]}"><div class="vl">村上ら 1986</div><div class="vv">ランク${mA.rank}</div><div class="vs">${band.spread ? `幅 ${band.lo}〜${band.hi}` : (mA.rank === 4 ? "基準外" : "適合上限")}</div></div>
       <div class="vc ${nA.style}"><div class="vl">NEN 8100</div><div class="vv">${nA.cls.c}</div><div class="vs">${nA.cls.s}</div></div>
       <div class="vc ${lA.style}"><div class="vl">LAWSON</div><div class="vv">${fmt(lA.gem)}</div><div class="vs">GEM m/s</div></div>
     </div>
@@ -1150,6 +1242,7 @@ function renderCard(){
       <div class="vtext">
         <div class="lead">${d.R2 >= 1.6 ? "増加率が大きく、近隣説明で必ず論点になります。" : d.R2 >= 1.35 ? "無視できない増速です。滞留空間の配置にご注意ください。" : "増加率は許容範囲におさまっています。"}</div>
         <div class="note">${jump > 0 ? `建設によって村上ランクが <b>${d.before.murakami.rank} → ${mA.rank}</b> に${jump}段階下がります。` : "建設前後で村上ランクは変わりません。"}　風速比は ${fmt(d.mvr0,2)} → ${fmt(d.after.mvr,2)}。</div>
+        ${band.spread ? `<div class="note" style="margin-top:6px;color:var(--warn)">まわりの様子の選び方や建蔽率の見立てが1段違うと、<b>ランク${band.lo}〜${band.hi}</b>の範囲で動きます。この幅を込みで見てください。</div>` : ""}
       </div>
     </div>
   </div>
@@ -1269,6 +1362,77 @@ function summaryText(){
   return L.join("\n");
 }
 
+/* 診断結果を出す前に、お名前をうかがう。
+   送信できなくても結果は必ずお見せする（ご利用者を人質に取らない）。 */
+function askRegistration(diag){
+  return new Promise(resolve => {
+    const b = document.createElement("div");
+    b.className = "bub";
+    b.innerHTML = `
+      <div>診断結果が出ました。<b class="hl">ご覧いただく前に</b>、差し支えなければお名前を教えていただけますか。</div>
+      <form class="regform" novalidate>
+        <label>会社名 <span class="req">必須</span>
+          <input name="company" type="text" autocomplete="organization" placeholder="株式会社○○建設" maxlength="120" required></label>
+        <label>お名前 <span class="req">必須</span>
+          <input name="name" type="text" autocomplete="name" placeholder="中野 太郎" maxlength="80" required></label>
+        <label>メールアドレス <span class="req">必須</span>
+          <input name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.co.jp" maxlength="200" required></label>
+        <label>ご要望・ご質問（任意）
+          <textarea name="note" maxlength="400" placeholder="対策の相談をしたい、など"></textarea></label>
+        <div class="hp"><label>Webサイト<input name="website" type="text" tabindex="-1" autocomplete="off"></label></div>
+        <div class="regerr" role="alert"></div>
+        <button type="submit">結果を見る →</button>
+        <p class="regnote">いただいた情報は、建築ブーストからのご連絡にのみ使用します。第三者へ提供することはありません。<a href="https://mitsu614.github.io/kentikuAI/%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%83%9D%E3%83%AA%E3%82%B7%E3%83%BC_%E5%BB%BA%E7%AF%89%E3%83%96%E3%83%BC%E3%82%B9%E3%83%88.html" target="_blank" rel="noopener">プライバシーポリシー</a></p>
+      </form>`;
+    addRow("bot", b);
+
+    const form = b.querySelector("form");
+    const err = b.querySelector(".regerr");
+    const btn = b.querySelector("button");
+
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const company = String(fd.get("company") || "").trim();
+      const name = String(fd.get("name") || "").trim();
+      const email = String(fd.get("email") || "").trim();
+
+      if (!company || !name){ err.textContent = "会社名とお名前を入力してください。"; return; }
+      if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(email)){
+        err.textContent = "メールアドレスの形式をご確認ください。"; return;
+      }
+      err.textContent = "";
+      btn.disabled = true;
+      btn.textContent = "送信しています…";
+
+      try {
+        await fetch(LEAD.endpoint, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            company, name, email,
+            note: String(fd.get("note") || "").trim(),
+            website: String(fd.get("website") || ""),
+            summary: diag
+          })
+        });
+      } catch (e2){
+        /* 通信に失敗しても結果はお見せする。取りこぼしは受け入れる */
+        console.warn("lead send failed", e2);
+      }
+
+      markRegistered(company);
+      form.remove();
+      const done = document.createElement("div");
+      done.style.cssText = "font-size:12.5px;color:var(--ink-2);margin-top:8px;";
+      done.textContent = "ありがとうございます。以下が診断結果です。";
+      b.appendChild(done);
+      me(company + "　" + name);
+      resolve();
+    });
+  });
+}
+
 async function finish(){
   await say("ありがとうございます。これで揃いました。風速比を出して、その土地の風の統計と掛け合わせます。少々お待ちください。");
   const t = document.createElement("div");
@@ -1279,7 +1443,15 @@ async function finish(){
   row.remove();
   lastSide = null;
 
-  addRow("bot", mountCard());
+  /* 先にカードを組み立てておく。要約をメール本文に載せるため */
+  const card = mountCard();
+
+  if (LEAD_ENABLED && !isRegistered()){
+    await askRegistration(summaryText());
+    await wait(300);
+  }
+
+  addRow("bot", card);
   await wait(500);
 
   const d = result, mA = d.after.murakami;
@@ -1388,6 +1560,12 @@ async function restart(){
   size();
   if (reduced) paint(); else loop();
   window.__refreshWind = () => { tk = tokens(); if (reduced) paint(); };
+})();
+
+/* 利用登録が有効かどうかで、画面の記載を実態に合わせる */
+(function leadCopy(){
+  document.querySelectorAll("[data-lead-only]").forEach(el => { el.hidden = !LEAD_ENABLED; });
+  document.querySelectorAll("[data-nolead-only]").forEach(el => { el.hidden = LEAD_ENABLED; });
 })();
 
 /* このサービスについて */
