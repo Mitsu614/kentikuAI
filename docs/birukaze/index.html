@@ -1,9 +1,58 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>風見社長のビル風診断</title>
+<meta name="description" content="建物の高さ・幅・奥行と周辺の街並みを答えるだけで、ビル風の風速増加率と年間の超過確率を試算します。村上らの風環境評価尺度・NEN 8100・Lawson基準の3つで同時に判定。計画初期のスクリーニングに。">
+<link rel="canonical" href="https://kentiku-boost.jp/birukaze/">
+<meta name="theme-color" content="#7f9fbe" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131c25" media="(prefers-color-scheme: dark)">
+<meta name="format-detection" content="telephone=no">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="建築ブースト">
+<meta property="og:locale" content="ja_JP">
+<meta property="og:url" content="https://kentiku-boost.jp/birukaze/">
+<meta property="og:title" content="風見社長のビル風診断">
+<meta property="og:description" content="建てる前に、足元の風が分かる。寸法を答えるだけで風速増加率と年間の超過確率を試算。村上ら(1986)・NEN 8100・Lawson の3基準で判定します。">
+<meta property="og:image" content="https://kentiku-boost.jp/birukaze/ogp.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="風見社長のビル風診断">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="風見社長のビル風診断">
+<meta name="twitter:description" content="建てる前に、足元の風が分かる。村上ら(1986)・NEN 8100・Lawson の3基準で判定するビル風の簡易診断。">
+<meta name="twitter:image" content="https://kentiku-boost.jp/birukaze/ogp.png">
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237f9fbe'/%3E%3Cg stroke='%23fff' stroke-width='4.5' stroke-linecap='round' fill='none' opacity='.95'%3E%3Cpath d='M9 22h28a6 6 0 1 0-6-6'/%3E%3Cpath d='M9 32h34a6.5 6.5 0 1 1-6.5 6.5'/%3E%3Cpath d='M9 43h20'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="ogp.png">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;500;700&family=Zen+Kaku+Gothic+New:wght@500;700;900&family=Roboto+Mono:wght@400;500;700&display=swap">
 
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "風見社長のビル風診断",
+  "url": "https://kentiku-boost.jp/birukaze/",
+  "applicationCategory": "https://schema.org/BusinessApplication",
+  "operatingSystem": "Web",
+  "inLanguage": "ja",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "JPY" },
+  "description": "建物の寸法と周辺の街並みから、ビル風の風速増加率と歩行者レベル風速の年間超過確率を試算する簡易診断。村上らの風環境評価尺度、NEN 8100、Lawson基準の3つで同時に判定します。",
+  "publisher": { "@type": "Organization", "name": "建築ブースト", "url": "https://kentiku-boost.jp/" }
+}
+</script>
+
 <style>
+/* 最小限のリセット */
+html{-webkit-text-size-adjust:100%;}
+img,svg{max-width:100%;}
+button,input{font:inherit;color:inherit;}
 :root{
   --wall:#7f9fbe; --wall-2:#6b8dae;
   --streak:255,255,255; --streak-a:.20;
@@ -244,9 +293,63 @@ ol.refs em{font-style:normal;color:var(--ink-3);}
 .disclaim b{color:var(--ink);font-family:var(--f-disp);}
 
 @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms !important;transition-duration:.001ms !important;}}
+
+/* ── このサービスについて（モーダル） ─────── */
+dialog#about{
+  border:0;padding:0;max-width:min(92vw,520px);width:100%;
+  border-radius:16px;background:var(--card);color:var(--ink);
+  box-shadow:0 20px 60px rgba(6,18,30,.4);
+}
+dialog#about::backdrop{background:rgba(8,18,28,.6);backdrop-filter:blur(3px);}
+.ab-hd{
+  display:flex;align-items:center;gap:10px;padding:15px 18px;
+  border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--card);border-radius:16px 16px 0 0;
+}
+.ab-hd h2{font-family:var(--f-disp);font-weight:900;font-size:17px;margin:0;flex:1 1 auto;}
+.ab-close{
+  border:1px solid var(--line);background:transparent;color:var(--ink-2);
+  border-radius:9px;width:32px;height:32px;cursor:pointer;display:grid;place-items:center;font-size:15px;flex:0 0 auto;
+}
+.ab-close:hover{background:var(--card-2);color:var(--ink);}
+.ab-body{padding:16px 18px 20px;font-size:13px;line-height:1.85;max-height:min(70dvh,620px);overflow-y:auto;}
+.ab-body h3{
+  font-family:var(--f-disp);font-weight:700;font-size:12px;letter-spacing:.08em;
+  color:var(--ink-2);margin:18px 0 6px;
+}
+.ab-body h3:first-child{margin-top:0;}
+.ab-body p{margin:0 0 8px;color:var(--ink);}
+.ab-body ul{margin:0 0 8px;padding-left:1.25em;color:var(--ink);}
+.ab-body li{margin-bottom:4px;}
+.ab-body a{color:var(--accent);}
+.ab-body .quiet{color:var(--ink-2);font-size:12px;line-height:1.8;}
+.ab-body .flag{
+  padding:10px 12px;border-radius:10px;background:var(--card-2);
+  font-size:12px;line-height:1.75;color:var(--ink);margin:0 0 8px;
+}
+.ab-foot{
+  border-top:1px solid var(--line);padding:12px 18px;
+  display:flex;flex-wrap:wrap;gap:6px 16px;font-size:11.5px;color:var(--ink-2);
+}
+.ab-foot a{color:var(--ink-2);}
+
+.noscript{
+  position:relative;z-index:2;max-width:640px;margin:0 auto;padding:56px 24px;
+  color:var(--onwall-strong);font-size:15px;line-height:1.9;
+}
+.noscript h1{font-family:var(--f-disp);font-weight:900;font-size:28px;margin:0 0 14px;}
 </style>
+</head>
+<body>
 
 <canvas id="windfield" aria-hidden="true"></canvas>
+
+<noscript>
+  <div class="noscript">
+    <h1>風見社長のビル風診断</h1>
+    <p>建物の高さ・幅・奥行と、まわりの街並みを答えるだけで、ビル風の風速増加率と歩行者レベル風速の年間超過確率を試算します。判定は村上らの風環境評価尺度（1986）、NEN 8100（2006）、Lawson／LDDC 基準の3本立てです。</p>
+    <p>この診断はブラウザの中だけで計算しています。ご利用には JavaScript を有効にしてください。</p>
+  </div>
+</noscript>
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <symbol id="ava" viewBox="0 0 64 64">
@@ -284,6 +387,7 @@ ol.refs em{font-style:normal;color:var(--ink-3);}
         <div class="nm">風見 剛</div>
         <div class="sub"><span class="dot"></span>風見テック工業 代表取締役／ビル風担当</div>
       </div>
+      <button class="themer" id="abouter" type="button" aria-label="このサービスについて" title="このサービスについて">ⓘ</button>
       <button class="themer" id="themer" type="button" aria-label="配色を切り替える" title="配色を切り替える">◐</button>
     </header>
     <main class="thread" id="thread" role="log" aria-live="polite" aria-label="風見社長との会話"></main>
@@ -315,6 +419,41 @@ ol.refs em{font-style:normal;color:var(--ink-3);}
     <p class="fineprint">対策の効き方は Uematsu ら（1992）の隅切り、Tsang ら（2012）のポディウム、Penwarden &amp; Wise（1975）の防風植栽にもとづいています。</p>
   </aside>
 </div>
+
+<dialog id="about" aria-labelledby="about-title">
+  <div class="ab-hd">
+    <h2 id="about-title">このサービスについて</h2>
+    <button class="ab-close" id="about-close" type="button" aria-label="閉じる">✕</button>
+  </div>
+  <div class="ab-body">
+    <h3>何をするツールか</h3>
+    <p>計画中の建物の寸法と、まわりの街並み、その土地の風の統計から、<b>足元（地上1.5m）にどれくらいの風が落ちてくるか</b>を試算します。建設前の何倍になるか（風速増加率）だけでなく、<b>年間で何日くらい強い風が吹くか</b>という頻度まで出すのが特徴です。</p>
+    <p>境界層風洞実験やCFD解析に進む前の、<b>「そもそも論点になるのか」を見極めるスクリーニング</b>を想定しています。</p>
+
+    <h3>判定に使っている基準</h3>
+    <ul>
+      <li><b>村上周三ほか（1986）</b>　風環境評価尺度。地上1.5mの日最大瞬間風速が 10／15／20 m/s を超える日数の割合でランク1〜4に分ける、日本の風洞実験報告書における事実上の標準。</li>
+      <li><b>NEN 8100（2006）</b>　オランダ規格。時間平均5 m/s の超過確率でクラスA〜E、15 m/s の超過確率で危険性を判定。</li>
+      <li><b>Lawson／LDDC</b>　突風等価平均風速 GEM の年間5%超過値で、着座・立ち止まり・歩行のどこまで許容できるかを判定。</li>
+    </ul>
+    <p class="quiet">風速比と気象統計を組み合わせる評価手順は Isyumov &amp; Davenport（1975）に拠ります。風速比の推定には Wise（1970）、Penwarden &amp; Wise（1975）、Beranek &amp; van Koten（1979）、Uematsu ほか（1992）、Kubota ほか（2008）、Blocken ほか（2007-2008）、Tsang ほか（2012）の知見を取り入れています。出典の全リストは診断結果カードの末尾に掲載しています。</p>
+
+    <h3>この診断でできないこと</h3>
+    <div class="flag">風向別の出現頻度を分けずに全方位を一括で扱っており、周辺建物の個別配置や複数棟の複合効果は見ていません。風速増加率の推定式は公表文献の傾向を組み合わせた独自の簡易式で、<b>公的な基準式ではありません</b>。行政協議・近隣説明に用いる正式な評価には、境界層風洞実験またはCFD解析が必要です。</div>
+
+    <h3>入力したデータの扱い</h3>
+    <p>計算はすべて<b>お使いのブラウザの中だけ</b>で完結します。入力した寸法や診断結果がサーバーに送信されることはありません。ログイン不要・無料でご利用いただけます。</p>
+    <p class="quiet">配色の設定のみ、次回の表示のためにブラウザ内に保存しています。</p>
+
+    <h3>運営</h3>
+    <p>建築ブースト（有限会社中野工務店）</p>
+  </div>
+  <div class="ab-foot">
+    <a href="https://kentiku-boost.jp/">建築ブースト</a>
+    <a href="https://kentiku-boost.jp/%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%83%9D%E3%83%AA%E3%82%B7%E3%83%BC_%E5%BB%BA%E7%AF%89%E3%83%96%E3%83%BC%E3%82%B9%E3%83%88.html">プライバシーポリシー</a>
+    <span>無料・登録不要</span>
+  </div>
+</dialog>
 
 <script>
 "use strict";
@@ -1221,6 +1360,26 @@ async function restart(){
   window.__refreshWind = () => { tk = tokens(); if (reduced) paint(); };
 })();
 
+/* このサービスについて */
+(function about(){
+  const dlg = document.getElementById("about");
+  const open = document.getElementById("abouter");
+  const close = document.getElementById("about-close");
+  if (!dlg || !open) return;
+  open.addEventListener("click", () => {
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else dlg.setAttribute("open", "");
+  });
+  close.addEventListener("click", () => dlg.close());
+  /* 背景をクリックしたら閉じる */
+  dlg.addEventListener("click", e => {
+    if (e.target !== dlg) return;
+    const r = dlg.getBoundingClientRect();
+    const outside = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    if (outside) dlg.close();
+  });
+})();
+
 /* テーマ切り替え */
 (function theme(){
   const btn = document.getElementById("themer");
@@ -1248,3 +1407,6 @@ async function restart(){
   askStep();
 })();
 </script>
+
+</body>
+</html>
