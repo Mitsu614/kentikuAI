@@ -207,6 +207,8 @@ body{margin:0;background:var(--wall);color:var(--ink);font-family:var(--f-body);
 .vc{padding:10px 9px;border-radius:11px;text-align:center;}
 .vc .vl{font-family:var(--f-disp);font-size:9.5px;font-weight:700;letter-spacing:.06em;opacity:.8;line-height:1.4;}
 .vc .vv{font-family:var(--f-disp);font-weight:900;font-size:20px;line-height:1.25;margin:2px 0 1px;}
+/* 数字ではなく語を出す枠は、3列に収まるよう一段小さく */
+.vc .vv.vv-sm{font-size:14.5px;line-height:1.4;letter-spacing:-.02em;}
 .vc .vs{font-size:10px;line-height:1.45;opacity:.88;}
 .vc.ok{background:var(--ok-bg);color:var(--ok);}
 .vc.warn{background:var(--warn-bg);color:var(--warn);}
@@ -685,17 +687,19 @@ function nen8100(cPed, k){
 /* ── 判定基準 ③ Lawson / LDDC ──────────────
    突風等価平均風速 GEM（Melbourne 1978）＝ max(平均, 瞬間/1.85) の
    年間5%超過値で、許容できる行為を決める。                          */
+/* s は判定カードに出す短い表記。数字だけ出しても専門家以外には読めないため。 */
 const LAWSON = [
-  {t:2.5, l:"長時間の着座（ベンチ・オープンカフェ）"},
-  {t:4.0, l:"短時間の着座"},
-  {t:6.0, l:"立ち止まり（エントランス・バス停）"},
-  {t:8.0, l:"歩行（通り抜け）"}
+  {t:2.5, l:"長時間の着座（ベンチ・オープンカフェ）", s:"長時間着座"},
+  {t:4.0, l:"短時間の着座",                        s:"短時間着座"},
+  {t:6.0, l:"立ち止まり（エントランス・バス停）",     s:"立ち止まり"},
+  {t:8.0, l:"歩行（通り抜け）",                    s:"歩行のみ"}
 ];
 function lawson(cPed, k, GF){
   const gem = quantile(0.05, cPed, k) * Math.max(1, GF / 1.85);
-  const ok = LAWSON.filter(a => gem <= a.t);
+  const ok = LAWSON.filter(a => gem <= a.t);   // 通る中で最も厳しいものが、許容できる上限
   return {gem, acts: LAWSON.map(a => ({...a, pass: gem <= a.t})),
           best: ok.length ? ok[0].l : null,
+          bestShort: ok.length ? ok[0].s : "歩行も不可",
           style: gem <= 2.5 ? "ok" : gem <= 4 ? "ok" : gem <= 6 ? "warn" : gem <= 8 ? "alert" : "bad"};
 }
 
@@ -1235,7 +1239,7 @@ function renderCard(){
     <div class="verdicts">
       <div class="vc ${RANK_STYLE[mA.rank]}"><div class="vl">村上ら 1986</div><div class="vv">ランク${mA.rank}</div><div class="vs">${band.spread ? `幅 ${band.lo}〜${band.hi}` : (mA.rank === 4 ? "基準外" : "適合上限")}</div></div>
       <div class="vc ${nA.style}"><div class="vl">NEN 8100</div><div class="vv">${nA.cls.c}</div><div class="vs">${nA.cls.s}</div></div>
-      <div class="vc ${lA.style}"><div class="vl">LAWSON</div><div class="vv">${fmt(lA.gem)}</div><div class="vs">GEM m/s</div></div>
+      <div class="vc ${lA.style}"><div class="vl">LAWSON</div><div class="vv vv-sm">${lA.bestShort}</div><div class="vs">まで許容 ／ GEM ${fmt(lA.gem)}</div></div>
     </div>
     <div class="verdict">
       ${gaugeSVG(d.R2)}
