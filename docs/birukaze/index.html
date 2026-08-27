@@ -525,6 +525,25 @@ const markRegistered = v => { try { localStorage.setItem(LEAD_KEY, v); } catch (
       統計分布を掛け合わせて、年間の超過確率を出す。
    ══════════════════════════════════════════════════════════════ */
 
+/* ── 調整のつまみ ──────────────────────────
+   ここに集約してあるのは、ハーネス（app/tools/harness-birukaze/）から
+   差し替えて較正するため。値の根拠は各所のコメントと参考文献を参照。   */
+const TUNING = {
+  gain:     0.65,   // 風速増加率の全体係数
+  expH:     0.75,   // 突出率の指数 [Wise 1970]
+  expB:     0.30,   // 見付け幅の指数 [Tsang ら 2012]
+  refB:     30,     // 見付け幅の基準(m)
+  dBase:    1.12,   // 奥行比の切片
+  dSlope:   0.16,   // 奥行比の効き
+  pilotis:  1.18,   // ピロティの割増 [Blocken ら 2007-2008]
+  through:  1.25,   // 貫通通路の割増（ピロティより大きい）
+  bcrSlope: 0.010,  // 建蔽率1%あたりの風速比の低下 [Kubota ら 2008]
+  gustPeak: 3.0,    // ガストファクターのピーク係数
+  gustBump: 1.10,   // ビル風影響域での乱れの増し
+  mvrCap:   1.10,   // 歩行者レベル風速比の上限
+  nEff:     6       // 1日のうち独立とみなせる標本数
+};
+
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const fmt = (v, d = 1) => v.toFixed(d);
 const pct = p => p >= 0.1 ? (p * 100).toFixed(1) + "%" : p >= 0.001 ? (p * 100).toFixed(2) + "%" : (p * 100).toFixed(3) + "%";
@@ -546,7 +565,7 @@ const weibullC   = (mean, k) => mean / gammaFn(1 + 1 / k);
 const pExceed    = (u, c, k) => Math.exp(-Math.pow(u / c, k));
 const quantile   = (p, c, k) => c * Math.pow(-Math.log(p), 1 / k);
 /* 日最大値の超過確率。1日24時間のうち独立とみなせる標本数を N_EFF とする */
-const N_EFF = 6;
+const N_EFF = TUNING.nEff;
 const pDailyMax  = (u, c, k) => 1 - Math.pow(1 - pExceed(u, c, k), N_EFF);
 
 /*
@@ -581,7 +600,7 @@ const REGIONS = [
 function baseRatio(rough, bcr){
   const R = ROUGH[rough];
   const ref = (bcr === null || bcr === undefined) ? R.bcr : bcr;
-  return clamp(R.kPed - 0.010 * (ref - R.bcr), 0.08, 0.95);
+  return clamp(R.kPed - TUNING.bcrSlope * (ref - R.bcr), 0.08, 0.95);
 }
 
 /* ── 風速増加率 ──────────────────────────────
@@ -592,12 +611,13 @@ function baseRatio(rough, bcr){
    f_R … 粗度区分の効き
    足元 … ピロティ・貫通通路（Beranek & van Koten 1979 / Blocken ら 2007-2008）  */
 function speedup(s){
-  const fH = Math.pow(clamp((s.H - s.Hs) / s.H, 0, 1), 0.75);
-  const fB = clamp(Math.pow(s.B / 30, 0.30), 0.70, 1.45);
-  const fD = 1.12 - 0.16 * clamp(s.D / s.B, 0.15, 1.5);
+  const T = TUNING;
+  const fH = Math.pow(clamp((s.H - s.Hs) / s.H, 0, 1), T.expH);
+  const fB = clamp(Math.pow(s.B / T.refB, T.expB), 0.70, 1.45);
+  const fD = T.dBase - T.dSlope * clamp(s.D / s.B, 0.15, 1.5);
   const fR = ROUGH[s.rough].fR;
-  let R = 1 + 0.65 * fH * fB * fD * fR;
-  const foot = s.form === "pilotis" ? 1.18 : s.form === "through" ? 1.25 : 1.00;
+  let R = 1 + T.gain * fH * fB * fD * fR;
+  const foot = s.form === "pilotis" ? T.pilotis : s.form === "through" ? T.through : 1.00;
   R *= foot;
   return {R: clamp(R, 1.0, 2.8), fH, fB, fD, fR, foot};
 }
@@ -719,12 +739,12 @@ function diagnose(s, ms){
   const R2   = applyMeasures(R, ms);
   const mvrB = mvr0;
   /* 歩行者レベルの風速比は、最も強い地点でも 1.1 程度が上限（風洞実験の報告値） */
-  const mvrA = clamp(mvr0 * R2, 0.05, 1.10);
+  const mvrA = clamp(mvr0 * R2, 0.05, TUNING.mvrCap);
 
   /* 乱れの強さ：ビル風の影響域では 10% 増しとする */
   const Iu   = ROUGH[s.rough].Iu;
-  const gfB  = 1 + 3.0 * Iu;
-  const gfA  = 1 + 3.0 * Iu * 1.10;
+  const gfB  = 1 + TUNING.gustPeak * Iu;
+  const gfA  = 1 + TUNING.gustPeak * Iu * TUNING.gustBump;
 
   const evalAt = (mvr, gf) => {
     const c = cMet * mvr;
@@ -743,6 +763,29 @@ function diagnose(s, ms){
 
   return {reg, k, cMet, mvr0, sp, R, R2, gfB, gfA, before, after,
           admin: adminHint(s.H, s.area)};
+}
+
+/* 入力の不確かさが判定をどれだけ動かすか。
+   ハーネス（app/tools/harness-birukaze/）の感度分析で、粗度区分の選び方だけで
+   村上ランクが3段階、建蔽率±20%で2段階動くと分かった。どちらも利用者が
+   正確には答えにくい項目で、建蔽率にいたっては「わからない」で飛ばせる。
+   点推定だけを出すと、ありもしない精度があるように見えてしまう。
+   粗度区分を上下1段、建蔽率を±10%振って、ランクの取りうる幅を併記する。 */
+function rankBand(s, ms){
+  const keys = ["I", "II", "III", "IV"];
+  const i = keys.indexOf(s.rough);
+  const roughs = [...new Set([keys[Math.max(0, i - 1)], s.rough, keys[Math.min(3, i + 1)]])];
+  const b0 = (s.bcr === null || s.bcr === undefined) ? ROUGH[s.rough].bcr : s.bcr;
+  const bcrs = [...new Set([Math.max(0, b0 - 10), b0, Math.min(90, b0 + 10)])];
+  let lo = 4, hi = 1;
+  for (const r of roughs){
+    for (const b of bcrs){
+      const k = diagnose(Object.assign({}, s, {rough:r, bcr:b}), ms).after.murakami.rank;
+      if (k < lo) lo = k;
+      if (k > hi) hi = k;
+    }
+  }
+  return {lo, hi, spread: hi - lo};
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -1180,6 +1223,7 @@ function renderCard(){
   result = d;
   const mA = d.after.murakami, nA = d.after.nen, lA = d.after.lawson;
   const jump = mA.rank - d.before.murakami.rank;
+  const band = rankBand(s, measures);
 
   return `
   <div class="card-hd">
@@ -1189,7 +1233,7 @@ function renderCard(){
 
   <div class="sect">
     <div class="verdicts">
-      <div class="vc ${RANK_STYLE[mA.rank]}"><div class="vl">村上ら 1986</div><div class="vv">ランク${mA.rank}</div><div class="vs">${mA.rank === 4 ? "基準外" : "適合上限"}</div></div>
+      <div class="vc ${RANK_STYLE[mA.rank]}"><div class="vl">村上ら 1986</div><div class="vv">ランク${mA.rank}</div><div class="vs">${band.spread ? `幅 ${band.lo}〜${band.hi}` : (mA.rank === 4 ? "基準外" : "適合上限")}</div></div>
       <div class="vc ${nA.style}"><div class="vl">NEN 8100</div><div class="vv">${nA.cls.c}</div><div class="vs">${nA.cls.s}</div></div>
       <div class="vc ${lA.style}"><div class="vl">LAWSON</div><div class="vv">${fmt(lA.gem)}</div><div class="vs">GEM m/s</div></div>
     </div>
@@ -1198,6 +1242,7 @@ function renderCard(){
       <div class="vtext">
         <div class="lead">${d.R2 >= 1.6 ? "増加率が大きく、近隣説明で必ず論点になります。" : d.R2 >= 1.35 ? "無視できない増速です。滞留空間の配置にご注意ください。" : "増加率は許容範囲におさまっています。"}</div>
         <div class="note">${jump > 0 ? `建設によって村上ランクが <b>${d.before.murakami.rank} → ${mA.rank}</b> に${jump}段階下がります。` : "建設前後で村上ランクは変わりません。"}　風速比は ${fmt(d.mvr0,2)} → ${fmt(d.after.mvr,2)}。</div>
+        ${band.spread ? `<div class="note" style="margin-top:6px;color:var(--warn)">まわりの様子の選び方や建蔽率の見立てが1段違うと、<b>ランク${band.lo}〜${band.hi}</b>の範囲で動きます。この幅を込みで見てください。</div>` : ""}
       </div>
     </div>
   </div>
