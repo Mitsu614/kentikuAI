@@ -7707,6 +7707,8 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     // 画面がいま表示している写真の中心。寄ったあとは住所の位置と違うので、
     // クリック座標はこれを基準に換算しないと別の場所を指してしまう。
     viewLat?: number; viewLon?: number;
+    // 写真を掴んで動かしたあと、いま中心に来ている画像座標。ここを新しい中心にする
+    panTo?: { x: number; y: number };
   }) => {
     const address = String(data?.address || '').trim();
     if (!address) throw new Error('ERROR: 住所を入力してください。');
@@ -7734,8 +7736,18 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     const vLat = Number(data?.viewLat);
     const vLon = Number(data?.viewLon);
     const hasView = isFinite(vLat) && isFinite(vLon) && Math.abs(vLat) <= 90 && Math.abs(vLon) <= 180;
-    const centerLat = hasView ? vLat : hit.lat;
-    const centerLon = hasView ? vLon : hit.lon;
+    let centerLat = hasView ? vLat : hit.lat;
+    let centerLon = hasView ? vLon : hit.lon;
+
+    // 写真を掴んで動かしたあと、いま中心に来ている位置を新しい中心にする。
+    // 送られてくるのは「動かす前の写真」での画像座標なので、その写真の大きさで換算する。
+    const pt = data?.panTo;
+    if (pt && isFinite(Number(pt.x)) && isFinite(Number(pt.y))) {
+      const prevSize = 256 * grid;   // 地理院タイルは1枚256px
+      const p = pixelToLonLat(centerLat, centerLon, view.z, prevSize, Number(pt.x), Number(pt.y));
+      centerLat = p.lat; centerLon = p.lon;
+    }
+
     const air = await fetchAerial(centerLat, centerLon, view.z, grid);
 
     // ── まず写真だけ返す ──────────────────────────────────

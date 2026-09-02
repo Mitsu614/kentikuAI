@@ -566,6 +566,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // （AIに任せると同じ場所でも1.48倍ぶれる。人が輪郭を合わせるほうが確か）
   const [aerialRect, setAerialRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const aerialDrag = useRef<any>(null);
+  // 写真を掴んで動かしている間のずらし量（表示px）。離したら中心を計算し直して取り直す
+  const [aerialPan, setAerialPan] = useState<{ dx: number; dy: number } | null>(null);
+  const aerialPanRef = useRef<any>(null);
   const [checkingArea, setCheckingArea] = useState(false);
   const [confirmArea, setConfirmArea] = useState('');
   const [learned, setLearned] = useState<{ calibration: number; samples: number } | null>(null);
@@ -753,6 +756,59 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     } finally {
       setAerialLoading(false);
     }
+  };
+
+  // 写真を掴んで動かす（地図と同じ操作）。
+  // 押しっぱなしでずらし、離したところで「いま中心に来ている場所」を新しい中心として取り直す。
+  // ドラッグ中は画像をCSSでずらすだけなので、通信は離したとき1回きり。
+  const startAerialPan = (ev: React.MouseEvent) => {
+    if (!aerial || aerialLoading) return;
+    ev.preventDefault();
+    const box = (ev.currentTarget as HTMLElement).closest('[data-aerial-box]') as HTMLElement;
+    if (!box) return;
+    const rect = box.getBoundingClientRect();
+    const scale = aerial.sizePx / rect.width;   // 表示px → 画像px
+    // ★移動量は ref に持つこと。
+    //   mousedown の時点で作った関数は、その後の setState を見られない（古い値のまま）。
+    //   state だけに入れると、離したときの処理で移動量が常に初期値になり、
+    //   見た目は動くのに取り直しが走らない＝離すと元に戻る。
+    aerialPanRef.current = { startX: ev.clientX, startY: ev.clientY, scale, moved: 0, dx: 0, dy: 0 };
+
+    const onMove = (e: MouseEvent) => {
+      const p = aerialPanRef.current;
+      if (!p) return;
+      const dx = e.clientX - p.startX, dy = e.clientY - p.startY;
+      p.moved = Math.hypot(dx, dy);
+      p.dx = dx; p.dy = dy;
+      setAerialPan({ dx, dy });
+    };
+    const onUp = async () => {
+      const p = aerialPanRef.current;
+      aerialPanRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      setAerialPan(null);
+      // ほとんど動いていないならクリック扱い。取り直さない
+      if (!p || p.moved < 5) return;
+      // 画像を右へ dx ずらした＝視界は左へ動いた。いま中心にある画像座標を出す
+      const cx = aerial.sizePx / 2 - p.dx * p.scale;
+      const cy = aerial.sizePx / 2 - p.dy * p.scale;
+      setAerialLoading(true);
+      try {
+        const res = await (window as any).api.areaFromAddress({
+          address: siteAddress.trim(), comment, fetchOnly: true, grid: aerial.grid,
+          viewLat: aerial.viewLat, viewLon: aerial.viewLon, panTo: { x: cx, y: cy },
+        });
+        setAerial(res);
+        setAerialRect(null);
+      } catch (e: any) {
+        setError((e?.message || '航空写真の取得に失敗しました').replace(/^ERROR: /, ''));
+      } finally {
+        setAerialLoading(false);
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
   };
 
   // 四角を動かす・大きさを変える。which='move' か 'nw'|'ne'|'sw'|'se'
@@ -2283,8 +2339,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               {/* 住所の解決点は建物の上に落ちないことが多い。人に選んでもらう。 */}
               {aerial.step === 'pick' && (
                 <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1e40af', background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: 4, padding: '8px 10px', marginBottom: 6 }}>
-                  👇 写真の上で、<span style={{ textDecoration: 'underline' }}>測りたい建物をクリック</span>してください
-                  <div style={{ fontSize: 11, fontWeight: 'normal', color: '#1e3a8a', marginTop: 3 }}>
+                  👇 測りたい建物を<span style={{ textDecoration: 'underline' }}>ダブルクリック</span>してください
+                  <div style={{ fontSize: 11, fontWeight: 'normal', color: '#1e3a8a', marginTop: 3, lineHeight: 1.7 }}>
+                    写真は<strong>押しっぱなしで動かせます</strong>（上下左右）。目的の建物を画面に入れてから、ダブルクリックしてください。<br />
                     住所だけでは建物を特定できません（番地まで入れても街区の代表点が返るため）。
                     青い十字が住所の位置です。ずれていても問題ありません。
                   </div>
@@ -2308,11 +2365,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     ))}
                     <span style={{ color: '#64748b' }}>四方</span>
                   </div>
-                  <div data-aerial-box style={{ position: 'relative', width: '100%', maxWidth: 640, marginBottom: 6 }}>
-                    <img src={aerial.aerialImage} alt="航空写真" onClick={measureAerialAt}
+                  <div data-aerial-box style={{ position: 'relative', width: '100%', maxWidth: 640, marginBottom: 6, overflow: 'hidden', borderRadius: 4 }}>
+                    {/* 押しっぱなしで動かす、ダブルクリックで決定。地図と同じ操作。
+                        1クリックで測ってしまうと、見回そうとしただけで測定が走ってしまう。 */}
+                    <img src={aerial.aerialImage} alt="航空写真"
+                      onMouseDown={startAerialPan}
+                      onDoubleClick={measureAerialAt}
+                      draggable={false}
                       style={{
                         width: '100%', display: 'block', borderRadius: 4, border: '1px solid #93c5fd',
-                        cursor: aerialLoading ? 'wait' : 'crosshair',
+                        cursor: aerialLoading ? 'wait' : aerialPan ? 'grabbing' : 'grab',
+                        transform: aerialPan ? `translate(${aerialPan.dx}px, ${aerialPan.dy}px)` : undefined,
+                        userSelect: 'none',
                       }} />
                     {/* 住所の解決点＝青い十字。太く、白フチ付きで航空写真の上でも見えるように。
                         ★寄ったあと（step='result'）は出さない。寄った写真は選ばれた建物が中心なので、
@@ -2393,7 +2457,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   中をドラッグすると動きます。<strong>四隅の白い四角</strong>をつまむと大きさを変えられます。
                   合わせた四角の面積がそのまま使えます（縮尺は確定しているので、合わせた分だけ正確になります）。<br />
                   <span style={{ color: '#475569' }}>
-                    違う建物なら、写真の空いているところをクリックすると、そこへ移って測り直します。
+                    違う建物なら、そこを<strong>ダブルクリック</strong>すると測り直します。写真は押しっぱなしで動かせます。
                   </span>
                 </div>
               )}
