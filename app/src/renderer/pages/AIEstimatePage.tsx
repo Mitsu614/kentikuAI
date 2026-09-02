@@ -812,7 +812,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setAerialLoading(true);
     setError('');
     try {
-      const res = await (window as any).api.areaFromAddress({ address: addr, comment, fetchOnly: true, grid });
+      // ★いま見ている中心(viewLat/viewLon)を必ず送ること。
+      //   送らないと (1) 住所の位置に戻ってしまい、動かして探した場所を見失う
+      //   (2) 本体が「新しい住所」と見なして 3単位を引いてしまう。
+      const res = await (window as any).api.areaFromAddress({
+        address: addr, comment, fetchOnly: true, grid,
+        viewLat: aerial?.viewLat, viewLon: aerial?.viewLon,
+      });
       setAerial(res);
     } catch (e: any) {
       setError((e?.message || '航空写真の取得に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));

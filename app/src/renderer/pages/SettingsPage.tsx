@@ -643,7 +643,7 @@ function PlanManagement() {
           <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2c3e50' }}>
             {planInfo.planName}
             <span style={{ fontSize: 14, fontWeight: 'normal', color: '#888', marginLeft: 8 }}>
-              ¥{(planInfo.price || 0).toLocaleString()}/年（税込）
+              ¥{(planInfo.price || 0).toLocaleString()}/月（税込）
             </span>
           </div>
           <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>{planInfo.description}</div>
@@ -730,8 +730,11 @@ function PlanManagement() {
                 )}
                 <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 4 }}>{p.name}</div>
                 <div style={{ fontSize: 20, fontWeight: 'bold', color: key === 'trial' ? '#27ae60' : '#2c3e50', marginBottom: 4 }}>
-                  {key === 'trial' ? '無料' : `¥${p.price.toLocaleString()}`}
-                  <span style={{ fontSize: 11, fontWeight: 'normal' }}>/年</span>
+                  {/* 法人カスタムは個別見積なので金額を出さない。0円と出ると無料に見える */}
+                  {key === 'enterprise' ? '個別お見積り' : p.price === 0 ? '無料' : `¥${p.price.toLocaleString()}`}
+                  {key !== 'enterprise' && p.price > 0 && (
+                    <span style={{ fontSize: 11, fontWeight: 'normal' }}>/月</span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
                   月 {key === 'enterprise' ? '個別設定' : p.monthlyLimit + '単位'}
@@ -852,7 +855,7 @@ function PlanAdmin() {
   const changePlan = async (tenantId: number, tenantName: string, newPlan: string) => {
     const planDef = plans[newPlan];
     if (!planDef) return;
-    if (!confirm(`「${tenantName}」のプランを「${planDef.name}（¥${planDef.price.toLocaleString()}/年）」に変更しますか？\n\n入金確認済みの場合のみ実行してください。`)) return;
+    if (!confirm(`「${tenantName}」のプランを「${planDef.name}（¥${planDef.price.toLocaleString()}/月）」に変更しますか？\n\n入金確認済みの場合のみ実行してください。`)) return;
     try {
       await (window as any).api.setPlan(newPlan, tenantId);
       setMsg(`${tenantName} → ${planDef.name}プランに変更しました`);
@@ -1065,9 +1068,10 @@ function UserManagement() {
                   const p = e.target.value;
                   setTenantForm({ ...tenantForm, plan: p, credits: plans[p]?.credits || 20 });
                 }}>
-                  <option value="demo">デモ（30単位）</option>
-                  <option value="standard">スタンダード（100単位/月）</option>
-                  <option value="pro">プロ（500単位/月）</option>
+                  <option value="demo">デモ（10単位/月・無料）</option>
+                  <option value="standard">スタンダード（20単位/月・3万円）</option>
+                  <option value="better">ベター（50単位/月・7万円）</option>
+                  <option value="pro">プロ（100単位/月・10万円／航空写真つき）</option>
                   <option value="enterprise">法人カスタム</option>
                 </select>
               </div>

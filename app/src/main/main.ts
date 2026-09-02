@@ -2015,11 +2015,17 @@ app.whenReady().then(async () => {
   const allTenants = queryAll('SELECT id FROM tenants WHERE id > 1 ORDER BY id ASC');
   if (allTenants.length > 0) {
     setCurrentTenant(allTenants[0].id);
-    // 管理者のテナントはストック100確保
+    // 管理者（開発機）のテナントだけストック100を確保する。
+    // ★isOwner の判定を外さないこと。
+    //   ここが全員に効くと、どのプランのお客様も起動のたびに 100単位へ
+    //   書き換わってしまい、20/50/100 の段階が意味をなくす
+    //   （スタンダードが100単位だった頃は同じ値だったので表に出ていなかった）。
     const myTenant = allTenants[0];
-    const myPlan = queryOne('SELECT plan, plan_limit FROM tenants WHERE id = ?', [myTenant.id]);
-    if (!myPlan?.plan_limit || myPlan.plan_limit < 100) {
-      runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', ['standard', 100, myTenant.id]);
+    if (isOwner) {
+      const myPlan = queryOne('SELECT plan, plan_limit FROM tenants WHERE id = ?', [myTenant.id]);
+      if (!myPlan?.plan_limit || myPlan.plan_limit < 100) {
+        runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', ['pro', 100, myTenant.id]);
+      }
     }
   }
 
@@ -7736,6 +7742,22 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
 
     const hit = await geocode(address);
     if (!hit) throw new Error('ERROR: その住所が見つかりませんでした。番地まで入れるか、近くの住所でお試しください。');
+
+    // ★新しい住所で航空写真を出すときだけ 3単位。
+    //   掴んで動かす・寄る・建物を選び直すのは、いま見ている中心(viewLat)か
+    //   移動先(panTo)が必ず付いてくるので無料のまま。
+    //   そこで課金すると地図を見回すだけでストックが溶ける。
+    //   住所が見つかったあとに引くこと（見つからない住所で減らさない）。
+    const isNewSite = !data?.panTo && !isFinite(Number(data?.viewLat));
+    if (isNewSite) {
+      const aerialCost = CREDIT_COSTS['航空写真測定'] ?? 3;
+      const paid = useCredits(aerialCost, '航空写真測定');
+      if (!paid.success) {
+        throw new Error(paid.expired
+          ? 'ERROR: デモ期間が終了しました。プランをお申し込みください。'
+          : `ERROR: 今月のAIストックが足りません（航空写真は${aerialCost}単位）。`);
+      }
+    }
 
     // 地理院タイルは z=18 が上限（実測で確認）。解像度は上げられないので、
     // 視野はタイル枚数で調整する。小さい建物ほど枚数を減らして隣家を写し込まない。

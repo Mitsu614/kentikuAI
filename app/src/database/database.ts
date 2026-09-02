@@ -75,11 +75,14 @@ export function vacuum() {
 }
 
 // ── プラン定義 ──
+// price は【月額・税込】。画面の表記も「/月」に揃えてある。
+// 単位（monthlyLimit）が上がるほど月に回せる見積の本数が増える。
 export const PLANS: Record<string, { name: string; monthlyLimit: number; price: number; description: string }> = {
-  demo:       { name: 'デモ',           monthlyLimit: 30,   price: 0,        description: '無料体験（月30単位まで）' },
-  standard:   { name: 'スタンダード',   monthlyLimit: 100,  price: 1200000,  description: '個人〜15名規模の工務店（年間契約）' },
-  pro:        { name: 'プロ',           monthlyLimit: 500,  price: 3000000,  description: '複数担当者・多案件（年間契約）' },
-  enterprise: { name: '法人カスタム',   monthlyLimit: 9999, price: 5000000,   description: '多店舗・複数会社（年間契約）' },
+  demo:       { name: 'デモ',           monthlyLimit: 10,   price: 0,       description: '無料体験（月10単位・2週間）' },
+  standard:   { name: 'スタンダード',   monthlyLimit: 20,   price: 30000,   description: '月20単位・個人〜少人数の工務店' },
+  better:     { name: 'ベター',         monthlyLimit: 50,   price: 70000,   description: '月50単位・案件数が増えてきた工務店' },
+  pro:        { name: 'プロ',           monthlyLimit: 100,  price: 100000,  description: '月100単位・住所からの航空写真測定つき' },
+  enterprise: { name: '法人カスタム',   monthlyLimit: 9999, price: 0,       description: '多店舗・複数会社（個別お見積り）' },
 };
 
 // AI操作ごとのストック消費量
@@ -92,6 +95,11 @@ export const CREDIT_COSTS: Record<string, number> = {
   'チャット見積':      1,
   'ビフォーアフター見積': 2,
   '研修モード':        1,
+  // 住所から航空写真を出すのは3単位。地理院タイルを何枚も取りに行き、
+  // 縮尺の確定した写真で数量を押さえられる＝現地調査1回分の値打ちがある。
+  // 掴んで動かす・寄る・建物を選び直すのは無料（そこで課金すると
+  // 地図を見回すだけでストックが溶ける）。
+  '航空写真測定':      3,
   'PDF出力':          0,
   '一括登録':          0,
 };
