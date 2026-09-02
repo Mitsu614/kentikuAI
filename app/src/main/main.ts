@@ -7371,6 +7371,17 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
   // 無料呼び出しの濫用を防ぐため、画像必須＋テナントごとの1日上限を設ける。
   const AREA_PRECHECK_DAILY_LIMIT = 30;
 
+  // ── 住所からの航空写真測定は プロプラン以上の機能 ──
+  // 写真だけの推定は同じ場所でも答えが1.5倍ぶれるが、こちらは縮尺が確定した
+  // 写真の上で人が輪郭を合わせるので、数量がぶれない。上位プランの決め手になる。
+  //
+  // デモを通しているのは、商談で見せられないと売れないため。
+  // デモ自体が30単位・2週間で自動終了するので、使い続けられはしない。
+  const AERIAL_PLANS = ['pro', 'enterprise', 'demo'];
+  const AERIAL_DENY = 'ERROR: 住所からの航空写真測定は「プロ」プラン以上の機能です。'
+    + '写真だけの推定と違い、縮尺が確定した航空写真の上で範囲を合わせるので数量がぶれません。'
+    + '設定画面の「プラン」からお申し込みいただけます。';
+
   // 写真から面積を読むための基準スケールと手順。建材は規格品なので、写っていれば定規になる。
   // ★展開係数: 折板は山谷があるぶん、実際に張る面積が屋根面積より大きい。自社の見積書に
   //   「屋根面積 33.8m² 折板屋根面積×1.4 → 数量48m²」と明記されている（森鉄筋 養老工場）。
@@ -7714,6 +7725,10 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     if (!address) throw new Error('ERROR: 住所を入力してください。');
 
     const tid = getCurrentTenant();
+    // ★画面側でも隠しているが、本体でも必ず止めること。
+    //   画面の出し分けだけだと、開発者ツールから直接呼ばれたときに通ってしまう。
+    //   （写真からの測定 ai:estimateArea は全プランのまま。ここは住所版だけ）
+    if (!AERIAL_PLANS.includes(getTenantPlan().plan)) throw new Error(AERIAL_DENY);
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
     try { runSql('CREATE TABLE IF NOT EXISTS area_precheck_log (tenant_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (tenant_id, day))', []); } catch (_) {}
     const used = queryOne('SELECT count FROM area_precheck_log WHERE tenant_id = ? AND day = ?', [tid, today])?.count || 0;

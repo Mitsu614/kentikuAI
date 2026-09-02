@@ -601,6 +601,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setAerialOff(clampOff({ x: ax - ix * nz, y: ay - iy * nz }, aerial.sizePx * nz));
   };
 
+  // ── 航空写真測定は プロプラン以上の機能 ──
+  // 本体（main.ts の AERIAL_PLANS）でも止めているので、ここは案内のための表示だけ。
+  // 隠してしまうと「そんな機能があると知らないまま」になり売れないので、
+  // 鍵付きで見せて、何ができる機能なのかを書く。
+  const [myPlan, setMyPlan] = useState<string>('');
+  const aerialAllowed = !myPlan || ['pro', 'enterprise', 'demo'].includes(myPlan);
+  useEffect(() => {
+    (window as any).api.getPlan()
+      .then((p: any) => setMyPlan(p?.plan || ''))
+      .catch(() => { /* 取れなくても見積は止めない。取れないうちは出しておく */ });
+  }, []);
+
   // 写真を取り直したら、その中心を窓の真ん中に置き直す
   useEffect(() => {
     if (!aerial?.sizePx) return;
@@ -2425,26 +2437,51 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
 
               <div style={{ borderTop: '1px solid #bbf7d0', paddingTop: 10 }}>
                 <div style={{ fontSize: 12, fontWeight: 'bold', color: '#166534', marginBottom: 6 }}>
-                  ③ 住所から航空写真で測る（写真より確か）
+                  {aerialAllowed ? '③ 住所から航空写真で測る（写真より確か）' : '③ 住所から航空写真で測る　🔒 プロプラン'}
                 </div>
-                <div style={{ fontSize: 11, color: '#15803d', marginBottom: 6 }}>
-                  国土地理院の航空写真は縮尺が確定しているので、AIがスケールを推測する必要がありません。<br />
-                  <strong>何丁目何番何号まで入れてください。</strong>丁目までだと数百m四方の中心が返るので、別の建物を測ってしまいます。
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <input
-                    type="text"
-                    value={siteAddress}
-                    onChange={(e) => setSiteAddress(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && siteAddress.trim() && !aerialLoading) runAerial(); }}
-                    placeholder="例: 大阪府大阪市都島区中野町1-2-3"
-                    style={{ flex: 1, padding: '8px 10px', fontSize: 13, border: '1px solid #86efac', borderRadius: 4 }}
-                  />
-                  <button className="btn" onClick={runAerial} disabled={aerialLoading || !siteAddress.trim()}
-                    style={{ fontSize: 13, padding: '8px 16px', whiteSpace: 'nowrap' }}>
-                    {aerialLoading ? '取得中...' : '航空写真で測る'}
-                  </button>
-                </div>
+                {aerialAllowed ? (
+                  <>
+                    <div style={{ fontSize: 11, color: '#15803d', marginBottom: 6 }}>
+                      国土地理院の航空写真は縮尺が確定しているので、AIがスケールを推測する必要がありません。<br />
+                      <strong>何丁目何番何号まで入れてください。</strong>丁目までだと数百m四方の中心が返るので、別の建物を測ってしまいます。
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input
+                        type="text"
+                        value={siteAddress}
+                        onChange={(e) => setSiteAddress(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && siteAddress.trim() && !aerialLoading) runAerial(); }}
+                        placeholder="例: 大阪府大阪市都島区中野町1-2-3"
+                        style={{ flex: 1, padding: '8px 10px', fontSize: 13, border: '1px solid #86efac', borderRadius: 4 }}
+                      />
+                      <button className="btn" onClick={runAerial} disabled={aerialLoading || !siteAddress.trim()}
+                        style={{ fontSize: 13, padding: '8px 16px', whiteSpace: 'nowrap' }}>
+                        {aerialLoading ? '取得中...' : '航空写真で測る'}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  /* 使えないお客様にも「何ができる機能なのか」は見せる。
+                     隠すと知られないまま終わり、上位プランを選ぶ理由にならない。 */
+                  <div style={{
+                    border: '1px dashed #86efac', borderRadius: 6, padding: '10px 12px',
+                    background: '#f0fdf4', fontSize: 11, color: '#166534', lineHeight: 1.7,
+                  }}>
+                    <div style={{ marginBottom: 6 }}>
+                      現場の住所を入れると、<strong>国土地理院の航空写真</strong>を真上から呼び出して、
+                      画面上で建物の範囲を囲うだけで面積が出ます。
+                    </div>
+                    <div style={{ marginBottom: 6 }}>
+                      写真からの目測は<strong>同じ屋根でも答えが1.5倍ぶれます</strong>が、
+                      航空写真は縮尺が確定しているのでぶれません。
+                      拾い出しの前に、屋根の数量を現地に行かずに押さえられます。
+                    </div>
+                    <div style={{ color: '#15803d' }}>
+                      ご利用は<strong>「プロ」プラン以上</strong>です。
+                      設定画面の「プラン」からお申し込みいただけます。
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
