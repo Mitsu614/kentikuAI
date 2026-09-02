@@ -2118,14 +2118,16 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   ③ 住所から航空写真で測る（写真より確か）
                 </div>
                 <div style={{ fontSize: 11, color: '#15803d', marginBottom: 6 }}>
-                  国土地理院の航空写真は縮尺が確定しているので、AIがスケールを推測する必要がありません。
+                  国土地理院の航空写真は縮尺が確定しているので、AIがスケールを推測する必要がありません。<br />
+                  <strong>何丁目何番何号まで入れてください。</strong>丁目までだと数百m四方の中心が返るので、別の建物を測ってしまいます。
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <input
                     type="text"
                     value={siteAddress}
                     onChange={(e) => setSiteAddress(e.target.value)}
-                    placeholder="例: 東京都千代田区永田町1-7-1（番地まで）"
+                    onKeyDown={(e) => { if (e.key === 'Enter' && siteAddress.trim() && !aerialLoading) runAerial(); }}
+                    placeholder="例: 大阪府大阪市都島区中野町1-2-3"
                     style={{ flex: 1, padding: '8px 10px', fontSize: 13, border: '1px solid #86efac', borderRadius: 4 }}
                   />
                   <button className="btn" onClick={runAerial} disabled={aerialLoading || !siteAddress.trim()}
@@ -2146,8 +2148,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   : `🛰 航空写真から読み取った屋根の面積です。合っていますか？（信頼度: ${aerial.confidence}）`}
               </div>
               <div style={{ fontSize: 12, color: '#1e3a8a', marginBottom: 6 }}>
-                {aerial.address}　／　<strong>1ピクセル = {aerial.mPerPx} m</strong>（{aerial.viewWidthM}m四方・ズーム{aerial.zoom}）
+                {aerial.address}
+                {aerial.addressLevelLabel && <span style={{ color: aerial.addressPrecise ? '#15803d' : '#b91c1c' }}>（{aerial.addressLevelLabel}）</span>}
+                　／　<strong>1ピクセル = {aerial.mPerPx} m</strong>（{aerial.viewWidthM}m四方・ズーム{aerial.zoom}）
               </div>
+              {/* 住所が粗いと、区・丁目の中心にあった無関係な建物を測ってしまう。
+                  数字は出るので、言われないと気づけない。いちばん目立つ場所に出す。 */}
+              {!!aerial.addressWarning && (
+                <div style={{ fontSize: 12, color: '#7f1d1d', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 4, padding: '8px 10px', marginBottom: 8, lineHeight: 1.7 }}>
+                  <strong>⚠ この結果は使えません</strong><br />
+                  {aerial.addressWarning.split('**').map((s: string, i: number) => i % 2 ? <strong key={i}>{s}</strong> : s)}
+                </div>
+              )}
               {!!aerial.aerialImage && (
                 <img src={aerial.aerialImage} alt="航空写真"
                   style={{ width: '100%', maxWidth: 420, borderRadius: 4, border: '1px solid #93c5fd', display: 'block', marginBottom: 6 }} />

@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { geocode, fetchAerial, pickView, metersPerPixel, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
+import { geocode, fetchAerial, pickView, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, normalizeWorkType, sendMailEdge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
@@ -7783,9 +7783,19 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
 
     runSql('INSERT INTO area_precheck_log (tenant_id, day, count) VALUES (?, ?, 1) ON CONFLICT(tenant_id, day) DO UPDATE SET count = count + 1', [tid, today]);
 
-    const ok = r.found !== false && plan > 0;
+    // ★番地まで無いと区・町の中心点が返り、まったく別の建物を測ってしまう。
+    //   実際に「大阪府大阪市都島区」で試したとき、区の中心にあった建物を1349㎡と読んだ。
+    //   数字は出るので、言われないと気づけない。確定させず、必ず知らせる。
+    const ok = r.found !== false && plan > 0 && hit.precise;
     const out: any = {
       mode: 'aerial',
+      addressPrecise: hit.precise,
+      addressLevel: hit.level,
+      addressLevelLabel: LEVEL_LABEL[hit.level],
+      addressWarning: hit.precise ? null
+        : hit.level === 'chome'
+          ? `「${hit.title}」の中心を写しています。丁目は数百m四方あるので、写した範囲（${Math.round(air.widthM)}m四方）に目的の建物が入っているとは限りません。**何番まで**入れてください（例: ${hit.title}2番3号／${hit.title.replace(/[一二三四五六七八九十]+丁目$/, '')}1-2-3）。`
+          : `「${hit.title}」までしか特定できませんでした。ここは地域の中心で、目的の建物とは無関係の場所です。**何丁目何番何号まで**入れてください（例: ○○町1-2-3）。`,
       // 縮尺が確定しているので較正は掛けない。目測の癖を直す係数はここでは不要
       calibration: 1,
       target: 'roof',
@@ -7807,10 +7817,16 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
       quantityM2: ok ? Math.round(plan * slope * 10) / 10 : 0,
     };
     out.assumedArea = ok ? `屋根 ${Math.round(out.quantityM2)}㎡` : '';
-    if (!ok) out.needsDimension = r.askUserFor || '建物の間口(m)と桁行(m)';
+    if (!ok) {
+      out.needsDimension = hit.precise
+        ? (r.askUserFor || '建物の間口(m)と桁行(m)')
+        : '番地まで入れた住所（例: ○○町1-2-3）';
+    }
 
-    console.log(`[航空写真] tenant ${tid}: ${hit.title} z=${air.z} 1px=${air.mPerPx.toFixed(3)}m ` +
-      `${ok ? `${w}×${l}m → ${out.quantityM2}㎡` : '建物を特定できず'} (${out.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
+    console.log(`[航空写真] tenant ${tid}: ${hit.title}${hit.precise ? '' : '【番地なし＝地域の中心】'} ` +
+      `z=${air.z} 1px=${air.mPerPx.toFixed(3)}m ` +
+      `${plan > 0 ? `${w}×${l}m → ${Math.round(plan * slope * 10) / 10}㎡` : '建物を特定できず'}` +
+      `${ok ? '' : '（確定させず）'} (${out.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
     return out;
   });
 

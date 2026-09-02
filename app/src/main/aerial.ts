@@ -45,7 +45,45 @@ export function metersPerPixel(lat: number, z: number): number {
   return (EARTH_CIRC * Math.cos((lat * Math.PI) / 180)) / (TILE * Math.pow(2, z));
 }
 
-export type GeoHit = { lon: number; lat: number; title: string };
+export type AddressLevel = 'building' | 'block' | 'chome' | 'area';
+export type GeoHit = { lon: number; lat: number; title: string; level: AddressLevel; precise: boolean };
+
+/**
+ * 住所がどこまで解決できたかを見分ける。
+ *
+ * 番地まで無いと区・町の中心点が返り、**まったく別の建物**を測ってしまう。
+ * 実際に「大阪府大阪市都島区」で試したとき、区の中心にあった建物を1349㎡と読んだ。
+ * 数字は出るので、言われないと気づけない。
+ *
+ * 丁目だけでも足りない。丁目は数百m四方あり、航空写真の視野(z=18で124m)より広い。
+ * **番まで解決できて初めて、写した範囲に目的の建物が入っていると言える。**
+ *
+ * 実測した地理院ジオコーダの返り（2026-09-02）:
+ *   大阪府大阪市都島区              → 地域
+ *   大阪府大阪市都島区中野町          → 地域
+ *   大阪府大阪市都島区中野町1丁目      → 丁目
+ *   大阪府大阪市都島区中野町1-2       → 街区（一丁目２番）
+ *   大阪府大阪市都島区中野町1-2-3     → 建物（一丁目２番３号）
+ */
+const NUM = '[0-9０-９一二三四五六七八九十]+';
+export function addressLevel(title: string): AddressLevel {
+  const s = String(title || '');
+  if (new RegExp(`${NUM}号`).test(s)) return 'building';
+  if (new RegExp(`${NUM}(番地|番)`).test(s)) return 'block';
+  if (new RegExp(`${NUM}丁目`).test(s)) return 'chome';
+  return 'area';
+}
+/** 面積を確定させてよい粒度か。番まで解決できていることを求める */
+export const isPreciseAddress = (title: string): boolean => {
+  const lv = addressLevel(title);
+  return lv === 'building' || lv === 'block';
+};
+export const LEVEL_LABEL: Record<AddressLevel, string> = {
+  building: '建物（何号まで）',
+  block: '街区（何番まで）',
+  chome: '丁目まで',
+  area: '町・区まで',
+};
 
 /** 住所 → 緯度経度。国土地理院の住所検索を使う（キー不要） */
 export async function geocode(address: string): Promise<GeoHit | null> {
@@ -57,7 +95,9 @@ export async function geocode(address: string): Promise<GeoHit | null> {
   if (!Array.isArray(arr) || arr.length === 0) return null;
   const c = arr[0]?.geometry?.coordinates;
   if (!Array.isArray(c) || c.length < 2) return null;
-  return { lon: Number(c[0]), lat: Number(c[1]), title: String(arr[0]?.properties?.title || address) };
+  const title = String(arr[0]?.properties?.title || address);
+  const level = addressLevel(title);
+  return { lon: Number(c[0]), lat: Number(c[1]), title, level, precise: isPreciseAddress(title) };
 }
 
 /**
