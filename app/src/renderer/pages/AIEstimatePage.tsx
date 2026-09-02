@@ -568,9 +568,58 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 計算ができない（角の位置が回転に依存するため）。中心基準なら素直に書ける。
   const [aerialRect, setAerialRect] = useState<{ cx: number; cy: number; w: number; h: number; rot: number } | null>(null);
   const aerialDrag = useRef<any>(null);
-  // 写真を掴んで動かしている間のずらし量（表示px）。離したら中心を計算し直して取り直す
-  const [aerialPan, setAerialPan] = useState<{ dx: number; dy: number } | null>(null);
+  // 写真の表示位置（CSS px）。広めに読み込んだ画像の、どこを見せているか。
+  // ★離すたびに取り直すとカクつくので、読み込んだ範囲の中は通信なしで滑らかに動かす。
+  //   端に寄ったときだけ読み直す。
+  const [aerialOff, setAerialOff] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  // 表示倍率（画像1px を画面何pxで見せるか）。2.42 で「窓いっぱい＝約124m四方」になる。
+  // 倍率を変えるだけなら通信は要らないので、寄る・引くは何度やっても無料。
+  const [aerialZoom, setAerialZoom] = useState(2.42);
+  const [aerialGrabbing, setAerialGrabbing] = useState(false);
   const aerialPanRef = useRef<any>(null);
+  const aerialViewRef = useRef<HTMLDivElement | null>(null);
+  const AERIAL_VIEW = 620;   // 見せる窓の大きさ（CSS px）
+
+  // 画像が窓より大きいときは端が窓から離れないよう留め、小さいときは真ん中に置く
+  const clampOff = (o: { x: number; y: number }, world: number) => {
+    if (world <= AERIAL_VIEW) { const c = (AERIAL_VIEW - world) / 2; return { x: c, y: c }; }
+    const lo = AERIAL_VIEW - world;
+    return { x: Math.max(lo, Math.min(0, o.x)), y: Math.max(lo, Math.min(0, o.y)) };
+  };
+  // いま窓の中心に来ている画像座標
+  const aerialCenterPx = () => ({
+    x: (AERIAL_VIEW / 2 - aerialOff.x) / aerialZoom,
+    y: (AERIAL_VIEW / 2 - aerialOff.y) / aerialZoom,
+  });
+  // 倍率を変える。窓の中心（または指した点）がずれないように表示位置も直す
+  const zoomAerialTo = (z: number, atX?: number, atY?: number) => {
+    if (!aerial) return;
+    const nz = Math.max(0.5, Math.min(6, z));
+    const ax = atX ?? AERIAL_VIEW / 2, ay = atY ?? AERIAL_VIEW / 2;
+    const ix = (ax - aerialOff.x) / aerialZoom, iy = (ay - aerialOff.y) / aerialZoom;
+    setAerialZoom(nz);
+    setAerialOff(clampOff({ x: ax - ix * nz, y: ay - iy * nz }, aerial.sizePx * nz));
+  };
+
+  // 写真を取り直したら、その中心を窓の真ん中に置き直す
+  useEffect(() => {
+    if (!aerial?.sizePx) return;
+    const world = aerial.sizePx * aerialZoom;
+    setAerialOff(clampOff({ x: (AERIAL_VIEW - world) / 2, y: (AERIAL_VIEW - world) / 2 }, world));
+  }, [aerial]);
+
+  // ホイールで寄る・引く。ブラウザ既定の拡大とぶつからないよう passive:false で自前で受ける
+  useEffect(() => {
+    const el = aerialViewRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      zoomAerialTo(aerialZoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX - r.left, e.clientY - r.top);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [aerial, aerialZoom, aerialOff]);
   const [checkingArea, setCheckingArea] = useState(false);
   const [confirmArea, setConfirmArea] = useState('');
   const [learned, setLearned] = useState<{ calibration: number; samples: number } | null>(null);
@@ -761,45 +810,50 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   };
 
   // 写真を掴んで動かす（地図と同じ操作）。
-  // 押しっぱなしでずらし、離したところで「いま中心に来ている場所」を新しい中心として取り直す。
-  // ドラッグ中は画像をCSSでずらすだけなので、通信は離したとき1回きり。
+  //
+  // ★ドラッグ中も、離したあとも、読み込み済みの範囲の中なら通信しない。
+  //   以前は離すたびに写真を取り直していたので、そのつど読み込みが入って
+  //   カクッと飛んでいた。いまは広めに読んだ画像の中を滑らかに動かすだけ。
+  //   端まで来てさらに引っぱったときだけ、その先を継ぎ足しに行く。
   const startAerialPan = (ev: React.MouseEvent) => {
     if (!aerial || aerialLoading) return;
     ev.preventDefault();
-    const box = (ev.currentTarget as HTMLElement).closest('[data-aerial-box]') as HTMLElement;
-    if (!box) return;
-    const rect = box.getBoundingClientRect();
-    const scale = aerial.sizePx / rect.width;   // 表示px → 画像px
-    // ★移動量は ref に持つこと。
+    const world = aerial.sizePx * aerialZoom;
+    // ★移動量も現在位置も ref に持つこと。
     //   mousedown の時点で作った関数は、その後の setState を見られない（古い値のまま）。
-    //   state だけに入れると、離したときの処理で移動量が常に初期値になり、
-    //   見た目は動くのに取り直しが走らない＝離すと元に戻る。
-    aerialPanRef.current = { startX: ev.clientX, startY: ev.clientY, scale, moved: 0, dx: 0, dy: 0 };
+    //   state だけに入れると、離したときの処理が常に初期値を読んでしまう。
+    aerialPanRef.current = {
+      startX: ev.clientX, startY: ev.clientY, ox: aerialOff.x, oy: aerialOff.y,
+      moved: 0, over: 0, world,
+    };
+    setAerialGrabbing(true);
 
     const onMove = (e: MouseEvent) => {
       const p = aerialPanRef.current;
       if (!p) return;
       const dx = e.clientX - p.startX, dy = e.clientY - p.startY;
       p.moved = Math.hypot(dx, dy);
-      p.dx = dx; p.dy = dy;
-      setAerialPan({ dx, dy });
+      const want = { x: p.ox + dx, y: p.oy + dy };
+      const c = clampOff(want, p.world);
+      // 端で止まったあと、どれだけ余計に引っぱったか。継ぎ足すかの判断に使う
+      p.over = Math.hypot(want.x - c.x, want.y - c.y);
+      setAerialOff(c);
     };
     const onUp = async () => {
       const p = aerialPanRef.current;
       aerialPanRef.current = null;
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
-      setAerialPan(null);
-      // ほとんど動いていないならクリック扱い。取り直さない
-      if (!p || p.moved < 5) return;
-      // 画像を右へ dx ずらした＝視界は左へ動いた。いま中心にある画像座標を出す
-      const cx = aerial.sizePx / 2 - p.dx * p.scale;
-      const cy = aerial.sizePx / 2 - p.dy * p.scale;
+      setAerialGrabbing(false);
+      // 端まで来て、さらに強く引っぱったときだけ その先を読みに行く。
+      // 少し当たった程度で取り直すと、意図せず読み込みが走ってうるさい。
+      if (!p || p.over < 70) return;
+      const c = aerialCenterPx();
       setAerialLoading(true);
       try {
         const res = await (window as any).api.areaFromAddress({
           address: siteAddress.trim(), comment, fetchOnly: true, grid: aerial.grid,
-          viewLat: aerial.viewLat, viewLon: aerial.viewLon, panTo: { x: cx, y: cy },
+          viewLat: aerial.viewLat, viewLon: aerial.viewLon, panTo: { x: c.x, y: c.y },
         });
         setAerial(res);
         setAerialRect(null);
@@ -2446,8 +2500,41 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       </button>
                     ))}
                     <span style={{ color: '#64748b' }}>四方</span>
+                    {/* 倍率は読み込み済みの画像を拡大縮小するだけ。通信しないので何度でも押せる */}
+                    <span style={{ marginLeft: 10, color: '#64748b' }}>表示:</span>
+                    {[['－', 1 / 1.4], ['＋', 1.4]].map(([label, f]) => (
+                      <button key={label as string} onClick={() => zoomAerialTo(aerialZoom * (f as number))}
+                        style={{
+                          width: 26, padding: '3px 0', fontSize: 12, borderRadius: 4, cursor: 'pointer',
+                          border: '1px solid #cbd5e1', background: '#fff', fontWeight: 'bold',
+                        }}>{label as string}</button>
+                    ))}
+                    <button onClick={() => zoomAerialTo(AERIAL_VIEW / (aerial.sizePx || 256))}
+                      style={{
+                        padding: '3px 9px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
+                        border: '1px solid #cbd5e1', background: '#fff',
+                      }}>全体</button>
+                    <span style={{ color: '#94a3b8' }}>
+                      画面の幅 約{Math.round(AERIAL_VIEW / aerialZoom * (aerial.mPerPx || 0.5))}m
+                    </span>
                   </div>
-                  <div data-aerial-box style={{ position: 'relative', width: '100%', maxWidth: 640, marginBottom: 6, overflow: 'hidden', borderRadius: 4 }}>
+                  {/* 外側＝のぞき窓。ここからはみ出したぶんは隠す。
+                      内側＝写真の世界。画像も赤枠も同じ入れ物に入れて丸ごと動かすので、
+                      写真を動かしても目印が写真からずれない。 */}
+                  <div ref={aerialViewRef}
+                    style={{
+                      position: 'relative', width: '100%', maxWidth: AERIAL_VIEW, height: AERIAL_VIEW,
+                      marginBottom: 6, overflow: 'hidden', borderRadius: 4,
+                      border: '1px solid #93c5fd', background: '#0f172a',
+                      cursor: aerialLoading ? 'wait' : aerialGrabbing ? 'grabbing' : 'grab',
+                    }}>
+                    <div data-aerial-box
+                      style={{
+                        position: 'absolute', left: 0, top: 0,
+                        width: aerial.sizePx * aerialZoom, height: aerial.sizePx * aerialZoom,
+                        transform: `translate(${aerialOff.x}px, ${aerialOff.y}px)`,
+                        willChange: 'transform',
+                      }}>
                     {/* 押しっぱなしで動かす、ダブルクリックで決定。地図と同じ操作。
                         1クリックで測ってしまうと、見回そうとしただけで測定が走ってしまう。 */}
                     <img src={aerial.aerialImage} alt="航空写真"
@@ -2455,10 +2542,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       onDoubleClick={recenterAerialAt}
                       draggable={false}
                       style={{
-                        width: '100%', display: 'block', borderRadius: 4, border: '1px solid #93c5fd',
-                        cursor: aerialLoading ? 'wait' : aerialPan ? 'grabbing' : 'grab',
-                        transform: aerialPan ? `translate(${aerialPan.dx}px, ${aerialPan.dy}px)` : undefined,
-                        userSelect: 'none',
+                        width: '100%', height: '100%', display: 'block',
+                        userSelect: 'none', pointerEvents: 'auto',
                       }} />
                     {/* 住所の解決点＝青い十字。太く、白フチ付きで航空写真の上でも見えるように。
                         ★寄ったあと（step='result'）は出さない。寄った写真は選ばれた建物が中心なので、
@@ -2549,6 +2634,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         </div>
                       );
                     })()}
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: 14, fontSize: 11, color: '#475569', marginBottom: 6 }}>
                     {aerial.step === 'pick' && (
