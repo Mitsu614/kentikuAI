@@ -126,7 +126,8 @@ img{max-width:100%;display:block}
 .cmp tbody tr:hover{background:var(--gray50)}
 
 /* ===== 料金 ===== */
-.price-row{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;align-items:start}
+/* ★4枚目（スタンダード）が「i」で出てくるので固定3列にしないこと。固定だと折り返して1枚だけ次の行に落ちる */
+.price-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;align-items:start}
 .price{background:#fff;border-radius:20px;padding:36px 28px;border:1px solid #e5e7eb;text-align:center;transition:all 0.3s}
 .price.pop{border:2px solid var(--blue);box-shadow:0 12px 40px rgba(59,130,246,0.12);transform:scale(1.03)}
 .price-badge{display:inline-block;background:var(--blue);color:#fff;font-size:11px;font-weight:700;padding:4px 14px;border-radius:50px;margin-bottom:10px}
@@ -243,7 +244,7 @@ img{max-width:100%;display:block}
       </div>
       <div class="hero-trust">
         <div><strong>特許出願済</strong></div>
-        <div><strong>導入費用10万円</strong></div>
+        <div><strong>導入費用0円</strong></div>
         <div><strong>即日導入可</strong></div>
       </div>
     </div>
@@ -467,14 +468,15 @@ img{max-width:100%;display:block}
     <div class="sec-header">
       <div class="sec-tag">Pricing</div>
       <h2>料金プラン</h2>
-      <p style="font-size:15px;margin-bottom:8px;">年間契約で2ヶ月分お得。規模に合わせて選べるプラン。</p>
+      <p style="font-size:15px;margin-bottom:8px;">月額のみ。導入費用はいただきません。規模に合わせて選べるプラン。</p>
     </div>
     <div class="price-row">
+      <!-- ★既定では隠してある。価格を渋られたときだけ右下の「i」で出す（後出しの切り札） -->
       <div class="price" id="standard-plan" style="display:none">
         <h3>スタンダード</h3>
-        <div class="amt">1,200,000<span>円/年</span></div>
-        <div class="monthly">月あたり 100,000円（税抜）</div>
-        <div class="credit">AIクレジット: 月100単位</div>
+        <div class="amt">30,000<span>円/月（税抜）</span></div>
+        <div class="monthly">お支払い 33,000円/月（税込）／最低利用3ヶ月</div>
+        <div class="credit">AIストック: 月20単位</div>
         <ul>
           <li>AI見積（写真・テキスト）</li>
           <li>請求書・発注書PDF出力</li>
@@ -482,17 +484,34 @@ img{max-width:100%;display:block}
           <li>ビフォーアフター解析</li>
           <li>AI学習ループ</li>
           <li>予実管理</li>
-          <li>電話サポート</li>
+          <li>メールサポート</li>
         </ul>
-        <a href="https://buy.stripe.com/dRmaEYadJ3h95rP9MO24003" target="_blank" class="price-btn pb-green">申し込む</a>
+        <a href="https://buy.stripe.com/bJecN61Hd191g6t9MO24006" target="_blank" class="price-btn pb-green">申し込む</a>
+      </div>
+      <div class="price">
+        <h3>ベター</h3>
+        <div class="amt">70,000<span>円/月（税抜）</span></div>
+        <div class="monthly">お支払い 77,000円/月（税込）／最低利用3ヶ月</div>
+        <div class="credit">AIストック: 月50単位</div>
+        <ul>
+          <li>AI見積（写真・テキスト）</li>
+          <li>請求書・発注書PDF出力</li>
+          <li>帳票一括自動生成</li>
+          <li>ビフォーアフター解析</li>
+          <li>AI学習ループ</li>
+          <li>予実管理</li>
+          <li>メールサポート</li>
+        </ul>
+        <a href="https://buy.stripe.com/dRm00k0D9g3V4nLgbc24007" target="_blank" class="price-btn pb-green">申し込む</a>
       </div>
       <div class="price pop">
         <div class="price-badge">おすすめ</div>
         <h3>プロ</h3>
-        <div class="amt">3,000,000<span>円/年</span></div>
-        <div class="monthly">月あたり 250,000円（税抜）</div>
-        <div class="credit">AIクレジット: 月500単位</div>
+        <div class="amt">100,000<span>円/月（税抜）</span></div>
+        <div class="monthly">お支払い 110,000円/月（税込）／最低利用3ヶ月</div>
+        <div class="credit">AIストック: 月100単位</div>
         <ul>
+          <li><strong>住所から航空写真で面積を測定</strong></li>
           <li>AI見積（写真・テキスト）</li>
           <li>請求書・発注書PDF出力</li>
           <li>帳票一括自動生成</li>
@@ -500,17 +519,16 @@ img{max-width:100%;display:block}
           <li>AI学習ループ</li>
           <li>予実管理</li>
           <li>複数担当者対応</li>
-          <li>優先サポート</li>
-          <li>カスタム帳票</li>
-          <li>データエクスポート</li>
+          <li>優先サポート（メール・電話）</li>
+          <li>カスタム帳票・データエクスポート</li>
         </ul>
-        <a href="https://buy.stripe.com/bJe7sMfy36tl7zX0ce24005" target="_blank" class="price-btn pb-blue">申し込む</a>
+        <a href="https://buy.stripe.com/7sYcN60D9cRJdYl3oq24008" target="_blank" class="price-btn pb-blue">申し込む</a>
       </div>
       <div class="price">
         <h3>法人カスタム</h3>
-        <div class="amt">5,000,000<span>円〜/年</span></div>
+        <div class="amt" style="font-size:26px">個別お見積り</div>
         <div class="monthly">&nbsp;</div>
-        <div class="credit">AIクレジット: 個別設定</div>
+        <div class="credit">AIストック: 個別設定</div>
         <ul>
           <li>プロの全機能</li>
           <li>多店舗対応</li>
@@ -521,7 +539,8 @@ img{max-width:100%;display:block}
         <a href="#demo-booking" class="price-btn pb-outline">お問い合わせ</a>
       </div>
     </div>
-    <p class="price-note">※ 導入費用: 100,000円（税抜）｜ 追加クレジット: 50単位 5,500円〜 ｜ 未使用ストックは翌月繰越可（最大3ヶ月）</p>
+    <p class="price-note">※ 表示は税抜です。お支払いは消費税10%を加えた税込額となります ｜ 導入費用はいただきません ｜ 最低利用期間3ヶ月 ｜ 未使用ストックは翌月繰越可（最大3ヶ月）</p>
+    <p class="price-note">※ 住所からの航空写真による面積測定はプロプラン以上。新しい住所で写真を出すときに1回3単位を使います（写真を動かす・拡大縮小する・測る建物を選び直すのは無料）。</p>
   </div>
 </section>
 

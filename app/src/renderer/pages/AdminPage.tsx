@@ -64,10 +64,13 @@ const PLAN_OPTIONS = [
 ];
 
 const PLAN_LABEL: Record<string, string> = {
+  demo:       'デモ',
   standard:   'スタンダード',
+  better:     'ベター',
   pro:        'プロ',
   enterprise: 'エンタープライズ',
   pending:    '承認待ち',
+  suspended:  '停止中',
 };
 
 const STATUS_BADGE: Record<string, { label: string; bg: string; color: string }> = {
@@ -575,7 +578,7 @@ export default function AdminPage() {
                         </td>
                         <td style={styles.td}>
                           <span style={{ ...styles.badge(isPending ? '#fff3e0' : '#e8f5e9', isPending ? '#e65100' : '#2e7d32') }}>
-                            {r.plan === 'pending' ? '承認待ち' : r.plan === 'demo' ? 'デモ' : r.plan === 'standard' ? 'スタンダード' : r.plan === 'pro' ? 'プロ' : r.plan}
+                            {PLAN_LABEL[r.plan] || r.plan}
                           </span>
                         </td>
                         <td style={styles.td}>
@@ -629,6 +632,7 @@ export default function AdminPage() {
                               >
                                 <option value="demo">デモ</option>
                                 <option value="standard">スタンダード</option>
+                                <option value="better">ベター</option>
                                 <option value="pro">プロ</option>
                               </select>
                               <button
@@ -659,6 +663,7 @@ export default function AdminPage() {
                               >
                                 <option value="demo">デモ</option>
                                 <option value="standard">スタンダード</option>
+                                <option value="better">ベター</option>
                                 <option value="pro">プロ</option>
                               </select>
                               <button

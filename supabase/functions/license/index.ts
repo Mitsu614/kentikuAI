@@ -12,6 +12,19 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ADMIN_SECRET = Deno.env.get("ADMIN_SECRET") || "";
 
+// プランごとの既定のAI利用単位。アプリの PLANS（app/src/database/database.ts）と揃えること。
+// ★アプリの承認画面は credits を渡さずプラン名だけ送るので、ここが古いと
+//   手動で承認したお客様だけ単位が合わなくなる。
+//   2026-09-02の月額改定で demo30/pro200/その他50 から変更した。
+const DEFAULT_CREDITS: Record<string, number> = {
+  demo: 10,
+  trial: 10,
+  standard: 20,
+  better: 50,
+  pro: 100,
+  enterprise: 9999,
+};
+
 const H = {
 apikey: SERVICE_ROLE,
 Authorization: `Bearer ${SERVICE_ROLE}`,
@@ -305,7 +318,7 @@ try {
     const tid = encodeURIComponent(targets[0].id);
     if (sub === "approve") {
       const plan = String(body.plan || "standard");
-      const credits = Number(body.credits ?? (plan === "demo" ? 30 : plan === "pro" ? 200 : 50));
+      const credits = Number(body.credits ?? DEFAULT_CREDITS[plan] ?? 20);
       const patch: any = {
         plan, credits, max_credits: credits, active: true, blocked_message: null, updated_at: new Date().toISOString(),
       };
