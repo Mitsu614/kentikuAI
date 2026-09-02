@@ -564,7 +564,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // AIの読み取りを初期値にして、あとは人が動かす・大きさを変える。
   // 縮尺が確定しているので、人が合わせた四角の面積はそのまま実測に近い。
   // （AIに任せると同じ場所でも1.48倍ぶれる。人が輪郭を合わせるほうが確か）
-  const [aerialRect, setAerialRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  // 中心・幅・高さ・角度で持つ。左上基準だと、回転させたとき「反対側の角を固定して伸ばす」
+  // 計算ができない（角の位置が回転に依存するため）。中心基準なら素直に書ける。
+  const [aerialRect, setAerialRect] = useState<{ cx: number; cy: number; w: number; h: number; rot: number } | null>(null);
   const aerialDrag = useRef<any>(null);
   // 写真を掴んで動かしている間のずらし量（表示px）。離したら中心を計算し直して取り直す
   const [aerialPan, setAerialPan] = useState<{ dx: number; dy: number } | null>(null);
@@ -820,7 +822,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     if (!box) return;
     const rect = box.getBoundingClientRect();
     const scale = aerial.sizePx / rect.width;   // 表示px → 画像px
-    aerialDrag.current = { which, startX: ev.clientX, startY: ev.clientY, base: { ...aerialRect }, scale };
+    // 回転は「写真の左上からの絶対位置」で角度を出すので、枠の位置も控えておく
+    aerialDrag.current = {
+      which, startX: ev.clientX, startY: ev.clientY, base: { ...aerialRect }, scale,
+      boxLeft: rect.left, boxTop: rect.top,
+    };
 
     const onMove = (e: MouseEvent) => {
       const d = aerialDrag.current;
@@ -828,19 +834,47 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       const dx = (e.clientX - d.startX) * d.scale;
       const dy = (e.clientY - d.startY) * d.scale;
       const b = d.base;
+      const rad = (b.rot || 0) * Math.PI / 180;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
       let r = { ...b };
-      if (d.which === 'move') { r.x = b.x + dx; r.y = b.y + dy; }
-      else {
-        // 角をつまんで伸縮。反対側の角は動かさない
+
+      if (d.which === 'move') {
+        r.cx = b.cx + dx; r.cy = b.cy + dy;
+
+      } else if (d.which === 'rot') {
+        // 中心から見たマウスの向きが、そのまま角度になる。
+        // 90度ずらすのは、つまみを上（-y方向）に置いているため。
+        const mx = (e.clientX - d.boxLeft) * d.scale;
+        const my = (e.clientY - d.boxTop) * d.scale;
+        let deg = Math.atan2(my - b.cy, mx - b.cx) * 180 / Math.PI + 90;
+        // Shiftを押している間は15度刻み。建物は直角が多いので合わせやすくなる
+        if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+        r.rot = deg;
+
+      } else {
+        // 角をつまんで伸縮。回転していても「反対側の角」は動かさない。
+        // 画面のドラッグ量を四角のローカル座標へ回して考える。
+        const lx = dx * cos + dy * sin;
+        const ly = -dx * sin + dy * cos;
         const left = d.which.includes('w'), top = d.which.includes('n');
-        if (left) { r.x = b.x + dx; r.w = b.w - dx; } else { r.w = b.w + dx; }
-        if (top) { r.y = b.y + dy; r.h = b.h - dy; } else { r.h = b.h + dy; }
-        if (r.w < 6) { r.w = 6; r.x = left ? b.x + b.w - 6 : b.x; }
-        if (r.h < 6) { r.h = 6; r.y = top ? b.y + b.h - 6 : b.y; }
+        let w = left ? b.w - lx : b.w + lx;
+        let h = top ? b.h - ly : b.h + ly;
+        w = Math.max(6, w); h = Math.max(6, h);
+        // 固定したい角（つまんだ角の反対）をローカルで求め、そこが動かないよう中心を出し直す
+        const sx = left ? 1 : -1, sy = top ? 1 : -1;      // 反対側の角の向き
+        const fixLocalOld = { x: sx * b.w / 2, y: sy * b.h / 2 };
+        const fixWorld = {
+          x: b.cx + fixLocalOld.x * cos - fixLocalOld.y * sin,
+          y: b.cy + fixLocalOld.x * sin + fixLocalOld.y * cos,
+        };
+        const fixLocalNew = { x: sx * w / 2, y: sy * h / 2 };
+        r.w = w; r.h = h;
+        r.cx = fixWorld.x - (fixLocalNew.x * cos - fixLocalNew.y * sin);
+        r.cy = fixWorld.y - (fixLocalNew.x * sin + fixLocalNew.y * cos);
       }
-      // 画像からはみ出させない
-      r.x = Math.max(0, Math.min(r.x, aerial.sizePx - r.w));
-      r.y = Math.max(0, Math.min(r.y, aerial.sizePx - r.h));
+      // 中心が画像の外へ出ないようにする（回転すると角ははみ出しうるが、それは許容）
+      r.cx = Math.max(0, Math.min(r.cx, aerial.sizePx));
+      r.cy = Math.max(0, Math.min(r.cy, aerial.sizePx));
       setAerialRect(r);
     };
     const onUp = () => {
@@ -861,15 +895,47 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     return { wM, hM, plan: wM * hM, area: wM * hM * slope, slope };
   };
 
-  // ② 写真の上でクリックされた建物を測る
-  const measureAerialAt = async (ev: React.MouseEvent<HTMLImageElement>) => {
+  // ② ダブルクリックした場所へ移る。
+  //    ★AIは呼ばない。無料・即時・回数無制限。
+  //    どのみち四角は人が合わせるし、AIの読みは同じ場所でも1.48倍ぶれる。
+  //    毎回AIを呼ぶと1日30回の上限をすぐ使い切ってしまう。
+  const recenterAerialAt = async (ev: React.MouseEvent<HTMLImageElement>) => {
     if (!aerial || aerialLoading) return;
     const img = ev.currentTarget;
     const rect = img.getBoundingClientRect();
-    // 表示は縮小されているので、元画像のピクセルに直す
     const scale = (aerial.sizePx || 256) / rect.width;
     const x = Math.round((ev.clientX - rect.left) * scale);
     const y = Math.round((ev.clientY - rect.top) * scale);
+    // いまの四角の大きさと角度を覚えておく。
+    // 同じ区画の建物は向きも揃っていることが多いので、角度も引き継ぐと合わせ直しが減る
+    const keep = aerialRect ? { w: aerialRect.w, h: aerialRect.h } : null;
+    const keepRot = aerialRect?.rot ?? 0;
+    setAerialLoading(true);
+    setError('');
+    try {
+      const res = await (window as any).api.areaFromAddress({
+        address: siteAddress.trim(), comment, fetchOnly: true,
+        grid: 1,   // 測るときは寄る
+        viewLat: aerial.viewLat, viewLon: aerial.viewLon, panTo: { x, y },
+      });
+      setAerial({ ...res, slopeFactor: aerial.slopeFactor || 1 });
+      const size = res.sizePx || 256;
+      const w = keep ? keep.w : Math.min(size * 0.35, 12 / (res.mPerPx || 0.5));
+      const h = keep ? keep.h : w;
+      setAerialRect({ cx: size / 2, cy: size / 2, w, h, rot: keepRot });
+    } catch (e: any) {
+      setError((e?.message || '航空写真の取得に失敗しました').replace(/^ERROR: /, ''));
+    } finally {
+      setAerialLoading(false);
+    }
+  };
+
+  // 参考にAIへ測らせる（任意）。1日の上限を使うので、押したときだけ
+  const measureAerialAt = async () => {
+    if (!aerial || aerialLoading) return;
+    // いま画面の中心にある建物を測らせる
+    const x = Math.round((aerial.sizePx || 256) / 2);
+    const y = x;
     setAerialLoading(true);
     setError('');
     startBusy({ key: 'aerial-measure', title: '指定された建物を測っています', etaSec: AREA_SEC, sub: '確定した縮尺で輪郭を換算中' });
@@ -890,7 +956,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       // AIの読み取りを四角の初期値にする。あとは人が合わせる
       if (res?.widthM > 0 && res?.mPerPx > 0) {
         const w = res.widthM / res.mPerPx, h = res.lengthM / res.mPerPx;
-        setAerialRect({ x: res.targetPx.x - w / 2, y: res.targetPx.y - h / 2, w, h });
+        setAerialRect({ cx: res.targetPx.x, cy: res.targetPx.y, w, h, rot: aerialRect?.rot ?? 0 });
       } else {
         setAerialRect(null);
       }
@@ -2339,7 +2405,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               {/* 住所の解決点は建物の上に落ちないことが多い。人に選んでもらう。 */}
               {aerial.step === 'pick' && (
                 <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1e40af', background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: 4, padding: '8px 10px', marginBottom: 6 }}>
-                  👇 測りたい建物を<span style={{ textDecoration: 'underline' }}>ダブルクリック</span>してください
+                  👇 測りたい建物を<span style={{ textDecoration: 'underline' }}>ダブルクリック</span>してください（何度でも変えられます）
                   <div style={{ fontSize: 11, fontWeight: 'normal', color: '#1e3a8a', marginTop: 3, lineHeight: 1.7 }}>
                     写真は<strong>押しっぱなしで動かせます</strong>（上下左右）。目的の建物を画面に入れてから、ダブルクリックしてください。<br />
                     住所だけでは建物を特定できません（番地まで入れても街区の代表点が返るため）。
@@ -2370,7 +2436,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         1クリックで測ってしまうと、見回そうとしただけで測定が走ってしまう。 */}
                     <img src={aerial.aerialImage} alt="航空写真"
                       onMouseDown={startAerialPan}
-                      onDoubleClick={measureAerialAt}
+                      onDoubleClick={recenterAerialAt}
                       draggable={false}
                       style={{
                         width: '100%', display: 'block', borderRadius: 4, border: '1px solid #93c5fd',
@@ -2397,36 +2463,68 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         点の印だけだと「どの建物を、どこまで測ったのか」が分からない。
                         間口×桁行を実寸で描けば、別の建物を測っていないか・隣家まで
                         巻き込んでいないかが一目で分かる。 */}
-                    {aerial.step === 'result' && aerialRect && (() => {
+                    {aerialRect && (() => {
                       const a = aerialRectArea();
+                      const R = aerialRect;
                       const pc = (v: number) => `${v / aerial.sizePx * 100}%`;
                       const handle = (which: string, cx: string, cy: string, cur: string) => (
                         <div key={which} onMouseDown={(e) => startAerialDrag(e, which)}
                           style={{
                             position: 'absolute', left: cx, top: cy, width: 16, height: 16,
-                            marginLeft: -8, marginTop: -8, cursor: cur, zIndex: 2,
+                            marginLeft: -8, marginTop: -8, cursor: cur, zIndex: 3,
                             background: '#fff', border: '3px solid #dc2626', borderRadius: 3,
                             boxShadow: '0 1px 3px rgba(0,0,0,.5)',
                           }} />
                       );
                       return (
                         <div style={{
-                          position: 'absolute', left: pc(aerialRect.x), top: pc(aerialRect.y),
-                          width: pc(aerialRect.w), height: pc(aerialRect.h),
+                          position: 'absolute',
+                          left: pc(R.cx - R.w / 2), top: pc(R.cy - R.h / 2),
+                          width: pc(R.w), height: pc(R.h),
+                          transform: `rotate(${R.rot || 0}deg)`, transformOrigin: '50% 50%',
                           border: '3px solid #dc2626',
                           boxShadow: '0 0 0 1px #fff, inset 0 0 0 1px #fff',
                           background: 'rgba(220,38,38,.14)',
-                          cursor: aerialDrag.current ? 'grabbing' : 'grab',
+                          cursor: 'grab',
                         }}
                           onMouseDown={(e) => startAerialDrag(e, 'move')}>
+                          {/* 寸法と面積。四角と一緒に回ると読みにくいので、回転を打ち消す */}
                           <span style={{
-                            position: 'absolute', left: '50%', top: -22, transform: 'translateX(-50%)',
+                            position: 'absolute', left: '50%', top: -26,
+                            transform: `translateX(-50%) rotate(${-(R.rot || 0)}deg)`,
                             background: '#dc2626', color: '#fff', fontSize: 11, fontWeight: 'bold',
                             padding: '2px 7px', borderRadius: 3, whiteSpace: 'nowrap',
-                            boxShadow: '0 1px 3px rgba(0,0,0,.4)',
+                            boxShadow: '0 1px 3px rgba(0,0,0,.4)', pointerEvents: 'none',
                           }}>
                             {a ? `${a.wM.toFixed(1)}×${a.hM.toFixed(1)}m → ${a.area.toFixed(1)}㎡` : ''}
+                            {!!R.rot && ` / ${Math.round(((R.rot % 360) + 360) % 360)}°`}
                           </span>
+                          {/* 中心のつまみ。ここを持てば、角の伸縮と混ざらずに動かせる */}
+                          <div onMouseDown={(e) => startAerialDrag(e, 'move')}
+                            style={{
+                              position: 'absolute', left: '50%', top: '50%', width: 20, height: 20,
+                              marginLeft: -10, marginTop: -10, cursor: 'move', zIndex: 3,
+                              borderRadius: '50%', background: 'rgba(255,255,255,.9)',
+                              border: '3px solid #dc2626', boxShadow: '0 1px 3px rgba(0,0,0,.5)',
+                            }}>
+                            <div style={{
+                              position: 'absolute', left: '50%', top: '50%', width: 4, height: 4,
+                              marginLeft: -2, marginTop: -2, background: '#dc2626', borderRadius: '50%',
+                            }} />
+                          </div>
+                          {/* 回転のつまみ。上に飛び出させる */}
+                          <div onMouseDown={(e) => startAerialDrag(e, 'rot')}
+                            style={{
+                              position: 'absolute', left: '50%', top: -34, width: 20, height: 20,
+                              marginLeft: -10, cursor: 'crosshair', zIndex: 3,
+                              borderRadius: '50%', background: '#2563eb',
+                              border: '3px solid #fff', boxShadow: '0 1px 4px rgba(0,0,0,.6)',
+                            }} title="ドラッグで回転（Shiftを押しながらで15度ずつ）" />
+                          <div style={{
+                            position: 'absolute', left: '50%', top: -24, width: 2, height: 24,
+                            marginLeft: -1, background: '#2563eb', pointerEvents: 'none',
+                            boxShadow: '0 0 0 1px rgba(255,255,255,.7)',
+                          }} />
                           {handle('nw', '0%', '0%', 'nwse-resize')}
                           {handle('ne', '100%', '0%', 'nesw-resize')}
                           {handle('sw', '0%', '100%', 'nesw-resize')}
@@ -2451,22 +2549,31 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   </div>
                 </>
               )}
-              {aerial.step === 'result' && (
+              {aerialRect && (
                 <div style={{ fontSize: 12, color: '#166534', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 4, padding: '7px 9px', marginBottom: 6, lineHeight: 1.7 }}>
                   <strong>赤い四角を、建物の輪郭に合わせてください。</strong><br />
                   中をドラッグすると動きます。<strong>四隅の白い四角</strong>をつまむと大きさを変えられます。
                   合わせた四角の面積がそのまま使えます（縮尺は確定しているので、合わせた分だけ正確になります）。<br />
                   <span style={{ color: '#475569' }}>
-                    違う建物なら、そこを<strong>ダブルクリック</strong>すると測り直します。写真は押しっぱなしで動かせます。
+                    別の建物へは<strong>ダブルクリック</strong>で何度でも移れます（AIを使わないので無料・無制限）。
+                    写真は押しっぱなしで動かせます。
                   </span>
                 </div>
               )}
-              {aerial.step === 'result' && (
+              <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                 <button className="btn" onClick={() => refetchAerial(aerial.searchGrid || 3)} disabled={aerialLoading}
-                  style={{ fontSize: 12, padding: '6px 12px', marginBottom: 8 }}>
-                  ← 別の建物を選び直す
+                  style={{ fontSize: 12, padding: '6px 12px' }}>
+                  ← 広い範囲に戻す
                 </button>
-              )}
+                {/* AIの推定は任意。1日の上限を使うので、押したときだけ走らせる */}
+                {aerialRect && (
+                  <button className="btn" onClick={measureAerialAt} disabled={aerialLoading}
+                    style={{ fontSize: 12, padding: '6px 12px' }}
+                    title="画面中央の建物の大きさをAIに推定させます。1日の面積確認の回数を1回使います">
+                    🤖 中央の建物の大きさをAIに推定させる
+                  </button>
+                )}
+              </div>
               {!aerial.isEstimate && (
                 <div style={{ fontSize: 13, color: '#1e3a8a', marginBottom: 4 }}>
                   間口 {aerial.widthM}m × 桁行 {aerial.lengthM}m（{aerial.shape}）
@@ -2496,7 +2603,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               {/* 測れたら、そのまま見積へ。
                   航空写真は縮尺が確定しているので、写真の目測と違い実測値と同じ扱いにしてよい。
                   面積は編集できるようにしておく（勾配や下屋の有無で調整したいことがある）。 */}
-              {aerial.step === 'result' && aerialRect && (
+              {aerialRect && (
                 <div style={{ borderTop: '1px solid #93c5fd', marginTop: 10, paddingTop: 10 }}>
                   {(() => {
                     const a = aerialRectArea();
