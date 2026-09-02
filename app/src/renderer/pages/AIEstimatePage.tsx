@@ -551,7 +551,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     widthM?: number; lengthM?: number; slopeFactor?: number;
     rawM2?: number; calibration?: number; calibrationSamples?: number;
     target?: string; targetLabel?: string; unvalidated?: boolean;
+    mode?: string; modeSource?: string; modeWarning?: string;
+    readValues?: string[]; rangeBasis?: string;
   } | null>(null);
+  // 読み取りモード。auto=AIに判定させる / drawing=図面として記載値を読む / photo=写真として概算
+  const [readMode, setReadMode] = useState<'auto' | 'drawing' | 'photo'>('auto');
   const [checkingArea, setCheckingArea] = useState(false);
   const [confirmArea, setConfirmArea] = useState('');
   const [learned, setLearned] = useState<{ calibration: number; samples: number } | null>(null);
@@ -685,7 +689,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setLearned(null);
     startBusy({ key: 'area-check', title: '写真から面積を読み取っています', etaSec: AREA_SEC, sub: '読み取った面積は次の画面で修正できます' });
     try {
-      const res = await (window as any).api.estimateArea({ imageBase64: mainImage, comment });
+      const res = await (window as any).api.estimateArea({ imageBase64: mainImage, comment, mode: readMode });
       setAreaCheck(res);
       setConfirmArea(res?.quantityM2 ? String(Math.round(res.quantityM2)) : '');
       endBusy();
@@ -1928,10 +1932,24 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           {areaCheck && (
             <div className="card" style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #93c5fd', padding: '14px 16px' }}>
               <div style={{ fontSize: 13, fontWeight: 'bold', color: areaCheck.isEstimate ? '#b45309' : '#1e40af', marginBottom: 6 }}>
-                {areaCheck.isEstimate
-                  ? `📐 推測値です。${areaCheck.targetLabel || '対象'}の全体が写っていないため確定できません`
-                  : `📐 写真から読み取った${areaCheck.targetLabel || ''}の面積です。合っていますか？（信頼度: ${areaCheck.confidence}）`}
+                {areaCheck.mode === 'drawing' && !areaCheck.isEstimate
+                  ? `📐 図面に書かれた数値から計算した${areaCheck.targetLabel || ''}の面積です。合っていますか？`
+                  : areaCheck.isEstimate
+                    ? `📐 写真からの概算です。${areaCheck.targetLabel || '対象'}の面積はまだ確定していません`
+                    : `📐 読み取った${areaCheck.targetLabel || ''}の面積です。合っていますか？（信頼度: ${areaCheck.confidence}）`}
               </div>
+              {/* 図面モードで実際に読めた記載値。何を根拠にしたかを隠さない */}
+              {areaCheck.mode === 'drawing' && !!(areaCheck.readValues || []).length && (
+                <div style={{ fontSize: 12, color: '#065f46', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 4, padding: '6px 8px', marginBottom: 8 }}>
+                  <div style={{ fontWeight: 'bold', marginBottom: 2 }}>図面から読み取った値</div>
+                  {(areaCheck.readValues || []).map((v, i) => <div key={i}>・{v}</div>)}
+                </div>
+              )}
+              {!!areaCheck.modeWarning && (
+                <div style={{ fontSize: 12, color: '#7f1d1d', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 4, padding: '6px 8px', marginBottom: 8 }}>
+                  {areaCheck.modeWarning}
+                </div>
+              )}
               {areaCheck.unvalidated && (
                 <div style={{ fontSize: 12, color: '#78350f', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, padding: '6px 8px', marginBottom: 8 }}>
                   {areaCheck.targetLabel}の推定は検証データが少ないため、屋根より精度が落ちます。実測に直してください。
@@ -1942,7 +1960,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 <div style={{ fontSize: 12, color: '#78350f', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, padding: '6px 8px', marginBottom: 8 }}>
                   {!!areaCheck.rangeMinM2 && !!areaCheck.rangeMaxM2 && (
                     <div style={{ marginBottom: 4 }}>
-                      想定レンジ: <strong>{areaCheck.rangeMinM2}〜{areaCheck.rangeMaxM2}㎡</strong>（推測が入るぶん幅があります）
+                      想定レンジ: <strong>{areaCheck.rangeMinM2}〜{areaCheck.rangeMaxM2}㎡</strong>
+                      <span style={{ opacity: .8 }}>（写真だけでは寸法の基準が無いため、この幅は縮みません{areaCheck.rangeBasis ? `／${areaCheck.rangeBasis}` : ''}）</span>
                     </div>
                   )}
                   {areaCheck.needsDimension && (
@@ -2017,6 +2036,36 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
                 選んだテナントの実績・業種プロンプトで見積もります。作成した物件・見積ログは管理者テナントに保存され、
                 そのテナントの学習データは書き換わりません。
+              </div>
+            </div>
+          )}
+
+          {/* 読み取りモード。実測を入れてあるときは面積確認そのものを飛ばすので出さない。
+              写真からの面積は、どれだけ良く写っていても概算にしかならない（実測11件で平均誤差35%、
+              屋根全体が写っていても差が無かった）。図面に数値が書いてあるならそちらを読むほうが速くて正確。 */}
+          {!area.trim() && (imageData || afterImage || beforeImage) && (
+            <div style={{ marginTop: 12, padding: '10px 12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 'bold', color: '#334155', marginBottom: 6 }}>この画像の読み取り方</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {([
+                  ['auto', 'おまかせ', '図面か写真かをAIが判定します'],
+                  ['drawing', '図面として読む', '寸法値・面積表をそのまま読んで計算します'],
+                  ['photo', '写真として概算', '幅つきの目安を出します'],
+                ] as const).map(([v, label, hint]) => (
+                  <label key={v} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 6, cursor: 'pointer',
+                    padding: '7px 11px', borderRadius: 6, fontSize: 13, lineHeight: 1.5,
+                    border: readMode === v ? '1.5px solid #2563eb' : '1.5px solid #cbd5e1',
+                    background: readMode === v ? '#eff6ff' : '#fff',
+                  }}>
+                    <input type="radio" name="readMode" checked={readMode === v}
+                      onChange={() => setReadMode(v)} style={{ marginTop: 3 }} />
+                    <span>
+                      <strong>{label}</strong>
+                      <span style={{ display: 'block', fontSize: 11, color: '#64748b' }}>{hint}</span>
+                    </span>
+                  </label>
+                ))}
               </div>
             </div>
           )}

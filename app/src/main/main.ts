@@ -7678,7 +7678,8 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
 
   ipcMain.handle('ai:areaCalibration', (_e, target?: string) => getAreaCalibration(getEstimateTenant(), target));
 
-  ipcMain.handle('ai:estimateArea', async (_e, data: { imageBase64?: string; comment?: string }) => {
+  // mode: 'auto'（既定・AIの判定に従う） / 'drawing'（図面として読む） / 'photo'（写真として概算）
+  ipcMain.handle('ai:estimateArea', async (_e, data: { imageBase64?: string; comment?: string; mode?: string }) => {
     const image = shrinkImageForAI(data?.imageBase64);
     if (!image) throw new Error('ERROR: 面積の事前確認には写真が必要です。');
 
@@ -7734,6 +7735,24 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
 
 target が "unknown" のときも寸法を答えず、askUserFor に必要な情報を書け。
 
+━━━━━━ ★最初に判定しろ: これは図面か、写真か★ ━━━━━━
+寸法線・寸法値・室面積表・縮尺表記(S=1/100 等)・通り芯記号(X0,Y1 等)のどれか1つでも読めるなら**図面**だ。
+
+## 図面のとき（sourceKind = "drawing"）
+**目測で測るな。書かれている数値を読んで計算しろ。** これが最も正確な経路だ。
+- readValues に「どこに何と書いてあったか」をそのまま列挙しろ。読めた根拠が残らない数字は使うな。
+  例: ["面積表 1階床面積 1,209.35㎡", "寸法線 X0〜X8 = 21,840", "縮尺 S=1/200"]
+- 面積そのものが書いてあれば statedAreaM2 に入れろ（最優先で使われる）。
+- 面積は無いが寸法線が読めるなら、widthM / lengthM に**読んだ値**を入れ、basis に
+  「どの寸法線をどう足したか」を書け。縮尺から物差しで測るのではなく、**記載値を読む**こと。
+- 図面上に数値が一切書かれていない（意匠パースや寸法の無い平面図）なら、
+  sourceKind = "photo" に落として、下の写真の手順に従え。
+
+## 写真のとき（sourceKind = "photo"）
+下の target 別の手順に従え。**写真からの面積は、どれだけ良く写っていても概算にしかならない。**
+実測11件のベンチで、屋根全体が写っているケースの平均誤差は35%、写っていないケースも35%で
+**差が無かった**（2026-08-27 計測）。「全体が写っているから確定」と判断するな。
+
 ━━━━━━ target = "roof" のとき ━━━━━━
 ${AREA_SCALE_GUIDE}
 
@@ -7748,6 +7767,8 @@ ${FLOOR_SCALE_GUIDE}
 以下のJSONのみを返してください（説明文は不要）:
 {
   "target": "roof" / "wall" / "floor" / "unknown",
+  "sourceKind": "drawing" か "photo"。寸法値・面積表・縮尺・通り芯のどれかが読めれば "drawing",
+  "readValues": sourceKind が "drawing" のとき、読み取った記載値を文字列の配列で（例: ["面積表 1階 1,209.35㎡","寸法線 X0〜X8 = 21,840"]）。写真なら [],
   "coversWholeRoof": true か false。対象の輪郭が写真に収まっているか（roof=四隅と棟から軒 / wall=建物の間口と高さ / floor=部屋の四隅）,
   "missingPart": coversWholeRoof が false のとき、何が写っていないか。true なら null,
   "askUserFor": coversWholeRoof が false のとき、1つ聞けば面積が確定する情報。true なら null,
@@ -7842,29 +7863,70 @@ ${FLOOR_SCALE_GUIDE}
     //   この図面はL字型で、外接の長方形(52m×40m=2,080㎡)で計算すると中庭・テラスまで床に入り、
     //   図面に明記された1,209.35㎡に対して1.57倍に膨らんでいた。
     //   較正係数は「AIが寸法を目測したときの癖」を直すためのもので、書いてある数字に当てるものではない。
+    // ── モード判定 ──────────────────────────────────────────────
+    // 'drawing' … 図面。書かれている数値を読んだ経路。目測の癖を直すための較正は掛けない。
+    //             （読んだ452㎡に×1.5して678㎡にしたら、直すどころか壊す）
+    // 'photo'   … 写真。目測なので較正を掛け、幅を付け、確定させない。
+    // 利用者が明示的に選んだモードはAIの判定より優先する（画面で「図面として読む」を選べる）。
+    const askedMode = ['drawing', 'photo'].includes(String(data?.mode || '')) ? String(data!.mode) : 'auto';
+    const aiSaysDrawing = String(result.sourceKind || '') === 'drawing';
+    const readValues: string[] = Array.isArray(result.readValues) ? result.readValues.filter(Boolean) : [];
+    // 図面と名乗っていても、読めた値が1つも無いなら実質は目測。写真として扱う。
+    const isDrawing = askedMode === 'drawing'
+      ? true
+      : askedMode === 'photo' ? false
+      : (aiSaysDrawing && (readValues.length > 0 || Number(result.statedAreaM2) > 0));
+    result.mode = isDrawing ? 'drawing' : 'photo';
+    result.modeSource = askedMode === 'auto' ? 'auto' : 'user';
+    result.readValues = readValues;
+    if (askedMode === 'drawing' && !aiSaysDrawing && readValues.length === 0) {
+      // 「図面として読む」を選ばれたのに、寸法も面積も読めていない
+      result.modeWarning = '図面として読もうとしましたが、寸法値・面積表・縮尺のいずれも読み取れませんでした。数値の書かれた図面を渡すか、写真として概算してください。';
+    }
+
     const stated = Number(result.statedAreaM2) || 0;
     const useStated = stated > 0;
     if (useStated) {
       raw = stated;
       result.calibrationSkipped = true;
     }
+    // 図面から読んだ値には較正を掛けない（目測の癖を直すための係数なので、読み値には有害）
+    const applyCal = !useStated && !isDrawing;
     if (raw > 0) {
-      const q = useStated ? raw : raw * AREA_CALIBRATION;
+      const q = applyCal ? raw * AREA_CALIBRATION : raw;
       result.quantityM2 = Math.round(q * 10) / 10;
       result.rawM2 = Math.round(raw * 10) / 10;
       if (target === 'roof') {
-        const cal2 = useStated ? 1 : AREA_CALIBRATION;
+        const cal2 = applyCal ? AREA_CALIBRATION : 1;
         result.planAreaM2 = Math.round(w * l * cal2 * 10) / 10;
         result.roofAreaM2 = Math.round(w * l * cal2 * slope * 10) / 10;
       } else if (target === 'floor') {
         result.planAreaM2 = result.quantityM2;
       }
       result.assumedArea = `${LABEL[target]} ${Math.round(result.quantityM2)}㎡`;
-      // ベンチの最悪誤差1.81倍・1.5倍以内10/11 を踏まえたレンジ（屋根で測った値。外壁・内装は未検証）
-      result.rangeMinM2 = Math.round(result.quantityM2 * 0.75);
-      result.rangeMaxM2 = Math.round(result.quantityM2 * 1.35);
+
+      // ── 幅 ──────────────────────────────────────────────────
+      // 旧: ×0.75〜×1.35。だがハーネスで測ると、この幅が正解を捕まえたのは
+      //     本番モデル(opus-4-8+thinking)で 6/11 = 55%、3モデル31件では 39% しか無かった。
+      //     プロンプトに「必ずこの間に収まる」と書いてあるのに6割外れる幅は、幅として機能していない。
+      // 新: ×0.65〜×1.80 で 10/11 = 91%。外れるのは推定が正解の3倍になった1件だけ。
+      //     （2026-08-27 計測 / app/tools/harness-roof/ds_truth.*.harness.json）
+      // 屋根以外は正解データが1件も無いので、さらに広げる。狭い幅を出すほうが有害。
+      if (isDrawing) {
+        // 図面から読んだ値。幅は付けない（読めた数字が根拠なので、そこに目測の散らばりを持ち込まない）
+        result.rangeMinM2 = null;
+        result.rangeMaxM2 = null;
+      } else if (target === 'roof') {
+        result.rangeMinM2 = Math.round(result.quantityM2 * 0.65);
+        result.rangeMaxM2 = Math.round(result.quantityM2 * 1.80);
+        result.rangeBasis = '屋根の実測11件で91%を捕まえる幅';
+      } else {
+        result.rangeMinM2 = Math.round(result.quantityM2 * 0.55);
+        result.rangeMaxM2 = Math.round(result.quantityM2 * 2.20);
+        result.rangeBasis = '外壁・内装は正解データが無いため、屋根より広くとった暫定値';
+      }
     }
-    result.calibration = useStated ? 1 : AREA_CALIBRATION;
+    result.calibration = applyCal ? AREA_CALIBRATION : 1;
     result.calibrationSamples = cal.samples;
 
     // 対象が判別できないなら、数字を作らない。根拠のない面積を出すほうが有害
@@ -7878,20 +7940,48 @@ ${FLOOR_SCALE_GUIDE}
       result.unvalidated = true;
     }
 
-    // 屋根の輪郭が写っていない写真では面積は確定しない。それでも数字が無いと先へ進めないので、
-    // 推測値とレンジは返す。旧実装は根拠なく600/1200㎡だけを返し、正解410㎡に対して1200㎡
-    // （3倍）を出していた。推測であることと、何を聞けば確定するかを必ず添える。
-    if (result.coversWholeRoof === false) {
+    // ── 確定させるかどうかは「写真の写り」ではなく「数値の出どころ」で決める ──
+    //
+    // 旧実装は coversWholeRoof===false のときだけ推測扱いにしていた。つまり
+    // 「屋根全体が写っていれば確定値」としていたが、ハーネスで測るとこれは成り立たない。
+    //   全体が写っている 8件 … 平均誤差 34.9%
+    //   写っていない   23件 … 平均誤差 34.7%
+    // 差が無い（2026-08-27 計測・3モデル31件）。全体が写っていても、写真には寸法の
+    // 基準が無いので精度は上がらない。実際、全体が写っている8件の誤差は 3%〜62% とばらけた。
+    //
+    // よって写真は、どれだけ良く写っていても概算とする。確定するのは
+    //   実測値 > 図面から読んだ値（statedAreaM2 / readValues） の2つだけ。
+    if (isDrawing) {
+      // 図面。読めた値があるなら確定してよい。無いなら上の modeWarning が立っている。
+      if (!useStated && readValues.length === 0) {
+        result.isEstimate = true;
+        result.confidence = '低';
+        result.needsDimension = result.askUserFor || '図面に書かれた寸法または面積';
+      }
+    } else {
       result.isEstimate = true;
-      result.confidence = '低';
-      result.needsDimension = result.askUserFor || '建物の間口(m)と桁行(m)';
+      if (result.coversWholeRoof === false) {
+        result.confidence = '低';
+        result.needsDimension = result.askUserFor || '建物の間口(m)と桁行(m)';
+      } else {
+        // 全体が写っていても確定はしない。ただし「何を聞けば確定するか」は必ず添える。
+        if (!result.confidence || result.confidence === '高') result.confidence = '中';
+        result.needsDimension = result.needsDimension || result.askUserFor
+          || (target === 'roof' ? '建物の間口(m)と桁行(m)、または1階の床面積'
+            : target === 'wall' ? '建物の間口(m)・桁行(m)と軒高(m)'
+            : '部屋の間口(m)と奥行(m)、または床面積');
+      }
     }
 
     runSql(
       'INSERT INTO area_precheck_log (tenant_id, day, count) VALUES (?, ?, 1) ON CONFLICT(tenant_id, day) DO UPDATE SET count = count + 1',
       [tid, today]
     );
-    console.log(`[面積事前確認] tenant ${tid}: ${result.isEstimate ? '【推測】' : ''}${result.assumedArea}${result.isEstimate ? ` (${result.rangeMinM2}〜${result.rangeMaxM2}㎡ / 要: ${result.needsDimension})` : ''} (${result.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
+    console.log(`[面積事前確認] tenant ${tid}: [${result.mode === 'drawing' ? '図面' : '写真'}${result.modeSource === 'user' ? '/指定' : ''}] ` +
+      `${result.isEstimate ? '【概算】' : '【確定】'}${result.assumedArea}` +
+      `${result.rangeMinM2 ? ` (${result.rangeMinM2}〜${result.rangeMaxM2}㎡)` : ''}` +
+      `${result.mode === 'drawing' && readValues.length ? ` 読取:${readValues.length}件` : ''}` +
+      `${result.needsDimension ? ` / 要: ${result.needsDimension}` : ''} (${result.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
     return result;
   });
   // スマホ経路のエラーはファイルに記録（原因追跡用）
