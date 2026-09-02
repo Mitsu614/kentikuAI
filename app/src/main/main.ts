@@ -7704,6 +7704,9 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
   ipcMain.handle('ai:areaFromAddress', async (_e, data: {
     address?: string; comment?: string; expectAreaM2?: number;
     fetchOnly?: boolean; target?: { x: number; y: number }; grid?: number;
+    // 画面がいま表示している写真の中心。寄ったあとは住所の位置と違うので、
+    // クリック座標はこれを基準に換算しないと別の場所を指してしまう。
+    viewLat?: number; viewLon?: number;
   }) => {
     const address = String(data?.address || '').trim();
     if (!address) throw new Error('ERROR: 住所を入力してください。');
@@ -7723,7 +7726,17 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     // 画面から「広く／せまく」を切り替えられる。奇数枚のみ（中心を作るため）
     const asked = Number(data?.grid);
     const grid = [1, 3, 5, 7].includes(asked) ? asked : view.grid;
-    const air = await fetchAerial(hit.lat, hit.lon, view.z, grid);
+    // ★写真の中心は「住所の位置」とは限らない。
+    //   一度クリックして寄ったあとは、画面はその建物を中心にした写真を出している。
+    //   そこで次のクリックを住所基準で換算すると、まったく別の場所を指す
+    //   （実際、何度クリックしても同じ建物が選ばれ続けた）。
+    //   画面が見ている中心を受け取り、それを基準にする。
+    const vLat = Number(data?.viewLat);
+    const vLon = Number(data?.viewLon);
+    const hasView = isFinite(vLat) && isFinite(vLon) && Math.abs(vLat) <= 90 && Math.abs(vLon) <= 180;
+    const centerLat = hasView ? vLat : hit.lat;
+    const centerLon = hasView ? vLon : hit.lon;
+    const air = await fetchAerial(centerLat, centerLon, view.z, grid);
 
     // ── まず写真だけ返す ──────────────────────────────────
     // 日本の住所は号まで入れても**街区の代表点**が返ることが多く、建物の上に落ちない。
@@ -7738,6 +7751,8 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
         address: hit.title, addressLevel: hit.level, addressLevelLabel: LEVEL_LABEL[hit.level],
         addressPrecise: hit.precise,
         lat: hit.lat, lon: hit.lon, zoom: air.z,
+        // 次のクリックをこの写真の座標系で換算するために返す
+        viewLat: centerLat, viewLon: centerLon,
         mPerPx: Math.round(air.mPerPx * 10000) / 10000,
         viewWidthM: Math.round(air.widthM),
         sizePx: air.sizePx, grid,
@@ -7762,9 +7777,12 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     let px = Math.round(air.sizePx / 2);
     let py = Math.round(air.sizePx / 2);
     let recentered = false;
+    let shotLat = centerLat, shotLon = centerLon;
     if (hasTarget) {
-      const p = pixelToLonLat(hit.lat, hit.lon, air.z, air.sizePx, tx, ty);
-      shot = await fetchAerial(p.lat, p.lon, view.z, 1);   // 寄る
+      // いま画面が見ている写真の中心を基準に、クリック点の緯度経度を出す
+      const p = pixelToLonLat(centerLat, centerLon, air.z, air.sizePx, tx, ty);
+      shot = await fetchAerial(p.lat, p.lon, view.z, 1);   // その建物に寄る
+      shotLat = p.lat; shotLon = p.lon;
       px = Math.round(shot.sizePx / 2);
       py = Math.round(shot.sizePx / 2);
       recentered = true;
@@ -7871,6 +7889,8 @@ ${hasTarget
       targetLabel: '屋根',
       address: hit.title,
       lat: hit.lat, lon: hit.lon, zoom: shot.z,
+      // 表示するのは寄った写真。次のクリックはこの中心を基準に換算する
+      viewLat: shotLat, viewLon: shotLon,
       mPerPx: Math.round(shot.mPerPx * 10000) / 10000,
       viewWidthM: Math.round(shot.widthM),
       attribution: AERIAL_ATTRIBUTION,
@@ -7891,18 +7911,23 @@ ${hasTarget
     //   「161.7㎡」と細かい数字が出ると精密に見えてしまうため、幅を併記する。
     if (ok) {
       const spanPx = Math.min(w, l) / shot.mPerPx;                // 短辺のピクセル数
-      const dw = shot.mPerPx, dl = shot.mPerPx;                    // ±1px
-      const lo = Math.max(0, (w - dw)) * Math.max(0, (l - dl)) * slope;
-      const hi = (w + dw) * (l + dl) * slope;
+      // ★幅は「理論上のピクセル精度」ではなく「実際にぶれた量」で出す。
+      //   最初は±1px（≒±3.6%）で出していたが、同じ座標・同じ写真で3回測ったら
+      //   131.8 / 161.7 / 194.7㎡ と **1.48倍** ぶれた（2026-09-02 実測）。
+      //   AIが屋根のどこを境目と見るかが毎回変わるためで、画素の精度とは別の要因。
+      //   ±1pxの幅を出すのは、持っていない精度を主張することになる。
+      //   写真経路で「幅0.75〜1.35が正解を39%しか含まない」のと同じ失敗を繰り返さない。
+      const area = plan * slope;
       out.spanPx = Math.round(spanPx);
-      out.rangeMinM2 = Math.round(lo * 10) / 10;
-      out.rangeMaxM2 = Math.round(hi * 10) / 10;
-      out.rangeBasis = `輪郭の読み取りが±1ピクセル（${shot.mPerPx.toFixed(2)}m）ぶれた場合`;
+      out.rangeMinM2 = Math.round(area * 0.80 * 10) / 10;
+      out.rangeMaxM2 = Math.round(area * 1.25 * 10) / 10;
+      out.rangeBasis = '同じ場所を3回測ったときの実際の振れ幅（1.48倍）から';
       // 30px を切ると、1pxの読み違いが面積の7%以上に効く
       if (spanPx < 30) {
         out.resolutionNote = `この建物は短辺が約${Math.round(spanPx)}ピクセルしかありません（1px=${shot.mPerPx.toFixed(2)}m）。`
           + `公開されている航空写真はこれが最高解像度なので、これ以上細かくは読めません。`
-          + `より確かな数字が要るときは、間口と桁行を実測してください。`;
+          + `同じ場所を測り直しても2〜3割動くことがあります。`
+          + `見積の数量として使うなら、間口と桁行を実測して直してください。`;
       }
     }
     out.assumedArea = ok ? `屋根 ${Math.round(out.quantityM2)}㎡` : '';
@@ -7912,10 +7937,19 @@ ${hasTarget
         : '番地まで入れた住所（例: ○○町1-2-3）';
     }
 
+    // 座標がどう解釈されたかを必ず残す。
+    // 「クリックしても同じ建物が選ばれる」を追ったとき、ログに座標が無くて
+    // 原因の切り分けができなかった。見えないものは直せない。
+    const moved = recentered
+      ? Math.hypot((shotLon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180),
+                   (shotLat - centerLat) * 110540)
+      : 0;
     console.log(`[航空写真] tenant ${tid}: ${hit.title}${hit.precise ? '' : '【番地なし】'} ` +
       `${recentered ? '[寄って測定]' : '[中心を推定]'} z=${shot.z} 1px=${shot.mPerPx.toFixed(3)}m ` +
       `${plan > 0 ? `${w}×${l}m → ${Math.round(plan * slope * 10) / 10}㎡` : '建物を特定できず'}` +
       `${ok ? '' : '（確定させず）'} (${out.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
+    console.log(`           基準:${hasView ? '画面の中心' : '住所'} ${centerLat.toFixed(6)},${centerLon.toFixed(6)} ` +
+      `${hasTarget ? `クリック(${Math.round(tx)},${Math.round(ty)})/${air.sizePx}px → 中心を ${moved.toFixed(1)}m 移動 → ${shotLat.toFixed(6)},${shotLon.toFixed(6)}` : 'クリック指定なし'}`);
     return out;
   });
 

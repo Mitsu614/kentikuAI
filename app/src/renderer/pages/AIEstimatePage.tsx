@@ -762,12 +762,19 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setError('');
     startBusy({ key: 'aerial-measure', title: '指定された建物を測っています', etaSec: AREA_SEC, sub: '確定した縮尺で輪郭を換算中' });
     try {
-      // 表示中と同じ範囲で測らないと、座標がずれて別の建物を測ってしまう
+      // ★いま見ている写真の中心を必ず渡す。
+      //   渡さないと住所の位置を基準に換算され、寄ったあとのクリックが
+      //   まったく別の場所を指す（何度押しても同じ建物が選ばれ続けた）。
       const res = await (window as any).api.areaFromAddress({
-        address: siteAddress.trim(), comment, target: { x, y }, grid: aerial.grid,
+        address: siteAddress.trim(), comment, target: { x, y },
+        grid: aerial.grid, viewLat: aerial.viewLat, viewLon: aerial.viewLon,
       });
       endBusy();
-      setAerial({ ...res, clickedPx: { x, y } });
+      // ★クリック座標をそのまま持ち越さないこと。
+      //   測るときは「その建物を中心に据えて撮り直す」ので、返ってくる写真は別物
+      //   （768px の広い写真 → 256px の寄った写真）。元の座標で印を描くと位置が合わない。
+      //   測った位置は res.targetPx（＝撮り直した写真の中心）を使う。
+      setAerial(res);
       if (res?.quantityM2 > 0) setConfirmArea(String(Math.round(res.quantityM2)));
     } catch (e: any) {
       endBusy({ ok: false });
@@ -2244,8 +2251,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         width: '100%', display: 'block', borderRadius: 4, border: '1px solid #93c5fd',
                         cursor: aerialLoading ? 'wait' : 'crosshair',
                       }} />
-                    {/* 住所の解決点＝青い十字。太く、白フチ付きで航空写真の上でも見えるように */}
-                    {!!aerial.centerPx && (() => {
+                    {/* 住所の解決点＝青い十字。太く、白フチ付きで航空写真の上でも見えるように。
+                        ★寄ったあと（step='result'）は出さない。寄った写真は選ばれた建物が中心なので、
+                          青い十字と赤丸が同じ位置に重なって、どちらも見分けられなくなる。
+                          「住所の位置」は建物を探す段階でしか意味がない。 */}
+                    {aerial.step === 'pick' && !!aerial.centerPx && (() => {
                       const p = `${aerial.centerPx / aerial.sizePx * 100}%`;
                       const line = (horiz: boolean) => ({
                         position: 'absolute' as const, left: p, top: p, pointerEvents: 'none' as const,
@@ -2256,12 +2266,14 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       });
                       return <><div style={line(true)} /><div style={line(false)} /></>;
                     })()}
-                    {/* 測った建物＝赤い印。写真に埋もれないよう、大きく・太く・白フチ・中心に点 */}
-                    {!!aerial.clickedPx && (
+                    {/* 測った建物＝赤い印。写真に埋もれないよう、大きく・太く・白フチ・中心に点。
+                        座標は必ず targetPx（返ってきた写真の座標系）を使う。
+                        クリック座標は撮り直し前のものなので、そのまま使うと位置がずれる。 */}
+                    {!!aerial.targetPx && (
                       <div style={{
                         position: 'absolute',
-                        left: `${aerial.clickedPx.x / aerial.sizePx * 100}%`,
-                        top: `${aerial.clickedPx.y / aerial.sizePx * 100}%`,
+                        left: `${aerial.targetPx.x / aerial.sizePx * 100}%`,
+                        top: `${aerial.targetPx.y / aerial.sizePx * 100}%`,
                         width: 46, height: 46, marginLeft: -23, marginTop: -23, pointerEvents: 'none',
                         border: '5px solid #dc2626', borderRadius: '50%',
                         boxShadow: '0 0 0 2px #fff, inset 0 0 0 2px #fff, 0 0 8px rgba(0,0,0,.6)',
@@ -2275,14 +2287,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     )}
                   </div>
                   <div style={{ display: 'flex', gap: 14, fontSize: 11, color: '#475569', marginBottom: 6 }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <span style={{ display: 'inline-block', width: 14, height: 4, background: '#2563eb', border: '1px solid #fff', boxShadow: '0 0 2px rgba(0,0,0,.4)' }} />
-                      住所の位置（ずれていて構いません）
-                    </span>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: '50%', border: '3px solid #dc2626', boxShadow: '0 0 0 1px #fff' }} />
-                      測った建物
-                    </span>
+                    {aerial.step === 'pick' && (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ display: 'inline-block', width: 14, height: 4, background: '#2563eb', border: '1px solid #fff', boxShadow: '0 0 2px rgba(0,0,0,.4)' }} />
+                        住所の位置（ずれていて構いません）
+                      </span>
+                    )}
+                    {aerial.step === 'result' && (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ display: 'inline-block', width: 12, height: 12, borderRadius: '50%', border: '3px solid #dc2626', boxShadow: '0 0 0 1px #fff' }} />
+                        測った建物（写真の中心に据えてあります）
+                      </span>
+                    )}
                   </div>
                 </>
               )}
@@ -2351,8 +2367,14 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       🤖 この面積で見積もる
                     </button>
                   </div>
-                  <div style={{ fontSize: 11, color: '#475569', marginTop: 5 }}>
-                    勾配や下屋の分を足し引きしたいときは、数字を直してから押してください。
+                  <div style={{ fontSize: 11, color: '#475569', marginTop: 5, lineHeight: 1.7 }}>
+                    勾配や下屋の分を足し引きしたいときは、数字を直してから押してください。<br />
+                    {/* 実測: 同じ場所を3回測ると131.8/161.7/194.7㎡（1.48倍）動いた。
+                        写真の目測(3.7倍)よりは良いが、実測値の代わりにはならない。 */}
+                    <span style={{ color: '#b45309' }}>
+                      航空写真は縮尺が確定しているので写真の目測より確かですが、屋根の境目の読み方で
+                      <strong>2〜3割動くことがあります</strong>。金額が大きい案件では、間口と桁行を実測して直してください。
+                    </span>
                   </div>
                 </div>
               )}
