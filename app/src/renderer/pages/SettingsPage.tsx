@@ -598,9 +598,15 @@ function PlanManagement() {
     setShowLog(true);
   };
 
+  // ★決済リンクは 2026-09-02 の月額改定でいったん外してある。
+  //   ここに残っていたリンクは旧価格（年120万・年300万）のもので、
+  //   3万円のプランを申し込んだお客様に120万円を請求してしまう。
+  //   Stripeの管理画面で新価格（月3万／7万／10万）のリンクを作り直し、
+  //   ここに貼り直すこと。空のうちは申込フォーム（メール通知）で受ける。
   const STRIPE_LINKS: Record<string, string> = {
-    standard: 'https://buy.stripe.com/dRmaEYadJ3h95rP9MO24003',
-    pro: 'https://buy.stripe.com/bJe7sMfy36tl7zX0ce24005',
+    // standard: '',   // 月30,000円
+    // better:   '',   // 月70,000円
+    // pro:      '',   // 月100,000円
   };
 
   const requestPlan = async (planKey: string) => {
@@ -611,10 +617,9 @@ function PlanManagement() {
 
     const link = STRIPE_LINKS[planKey];
     if (link) {
-      window.open(link, '_blank');
+      window.open(link, '_blank');   // 本体側で既定のブラウザに流す
     } else {
-      // 法人カスタム等: 申請送信済み
-      alert('お問い合わせを送信しました。担当者からご連絡いたします。');
+      alert('お申し込みを受け付けました。担当者より折り返しご連絡し、お支払い方法をご案内いたします。');
     }
   };
 

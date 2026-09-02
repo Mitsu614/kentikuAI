@@ -1449,13 +1449,27 @@ function createWindow() {
   });
 
   // CSP（Content Security Policy）設定
+  // ★自分のファイル(file://)にだけ掛けること。
+  //   ここは session 全体のフックなので、外部サイトの応答にも同じヘッダを
+  //   上書きしてしまう。script-src 'self' を外部ページに被せると、その
+  //   ページのスクリプトが全部止まって真っ白になる
+  //   （実際に Stripe の決済画面が白紙になった）。
   mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    if (!String(details.url || '').startsWith('file://')) return callback({});
     callback({
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': ["default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://api.qrserver.com; connect-src 'self'"],
       },
     });
+  });
+
+  // 外部リンクはアプリ内に窓を作らず、既定のブラウザで開く。
+  // 決済や本人確認はブラウザ側でないと、保存済みカードや3Dセキュアが使えない。
+  // アプリ内に任意のページを開かせない、という意味でも安全側。
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
   });
 
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
