@@ -7699,7 +7699,12 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
   // 地理院タイルは**縮尺が確定している**ので「1px = 0.49m」とこちらから渡せる。
   // AIの仕事は輪郭を読むことだけになり、いちばん外れやすい工程が消える。
   // 較正係数も掛けない（目測の癖を直す係数なので、確定スケールには不要）。
-  ipcMain.handle('ai:areaFromAddress', async (_e, data: { address?: string; comment?: string; expectAreaM2?: number }) => {
+  // fetchOnly … 航空写真を取ってくるだけ（AIを呼ばない＝無料）。まず見せて建物を選んでもらう
+  // target   … 画像内のピクセル座標。ここにある建物を測る
+  ipcMain.handle('ai:areaFromAddress', async (_e, data: {
+    address?: string; comment?: string; expectAreaM2?: number;
+    fetchOnly?: boolean; target?: { x: number; y: number };
+  }) => {
     const address = String(data?.address || '').trim();
     if (!address) throw new Error('ERROR: 住所を入力してください。');
 
@@ -7717,6 +7722,36 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     const view = pickView(hit.lat, Number(data?.expectAreaM2) || 0);
     const air = await fetchAerial(hit.lat, hit.lon, view.z, view.grid);
 
+    // ── まず写真だけ返す ──────────────────────────────────
+    // 日本の住所は号まで入れても**街区の代表点**が返ることが多く、建物の上に落ちない。
+    // 実際「都島本通五丁目８番１８号」の解決点は道路上で、AIは中心に近い別の建物を
+    // 測っていた（2026-09-02）。密集地では隣家との区別が付かない。
+    // → 建物の特定を住所に頼るのをやめ、利用者にクリックしてもらう。
+    //   人が得意なこと（自分の建物を見分ける）と機械が得意なこと（確定スケールで測る）を分ける。
+    // この段階では AI を呼ばないので費用もかからない。
+    if (data?.fetchOnly) {
+      return {
+        mode: 'aerial', step: 'pick',
+        address: hit.title, addressLevel: hit.level, addressLevelLabel: LEVEL_LABEL[hit.level],
+        addressPrecise: hit.precise,
+        lat: hit.lat, lon: hit.lon, zoom: air.z,
+        mPerPx: Math.round(air.mPerPx * 10000) / 10000,
+        viewWidthM: Math.round(air.widthM),
+        sizePx: air.sizePx,
+        centerPx: Math.round(air.sizePx / 2),
+        attribution: AERIAL_ATTRIBUTION,
+        aerialImage: `data:image/jpeg;base64,${air.dataUrl}`,
+        tilesMissing: air.missing,
+      };
+    }
+
+    // ── 対象の建物を指定して測る ──────────────────────────
+    const tx = Number(data?.target?.x);
+    const ty = Number(data?.target?.y);
+    const hasTarget = isFinite(tx) && isFinite(ty) && tx >= 0 && ty >= 0 && tx < air.sizePx && ty < air.sizePx;
+    const px = hasTarget ? Math.round(tx) : Math.round(air.sizePx / 2);
+    const py = hasTarget ? Math.round(ty) : Math.round(air.sizePx / 2);
+
     const config = loadApiConfig();
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。設定画面からAPIキーを入力してください。');
     const Anthropic = require('@anthropic-ai/sdk');
@@ -7732,18 +7767,24 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
           { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: air.dataUrl } },
           {
             type: 'text',
-            text: `${data?.comment ? `依頼内容: ${data.comment}\n\n` : ''}これは「${hit.title}」を中心とした真上からの航空写真です。
+            text: `${data?.comment ? `依頼内容: ${data.comment}\n\n` : ''}これは「${hit.title}」の付近を真上から撮った航空写真です。
 
 ## ★この写真の縮尺は確定している★
 **1ピクセル = ${air.mPerPx.toFixed(4)} m**（画像は ${air.sizePx}×${air.sizePx}px ＝ 一辺 ${air.widthM.toFixed(0)} m の範囲）
-中心（${Math.round(air.sizePx / 2)}, ${Math.round(air.sizePx / 2)} px の位置）が指定された住所だ。
 
 **スケールを推測するな。上の値をそのまま使え。**
 屋根材の働き幅・車・人など、写真の中から物差しを探す必要はない。
 その推測こそが誤差の原因なので、やってはいけない。
 
+## ★測る建物は指定されている★
+**画像の (${px}, ${py}) ピクセルの位置にある建物**を測れ。左上が (0, 0)、右下が (${air.sizePx - 1}, ${air.sizePx - 1}) だ。
+${hasTarget
+  ? 'この座標は利用者が「この建物だ」と指した点だ。**別の建物を選ぶな。**\nもし指された点が道路や空地の上でも、そこに最も近い建物を測れ。'
+  : '座標の指定が無いので画像の中心を使っている。中心が道路や空地なら、最も近い建物を測れ。'}
+
 ## やること
-1. 中心にある建物を特定する。隣家と間違えるな。中心から最も近い、まとまった屋根だ。
+1. 指定された座標にある建物の輪郭を追う。**隣の建物と繋げるな。** 屋根の切れ目・棟の向き・
+   壁の影で境目を見分けろ。密集地では隣家と屋根が接して見えることがある。
 2. その建物の**水平投影**の外形を読み、間口(m)と桁行(m)をピクセルから換算する。
    例: 屋根が横 62px なら 62 × ${air.mPerPx.toFixed(4)} = ${(62 * air.mPerPx).toFixed(1)} m
 3. L字・コの字など長方形でないときは、長方形に分けて合計し、basis に内訳を書け。
@@ -7751,8 +7792,8 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
 ## 気をつけること
 - 航空写真は**水平投影**なので、勾配のぶんは含まれない。slopeFactor で別途返せ。
 - 木や電線で隠れている部分は、建物の対称性から補え。補ったことを basis に書け。
-- 中心の建物が判別できない（更地・雲・解像度不足）なら widthM = 0 とし、
-  askUserFor に「建物の間口(m)と桁行(m)」と書け。**当てずっぽうを返すな。**
+- 指定された位置の建物が判別できない（更地・雲・解像度不足・隣家と区別が付かない）なら
+  widthM = 0 とし、askUserFor に何が必要かを書け。**当てずっぽうを返すな。**
 
 以下のJSONのみを返してください（説明文は不要）:
 {
@@ -7783,19 +7824,24 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
 
     runSql('INSERT INTO area_precheck_log (tenant_id, day, count) VALUES (?, ?, 1) ON CONFLICT(tenant_id, day) DO UPDATE SET count = count + 1', [tid, today]);
 
-    // ★番地まで無いと区・町の中心点が返り、まったく別の建物を測ってしまう。
-    //   実際に「大阪府大阪市都島区」で試したとき、区の中心にあった建物を1349㎡と読んだ。
-    //   数字は出るので、言われないと気づけない。確定させず、必ず知らせる。
-    const ok = r.found !== false && plan > 0 && hit.precise;
+    // 確定してよいのは「利用者が建物を指した」ときだけ。
+    // 住所だけに頼ると、号まで入れても街区の代表点が返って別の建物を測る
+    // （実測: 都島本通五丁目８番１８号 の解決点は道路上だった）。
+    // 指定が無い＝中心を当て推量で使っている状態なので、確定させない。
+    const ok = r.found !== false && plan > 0 && hasTarget;
     const out: any = {
       mode: 'aerial',
+      step: 'result',
+      targetPx: { x: px, y: py },
+      targetPicked: hasTarget,
       addressPrecise: hit.precise,
       addressLevel: hit.level,
       addressLevelLabel: LEVEL_LABEL[hit.level],
+      // 住所の粒度は「その建物が写野に入っているか」の目安。建物の特定はクリックで行う。
       addressWarning: hit.precise ? null
         : hit.level === 'chome'
-          ? `「${hit.title}」の中心を写しています。丁目は数百m四方あるので、写した範囲（${Math.round(air.widthM)}m四方）に目的の建物が入っているとは限りません。**何番まで**入れてください（例: ${hit.title}2番3号／${hit.title.replace(/[一二三四五六七八九十]+丁目$/, '')}1-2-3）。`
-          : `「${hit.title}」までしか特定できませんでした。ここは地域の中心で、目的の建物とは無関係の場所です。**何丁目何番何号まで**入れてください（例: ○○町1-2-3）。`,
+          ? `「${hit.title}」の中心を写しています。丁目は数百m四方あるので、目的の建物が写野（${Math.round(air.widthM)}m四方）に入っていないかもしれません。入っていなければ**何番まで**入れて取り直してください。`
+          : `「${hit.title}」までしか特定できませんでした。ここは地域の中心なので、目的の建物はおそらく写っていません。**何丁目何番何号まで**入れて取り直してください（例: ○○町1-2-3）。`,
       // 縮尺が確定しているので較正は掛けない。目測の癖を直す係数はここでは不要
       calibration: 1,
       target: 'roof',
@@ -7816,6 +7862,26 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
       planAreaM2: ok ? Math.round(plan * 10) / 10 : 0,
       quantityM2: ok ? Math.round(plan * slope * 10) / 10 : 0,
     };
+    // ★解像度の限界を数字で伝える。
+    //   地理院タイルは z=18 が上限で 1px≈0.49m。戸建て(間口12m)だと24pxしかない。
+    //   輪郭の読み取りは±1px程度ぶれるので、小さい建物ほど面積の誤差が効く。
+    //   「161.7㎡」と細かい数字が出ると精密に見えてしまうため、幅を併記する。
+    if (ok) {
+      const spanPx = Math.min(w, l) / air.mPerPx;                 // 短辺のピクセル数
+      const dw = air.mPerPx, dl = air.mPerPx;                      // ±1px
+      const lo = Math.max(0, (w - dw)) * Math.max(0, (l - dl)) * slope;
+      const hi = (w + dw) * (l + dl) * slope;
+      out.spanPx = Math.round(spanPx);
+      out.rangeMinM2 = Math.round(lo * 10) / 10;
+      out.rangeMaxM2 = Math.round(hi * 10) / 10;
+      out.rangeBasis = `輪郭の読み取りが±1ピクセル（${air.mPerPx.toFixed(2)}m）ぶれた場合`;
+      // 30px を切ると、1pxの読み違いが面積の7%以上に効く
+      if (spanPx < 30) {
+        out.resolutionNote = `この建物は短辺が約${Math.round(spanPx)}ピクセルしかありません（1px=${air.mPerPx.toFixed(2)}m）。`
+          + `公開されている航空写真はこれが最高解像度なので、これ以上細かくは読めません。`
+          + `より確かな数字が要るときは、間口と桁行を実測してください。`;
+      }
+    }
     out.assumedArea = ok ? `屋根 ${Math.round(out.quantityM2)}㎡` : '';
     if (!ok) {
       out.needsDimension = hit.precise

@@ -710,20 +710,50 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 住所から航空写真を引いて面積を出す。
   // 写真の目測はスケールの推定で外れる（実測33回で平均誤差46%・同じ写真で3.7倍違う答え）。
   // 地理院タイルは縮尺が確定しているので、その工程がまるごと消える。
+  // ① 写真を出すだけ。AIを呼ばないので費用はかからない。
+  //    住所は号まで入れても街区の代表点が返ることが多く、建物の上に落ちない
+  //    （実測: 都島本通五丁目８番１８号 の解決点は道路上だった）。
+  //    だから建物の特定は住所に任せず、利用者に選んでもらう。
   const runAerial = async () => {
     const addr = siteAddress.trim();
     if (!addr) { setError('住所を入力してください'); return; }
     setAerialLoading(true);
     setError('');
-    startBusy({ key: 'aerial', title: '航空写真から面積を読み取っています', etaSec: AREA_SEC, sub: '住所を検索し、真上からの写真を取得中' });
+    startBusy({ key: 'aerial', title: '航空写真を取得しています', etaSec: 8, sub: '住所を検索し、真上からの写真を取得中' });
     try {
-      const res = await (window as any).api.areaFromAddress({ address: addr, comment });
+      const res = await (window as any).api.areaFromAddress({ address: addr, comment, fetchOnly: true });
       endBusy();
       setAerial(res);
-      if (res?.quantityM2 > 0) setConfirmArea(String(Math.round(res.quantityM2)));
     } catch (e: any) {
       endBusy({ ok: false });
       setError((e?.message || '航空写真の取得に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
+    } finally {
+      setAerialLoading(false);
+    }
+  };
+
+  // ② 写真の上でクリックされた建物を測る
+  const measureAerialAt = async (ev: React.MouseEvent<HTMLImageElement>) => {
+    if (!aerial || aerialLoading) return;
+    const img = ev.currentTarget;
+    const rect = img.getBoundingClientRect();
+    // 表示は縮小されているので、元画像のピクセルに直す
+    const scale = (aerial.sizePx || 256) / rect.width;
+    const x = Math.round((ev.clientX - rect.left) * scale);
+    const y = Math.round((ev.clientY - rect.top) * scale);
+    setAerialLoading(true);
+    setError('');
+    startBusy({ key: 'aerial-measure', title: '指定された建物を測っています', etaSec: AREA_SEC, sub: '確定した縮尺で輪郭を換算中' });
+    try {
+      const res = await (window as any).api.areaFromAddress({
+        address: siteAddress.trim(), comment, target: { x, y },
+      });
+      endBusy();
+      setAerial({ ...res, clickedPx: { x, y } });
+      if (res?.quantityM2 > 0) setConfirmArea(String(Math.round(res.quantityM2)));
+    } catch (e: any) {
+      endBusy({ ok: false });
+      setError((e?.message || '測定に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
     } finally {
       setAerialLoading(false);
     }
@@ -2142,10 +2172,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           {/* 航空写真の結果 */}
           {aerial && (
             <div className="card" style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #93c5fd', padding: '14px 16px' }}>
-              <div style={{ fontSize: 13, fontWeight: 'bold', color: aerial.isEstimate ? '#b45309' : '#1e40af', marginBottom: 6 }}>
-                {aerial.isEstimate
-                  ? `🛰 中心の建物を特定できませんでした`
-                  : `🛰 航空写真から読み取った屋根の面積です。合っていますか？（信頼度: ${aerial.confidence}）`}
+              <div style={{ fontSize: 13, fontWeight: 'bold', color: aerial.step === 'pick' ? '#1e40af' : aerial.isEstimate ? '#b45309' : '#1e40af', marginBottom: 6 }}>
+                {aerial.step === 'pick'
+                  ? '🛰 航空写真を取得しました'
+                  : aerial.isEstimate
+                    ? '🛰 指定された建物を測れませんでした'
+                    : `🛰 航空写真から読み取った屋根の面積です。合っていますか？（信頼度: ${aerial.confidence}）`}
               </div>
               <div style={{ fontSize: 12, color: '#1e3a8a', marginBottom: 6 }}>
                 {aerial.address}
@@ -2160,15 +2192,63 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   {aerial.addressWarning.split('**').map((s: string, i: number) => i % 2 ? <strong key={i}>{s}</strong> : s)}
                 </div>
               )}
+              {/* 住所の解決点は建物の上に落ちないことが多い。人に選んでもらう。 */}
+              {aerial.step === 'pick' && (
+                <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1e40af', background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: 4, padding: '8px 10px', marginBottom: 6 }}>
+                  👇 写真の上で、<span style={{ textDecoration: 'underline' }}>測りたい建物をクリック</span>してください
+                  <div style={{ fontSize: 11, fontWeight: 'normal', color: '#1e3a8a', marginTop: 3 }}>
+                    住所だけでは建物を特定できません（番地まで入れても街区の代表点が返るため）。
+                    青い十字が住所の位置です。ずれていても問題ありません。
+                  </div>
+                </div>
+              )}
               {!!aerial.aerialImage && (
-                <img src={aerial.aerialImage} alt="航空写真"
-                  style={{ width: '100%', maxWidth: 420, borderRadius: 4, border: '1px solid #93c5fd', display: 'block', marginBottom: 6 }} />
+                <div style={{ position: 'relative', width: '100%', maxWidth: 420, marginBottom: 6 }}>
+                  <img src={aerial.aerialImage} alt="航空写真" onClick={measureAerialAt}
+                    style={{
+                      width: '100%', display: 'block', borderRadius: 4, border: '1px solid #93c5fd',
+                      cursor: aerialLoading ? 'wait' : 'crosshair',
+                    }} />
+                  {/* 住所の解決点（青） */}
+                  {!!aerial.centerPx && (
+                    <div style={{
+                      position: 'absolute', left: `${aerial.centerPx / aerial.sizePx * 100}%`, top: `${aerial.centerPx / aerial.sizePx * 100}%`,
+                      width: 18, height: 18, marginLeft: -9, marginTop: -9, pointerEvents: 'none',
+                      border: '2px solid #2563eb', borderRadius: '50%', boxShadow: '0 0 0 1px #fff, inset 0 0 0 1px #fff',
+                    }} />
+                  )}
+                  {/* 選ばれた建物（赤） */}
+                  {!!aerial.clickedPx && (
+                    <div style={{
+                      position: 'absolute', left: `${aerial.clickedPx.x / aerial.sizePx * 100}%`, top: `${aerial.clickedPx.y / aerial.sizePx * 100}%`,
+                      width: 22, height: 22, marginLeft: -11, marginTop: -11, pointerEvents: 'none',
+                      border: '3px solid #dc2626', borderRadius: '50%', boxShadow: '0 0 0 1px #fff, inset 0 0 0 1px #fff',
+                    }} />
+                  )}
+                </div>
+              )}
+              {aerial.step === 'result' && (
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+                  赤い丸が測った建物です。違っていたら、正しい建物をもう一度クリックしてください。
+                </div>
               )}
               {!aerial.isEstimate && (
                 <div style={{ fontSize: 13, color: '#1e3a8a', marginBottom: 4 }}>
                   間口 {aerial.widthM}m × 桁行 {aerial.lengthM}m（{aerial.shape}）
                   {aerial.slopeFactor > 1 && ` × 勾配${aerial.slopeFactor}`}
                   　→ <strong>{aerial.quantityM2}㎡</strong>
+                  {!!aerial.rangeMinM2 && (
+                    <span style={{ color: '#475569' }}>　（{aerial.rangeMinM2}〜{aerial.rangeMaxM2}㎡）</span>
+                  )}
+                </div>
+              )}
+              {!!aerial.rangeBasis && (
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>幅の根拠: {aerial.rangeBasis}</div>
+              )}
+              {/* 小さい建物は画素数が足りない。細かい数字が出ると精密に見えるので、限界を明示する */}
+              {!!aerial.resolutionNote && (
+                <div style={{ fontSize: 12, color: '#78350f', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, padding: '6px 8px', margin: '6px 0', lineHeight: 1.7 }}>
+                  {aerial.resolutionNote}
                 </div>
               )}
               {!!aerial.pixelReading && <div style={{ fontSize: 12, color: '#475569' }}>換算: {aerial.pixelReading}</div>}
