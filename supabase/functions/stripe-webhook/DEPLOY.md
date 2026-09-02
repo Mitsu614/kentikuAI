@@ -38,10 +38,10 @@ supabase functions deploy stripe-webhook --no-verify-jwt
 
 https://dashboard.stripe.com/acct_1ThIETLC2RqljG35/webhooks → 「エンドポイントを追加」
 
-**URL**（`<project-ref>` はSupabaseのプロジェクト参照ID）
+**URL**（そのまま貼れます）
 
 ```
-https://<project-ref>.supabase.co/functions/v1/stripe-webhook
+https://slhgkedzlormaovwpadi.supabase.co/functions/v1/stripe-webhook
 ```
 
 **選ぶイベントは次の4つだけです。**
