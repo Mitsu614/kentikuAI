@@ -7745,14 +7745,17 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     if (!address) throw new Error('ERROR: 住所を入力してください。');
 
     const tid = getCurrentTenant();
+    // 管理者はすべて素通し。プラン・単位・1日の上限のいずれも当てない。
+    // 動作確認やお客様への実演で自分が引っかかると仕事にならない。
+    const admin = isAdminTenant();
     // ★画面側でも隠しているが、本体でも必ず止めること。
     //   画面の出し分けだけだと、開発者ツールから直接呼ばれたときに通ってしまう。
     //   （写真からの測定 ai:estimateArea は全プランのまま。ここは住所版だけ）
-    if (!AERIAL_PLANS.includes(getTenantPlan().plan)) throw new Error(AERIAL_DENY);
+    if (!admin && !AERIAL_PLANS.includes(getTenantPlan().plan)) throw new Error(AERIAL_DENY);
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
     try { runSql('CREATE TABLE IF NOT EXISTS area_precheck_log (tenant_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (tenant_id, day))', []); } catch (_) {}
     const used = queryOne('SELECT count FROM area_precheck_log WHERE tenant_id = ? AND day = ?', [tid, today])?.count || 0;
-    if (used >= AREA_PRECHECK_DAILY_LIMIT) throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力してください。');
+    if (!admin && used >= AREA_PRECHECK_DAILY_LIMIT) throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力してください。');
 
     const hit = await geocode(address);
     if (!hit) throw new Error('ERROR: その住所が見つかりませんでした。番地まで入れるか、近くの住所でお試しください。');
@@ -7763,7 +7766,7 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     //   そこで課金すると地図を見回すだけでストックが溶ける。
     //   住所が見つかったあとに引くこと（見つからない住所で減らさない）。
     const isNewSite = !data?.panTo && !isFinite(Number(data?.viewLat));
-    if (isNewSite) {
+    if (!admin && isNewSite) {
       const aerialCost = CREDIT_COSTS['航空写真測定'] ?? 3;
       const paid = useCredits(aerialCost, '航空写真測定');
       if (!paid.success) {
@@ -8047,8 +8050,8 @@ ${hasTarget
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
     try { runSql('CREATE TABLE IF NOT EXISTS area_precheck_log (tenant_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (tenant_id, day))', []); } catch (_) {}
     const used = queryOne('SELECT count FROM area_precheck_log WHERE tenant_id = ? AND day = ?', [tid, today])?.count || 0;
-    if (used >= AREA_PRECHECK_DAILY_LIMIT) {
-      throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力して見積もりを作成してください。');
+    if (!isAdminTenant() && used >= AREA_PRECHECK_DAILY_LIMIT) {
+      throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力して見積もりを作成してください。');   // 管理者は下の条件で除外済み
     }
 
     const config = loadApiConfig();

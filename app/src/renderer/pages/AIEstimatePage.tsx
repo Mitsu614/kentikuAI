@@ -606,7 +606,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 隠してしまうと「そんな機能があると知らないまま」になり売れないので、
   // 鍵付きで見せて、何ができる機能なのかを書く。
   const [myPlan, setMyPlan] = useState<string>('');
-  const aerialAllowed = !myPlan || ['pro', 'enterprise', 'demo'].includes(myPlan);
+  // 管理者はプランに関係なく全機能を使える（本体の isAdminTenant() と同じ扱い）
+  const [isAdmin, setIsAdmin] = useState(false);
+  const aerialAllowed = isAdmin || !myPlan || ['pro', 'enterprise', 'demo'].includes(myPlan);
   useEffect(() => {
     (window as any).api.getPlan()
       .then((p: any) => setMyPlan(p?.plan || ''))
@@ -667,6 +669,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     (async () => {
       try {
         const res = await (window as any).api.listEstimateTenants();
+        setIsAdmin(!!res?.isAdmin);
         if (res?.isAdmin) {
           setEstTenants(res.tenants || []);
           setEstTenantId(res.current || '');
