@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { geocode, fetchAerial, pickView, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
+import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, normalizeWorkType, sendMailEdge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
@@ -7703,7 +7703,7 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
   // target   … 画像内のピクセル座標。ここにある建物を測る
   ipcMain.handle('ai:areaFromAddress', async (_e, data: {
     address?: string; comment?: string; expectAreaM2?: number;
-    fetchOnly?: boolean; target?: { x: number; y: number };
+    fetchOnly?: boolean; target?: { x: number; y: number }; grid?: number;
   }) => {
     const address = String(data?.address || '').trim();
     if (!address) throw new Error('ERROR: 住所を入力してください。');
@@ -7720,7 +7720,10 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     // 地理院タイルは z=18 が上限（実測で確認）。解像度は上げられないので、
     // 視野はタイル枚数で調整する。小さい建物ほど枚数を減らして隣家を写し込まない。
     const view = pickView(hit.lat, Number(data?.expectAreaM2) || 0);
-    const air = await fetchAerial(hit.lat, hit.lon, view.z, view.grid);
+    // 画面から「広く／せまく」を切り替えられる。奇数枚のみ（中心を作るため）
+    const asked = Number(data?.grid);
+    const grid = [1, 3, 5, 7].includes(asked) ? asked : view.grid;
+    const air = await fetchAerial(hit.lat, hit.lon, view.z, grid);
 
     // ── まず写真だけ返す ──────────────────────────────────
     // 日本の住所は号まで入れても**街区の代表点**が返ることが多く、建物の上に落ちない。
@@ -7737,7 +7740,7 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
         lat: hit.lat, lon: hit.lon, zoom: air.z,
         mPerPx: Math.round(air.mPerPx * 10000) / 10000,
         viewWidthM: Math.round(air.widthM),
-        sizePx: air.sizePx,
+        sizePx: air.sizePx, grid,
         centerPx: Math.round(air.sizePx / 2),
         attribution: AERIAL_ATTRIBUTION,
         aerialImage: `data:image/jpeg;base64,${air.dataUrl}`,
@@ -7746,11 +7749,26 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     }
 
     // ── 対象の建物を指定して測る ──────────────────────────
+    // ★探すのは広く、測るのは寄って。
+    //   広い範囲(373m四方)のまま測らせたら、1棟が36pxしかなく隣の屋根と繋げて読み、
+    //   同じ建物のはずが 252.8㎡ → 400㎡ に膨らんだ（2026-09-02 実測）。
+    //   クリックされた点の緯度経度を出し、そこを中心に**1タイル(124m四方)で取り直して**測る。
+    //   建物が画面の中央に大きく写るので、隣家と混ざりにくい。
     const tx = Number(data?.target?.x);
     const ty = Number(data?.target?.y);
     const hasTarget = isFinite(tx) && isFinite(ty) && tx >= 0 && ty >= 0 && tx < air.sizePx && ty < air.sizePx;
-    const px = hasTarget ? Math.round(tx) : Math.round(air.sizePx / 2);
-    const py = hasTarget ? Math.round(ty) : Math.round(air.sizePx / 2);
+
+    let shot = air;
+    let px = Math.round(air.sizePx / 2);
+    let py = Math.round(air.sizePx / 2);
+    let recentered = false;
+    if (hasTarget) {
+      const p = pixelToLonLat(hit.lat, hit.lon, air.z, air.sizePx, tx, ty);
+      shot = await fetchAerial(p.lat, p.lon, view.z, 1);   // 寄る
+      px = Math.round(shot.sizePx / 2);
+      py = Math.round(shot.sizePx / 2);
+      recentered = true;
+    }
 
     const config = loadApiConfig();
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。設定画面からAPIキーを入力してください。');
@@ -7764,29 +7782,29 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
       messages: [{
         role: 'user',
         content: [
-          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: air.dataUrl } },
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: shot.dataUrl } },
           {
             type: 'text',
             text: `${data?.comment ? `依頼内容: ${data.comment}\n\n` : ''}これは「${hit.title}」の付近を真上から撮った航空写真です。
 
 ## ★この写真の縮尺は確定している★
-**1ピクセル = ${air.mPerPx.toFixed(4)} m**（画像は ${air.sizePx}×${air.sizePx}px ＝ 一辺 ${air.widthM.toFixed(0)} m の範囲）
+**1ピクセル = ${shot.mPerPx.toFixed(4)} m**（画像は ${shot.sizePx}×${shot.sizePx}px ＝ 一辺 ${shot.widthM.toFixed(0)} m の範囲）
 
 **スケールを推測するな。上の値をそのまま使え。**
 屋根材の働き幅・車・人など、写真の中から物差しを探す必要はない。
 その推測こそが誤差の原因なので、やってはいけない。
 
 ## ★測る建物は指定されている★
-**画像の (${px}, ${py}) ピクセルの位置にある建物**を測れ。左上が (0, 0)、右下が (${air.sizePx - 1}, ${air.sizePx - 1}) だ。
+**画像の (${px}, ${py}) ピクセルの位置にある建物**を測れ。左上が (0, 0)、右下が (${shot.sizePx - 1}, ${shot.sizePx - 1}) だ。
 ${hasTarget
-  ? 'この座標は利用者が「この建物だ」と指した点だ。**別の建物を選ぶな。**\nもし指された点が道路や空地の上でも、そこに最も近い建物を測れ。'
+  ? 'この写真は、利用者が指した建物を**中心に据えて撮り直したもの**だ。中央にある建物を測れ。\n**別の建物を選ぶな。**中心が道路や空地の上なら、そこに最も近い建物を測れ。'
   : '座標の指定が無いので画像の中心を使っている。中心が道路や空地なら、最も近い建物を測れ。'}
 
 ## やること
 1. 指定された座標にある建物の輪郭を追う。**隣の建物と繋げるな。** 屋根の切れ目・棟の向き・
    壁の影で境目を見分けろ。密集地では隣家と屋根が接して見えることがある。
 2. その建物の**水平投影**の外形を読み、間口(m)と桁行(m)をピクセルから換算する。
-   例: 屋根が横 62px なら 62 × ${air.mPerPx.toFixed(4)} = ${(62 * air.mPerPx).toFixed(1)} m
+   例: 屋根が横 62px なら 62 × ${shot.mPerPx.toFixed(4)} = ${(62 * shot.mPerPx).toFixed(1)} m
 3. L字・コの字など長方形でないときは、長方形に分けて合計し、basis に内訳を書け。
 
 ## 気をつけること
@@ -7832,8 +7850,13 @@ ${hasTarget
     const out: any = {
       mode: 'aerial',
       step: 'result',
+      // 表示するのは寄って撮り直した写真。座標系もそちらに合わせる
+      sizePx: shot.sizePx, grid: recentered ? 1 : grid, centerPx: Math.round(shot.sizePx / 2),
       targetPx: { x: px, y: py },
       targetPicked: hasTarget,
+      recentered,
+      // 選び直したいときのために、広い写真に戻す手がかりを残す
+      searchGrid: grid,
       addressPrecise: hit.precise,
       addressLevel: hit.level,
       addressLevelLabel: LEVEL_LABEL[hit.level],
@@ -7847,12 +7870,12 @@ ${hasTarget
       target: 'roof',
       targetLabel: '屋根',
       address: hit.title,
-      lat: hit.lat, lon: hit.lon, zoom: air.z,
-      mPerPx: Math.round(air.mPerPx * 10000) / 10000,
-      viewWidthM: Math.round(air.widthM),
+      lat: hit.lat, lon: hit.lon, zoom: shot.z,
+      mPerPx: Math.round(shot.mPerPx * 10000) / 10000,
+      viewWidthM: Math.round(shot.widthM),
       attribution: AERIAL_ATTRIBUTION,
-      aerialImage: `data:image/jpeg;base64,${air.dataUrl}`,
-      tilesMissing: air.missing,
+      aerialImage: `data:image/jpeg;base64,${shot.dataUrl}`,
+      tilesMissing: shot.missing,
       widthM: w, lengthM: l, slopeFactor: slope,
       shape: r.shape || null,
       pixelReading: r.pixelReading || null,
@@ -7867,17 +7890,17 @@ ${hasTarget
     //   輪郭の読み取りは±1px程度ぶれるので、小さい建物ほど面積の誤差が効く。
     //   「161.7㎡」と細かい数字が出ると精密に見えてしまうため、幅を併記する。
     if (ok) {
-      const spanPx = Math.min(w, l) / air.mPerPx;                 // 短辺のピクセル数
-      const dw = air.mPerPx, dl = air.mPerPx;                      // ±1px
+      const spanPx = Math.min(w, l) / shot.mPerPx;                // 短辺のピクセル数
+      const dw = shot.mPerPx, dl = shot.mPerPx;                    // ±1px
       const lo = Math.max(0, (w - dw)) * Math.max(0, (l - dl)) * slope;
       const hi = (w + dw) * (l + dl) * slope;
       out.spanPx = Math.round(spanPx);
       out.rangeMinM2 = Math.round(lo * 10) / 10;
       out.rangeMaxM2 = Math.round(hi * 10) / 10;
-      out.rangeBasis = `輪郭の読み取りが±1ピクセル（${air.mPerPx.toFixed(2)}m）ぶれた場合`;
+      out.rangeBasis = `輪郭の読み取りが±1ピクセル（${shot.mPerPx.toFixed(2)}m）ぶれた場合`;
       // 30px を切ると、1pxの読み違いが面積の7%以上に効く
       if (spanPx < 30) {
-        out.resolutionNote = `この建物は短辺が約${Math.round(spanPx)}ピクセルしかありません（1px=${air.mPerPx.toFixed(2)}m）。`
+        out.resolutionNote = `この建物は短辺が約${Math.round(spanPx)}ピクセルしかありません（1px=${shot.mPerPx.toFixed(2)}m）。`
           + `公開されている航空写真はこれが最高解像度なので、これ以上細かくは読めません。`
           + `より確かな数字が要るときは、間口と桁行を実測してください。`;
       }
@@ -7889,8 +7912,8 @@ ${hasTarget
         : '番地まで入れた住所（例: ○○町1-2-3）';
     }
 
-    console.log(`[航空写真] tenant ${tid}: ${hit.title}${hit.precise ? '' : '【番地なし＝地域の中心】'} ` +
-      `z=${air.z} 1px=${air.mPerPx.toFixed(3)}m ` +
+    console.log(`[航空写真] tenant ${tid}: ${hit.title}${hit.precise ? '' : '【番地なし】'} ` +
+      `${recentered ? '[寄って測定]' : '[中心を推定]'} z=${shot.z} 1px=${shot.mPerPx.toFixed(3)}m ` +
       `${plan > 0 ? `${w}×${l}m → ${Math.round(plan * slope * 10) / 10}㎡` : '建物を特定できず'}` +
       `${ok ? '' : '（確定させず）'} (${out.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
     return out;

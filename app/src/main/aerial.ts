@@ -40,6 +40,29 @@ export function lonLatToTile(lon: number, lat: number, z: number) {
   };
 }
 
+/** タイル座標（小数を含む）→ 緯度経度。lonLatToTile の逆 */
+export function tileToLonLat(x: number, y: number, z: number) {
+  const n = Math.pow(2, z);
+  const lon = (x / n) * 360 - 180;
+  const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
+  return { lon, lat };
+}
+
+/**
+ * 画像内のピクセル位置 → 緯度経度。
+ * 広い範囲で建物を選んでもらったあと、その建物に寄って測り直すために要る。
+ */
+export function pixelToLonLat(
+  centerLat: number, centerLon: number, z: number, sizePx: number, x: number, y: number,
+) {
+  const t = lonLatToTile(centerLon, centerLat, z);
+  const half = sizePx / 2;
+  // 画像左上のタイル座標（タイル1枚 = 256px）
+  const originX = t.x - half / TILE;
+  const originY = t.y - half / TILE;
+  return tileToLonLat(originX + x / TILE, originY + y / TILE, z);
+}
+
 /** その緯度・ズームでの 1px あたりの地上距離(m)。赤道z=0で156543.03になる */
 export function metersPerPixel(lat: number, z: number): number {
   return (EARTH_CIRC * Math.cos((lat * Math.PI) / 180)) / (TILE * Math.pow(2, z));
@@ -183,8 +206,11 @@ export function pickView(lat: number, expectAreaM2?: number): { z: number; grid:
   const z = MAX_ZOOM;
   const mpp = metersPerPixel(lat, z);
   const side = expectAreaM2 && expectAreaM2 > 0 ? Math.sqrt(expectAreaM2) : 20;
-  // 建物の一辺の3倍が入れば、隣家と区別しつつ輪郭を追える
-  const want = Math.max(80, side * 3);
+  // 建物の一辺の6倍を目安にする。
+  // ★1タイル(124m四方)だと、住所の解決点が街区の代表点＝道路上に落ちたとき、
+  //   目的の建物が枠の外に出ることがある。利用者が自分の建物を探して選ぶ画面なので、
+  //   まず「見つけられる」ことを優先し、広めに出す。狭めたいときは画面から切り替えられる。
+  const want = Math.max(300, side * 6);
   for (const grid of [1, 3, 5, 7]) {
     if (mpp * TILE * grid >= want) return { z, grid };
   }
