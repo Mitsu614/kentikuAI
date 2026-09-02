@@ -886,13 +886,29 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     window.addEventListener('mouseup', onUp);
   };
 
-  // 四角から面積を出す。縮尺は確定しているので掛けるだけ
+  // 四角から面積を出す。縮尺は確定しているので掛けるだけ。
+  //
+  // 航空写真で読めるのは**水平投影面積**。そこから施工数量までは2段ある。
+  //   水平投影 × 勾配補正 = 屋根面積（傾いているぶん）
+  //   屋根面積 × 展開係数 = 施工数量（折板の山谷に沿って張るぶん）
+  // 遮熱シートやカバー工法は材料が山谷に沿うので、展開係数を掛けないと
+  // 折板88mmで4割、150mmなら7割足りない見積になる。
   const aerialRectArea = () => {
     if (!aerialRect || !aerial?.mPerPx) return null;
     const wM = aerialRect.w * aerial.mPerPx;
     const hM = aerialRect.h * aerial.mPerPx;
+    const plan = wM * hM;
     const slope = Number(aerial.slopeFactor) > 0 ? Number(aerial.slopeFactor) : 1;
-    return { wM, hM, plan: wM * hM, area: wM * hM * slope, slope };
+    const roof = plan * slope;
+    // 画面で選んだ屋根種別が最優先。選んでいなければ航空写真からの判定を候補として使う
+    const picked = roofType ? Number(roofType.split('|')[1]) || 1 : 0;
+    const suggest = aerial.developSuggest?.factor || 0;
+    const dev = picked || suggest || 1;
+    return {
+      wM, hM, plan, slope, roof, dev,
+      area: roof * dev,
+      devFrom: picked ? 'user' : suggest ? 'ai' : 'none',
+    };
   };
 
   // ② ダブルクリックした場所へ移る。
@@ -2496,7 +2512,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                             padding: '2px 7px', borderRadius: 3, whiteSpace: 'nowrap',
                             boxShadow: '0 1px 3px rgba(0,0,0,.4)', pointerEvents: 'none',
                           }}>
-                            {a ? `${a.wM.toFixed(1)}×${a.hM.toFixed(1)}m → ${a.area.toFixed(1)}㎡` : ''}
+                            {a ? `${a.wM.toFixed(1)}×${a.hM.toFixed(1)}m` : ''}
+                            {a && a.dev !== 1 ? ` ×${a.dev} → ${a.area.toFixed(1)}㎡` : a ? ` → ${a.area.toFixed(1)}㎡` : ''}
                             {!!R.rot && ` / ${Math.round(((R.rot % 360) + 360) % 360)}°`}
                           </span>
                           {/* 中心のつまみ。ここを持てば、角の伸縮と混ざらずに動かせる */}
@@ -2607,17 +2624,52 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 <div style={{ borderTop: '1px solid #93c5fd', marginTop: 10, paddingTop: 10 }}>
                   {(() => {
                     const a = aerialRectArea();
-                    return a ? (
-                      <div style={{ fontSize: 13, color: '#1e3a8a', marginBottom: 8 }}>
-                        いまの四角: <strong>{a.wM.toFixed(1)}m × {a.hM.toFixed(1)}m</strong>
-                        {a.slope > 1 && <> × 勾配{a.slope}</>}
-                        　→ <strong style={{ fontSize: 16 }}>{a.area.toFixed(1)}㎡</strong>
-                        <button className="btn" onClick={() => setConfirmArea(String(Math.round(a.area * 10) / 10))}
-                          style={{ fontSize: 11, padding: '3px 10px', marginLeft: 10 }}>
-                          この値を使う
-                        </button>
+                    if (!a) return null;
+                    const sug = aerial.developSuggest;
+                    return (
+                      <div style={{ marginBottom: 8 }}>
+                        {/* 航空写真からの屋根種別。1px≈0.5mでは山ピッチまで見えないので、あくまで候補 */}
+                        {aerial.roofType && aerial.roofType !== '不明' && (
+                          <div style={{ fontSize: 12, color: '#78350f', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 4, padding: '6px 9px', marginBottom: 6, lineHeight: 1.7 }}>
+                            航空写真からの見立て: <strong>{aerial.roofType}</strong>
+                            {sug && <>（{sug.label} … 展開係数 <strong>×{sug.factor}</strong>）</>}
+                            {aerial.roofTypeReason && <div style={{ color: '#92400e' }}>根拠: {aerial.roofTypeReason}</div>}
+                            {sug?.note && <div style={{ color: '#b45309' }}>※ {sug.note}</div>}
+                            {a.devFrom === 'ai' && (
+                              <div style={{ marginTop: 3 }}>
+                                上の「🏠 屋根種別」でお客様に確認した種別を選ぶと、そちらが優先されます。
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {/* 水平投影 → 屋根面積 → 施工数量。遮熱シートはここが本体 */}
+                        <div style={{ fontSize: 13, color: '#1e3a8a', lineHeight: 1.9 }}>
+                          <div>水平投影: <strong>{a.wM.toFixed(1)}m × {a.hM.toFixed(1)}m = {a.plan.toFixed(1)}㎡</strong></div>
+                          {a.slope !== 1 && <div>× 勾配補正 {a.slope} → 屋根面積 <strong>{a.roof.toFixed(1)}㎡</strong></div>}
+                          {a.dev !== 1 && (
+                            <div style={{ color: '#b91c1c' }}>
+                              × 展開係数 <strong>{a.dev}</strong>
+                              <span style={{ fontSize: 11 }}>（{a.devFrom === 'user' ? 'お客様確認済み' : '写真からの見立て'}／山谷に沿って張るぶん）</span>
+                              → <strong>{a.area.toFixed(1)}㎡</strong>
+                            </div>
+                          )}
+                          <div style={{ marginTop: 4 }}>
+                            見積に使う数量: <strong style={{ fontSize: 18 }}>{a.area.toFixed(1)}㎡</strong>
+                            <button className="btn" onClick={() => setConfirmArea(String(Math.round(a.area * 10) / 10))}
+                              style={{ fontSize: 11, padding: '3px 10px', marginLeft: 10 }}>
+                              この値を使う
+                            </button>
+                          </div>
+                        </div>
+                        {a.dev === 1 && aerial.roofType === '折板' && (
+                          <div style={{ fontSize: 12, color: '#7f1d1d', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 4, padding: '6px 9px', marginTop: 6 }}>
+                            ⚠ 折板と見立てていますが、展開係数が掛かっていません。遮熱シートやカバー工法など
+                            <strong>材料が山谷に沿う工事では、このままだと4割ほど足りません。</strong>
+                            上の「🏠 屋根種別」で選んでください。
+                          </div>
+                        )}
                       </div>
-                    ) : null;
+                    );
                   })()}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 13, color: '#1e3a8a' }}>この面積で見積もる:</span>
