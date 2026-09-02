@@ -604,9 +604,9 @@ function PlanManagement() {
   //   申し込んだお客様に120万円を請求する状態になっていた。
   //   リンクは会社名を必須項目にしてある（承認が会社名でテナントを引くため）。
   const STRIPE_LINKS: Record<string, string> = {
-    standard: 'https://buy.stripe.com/bJecN61Hd191g6t9MO24006',   // 月30,000円（税込33,000円）
-    better:   'https://buy.stripe.com/dRm00k0D9g3V4nLgbc24007',   // 月70,000円（税込77,000円）
-    pro:      'https://buy.stripe.com/7sYcN60D9cRJdYl3oq24008',   // 月100,000円（税込110,000円）
+    standard: 'https://buy.stripe.com/bJecN61Hd191g6t9MO24006',   // 月30,000円（総額）
+    better:   'https://buy.stripe.com/dRm00k0D9g3V4nLgbc24007',   // 月70,000円（総額）
+    pro:      'https://buy.stripe.com/7sYcN60D9cRJdYl3oq24008',   // 月100,000円（総額）
   };
 
   const requestPlan = async (planKey: string) => {
@@ -648,9 +648,8 @@ function PlanManagement() {
           <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2c3e50' }}>
             {planInfo.planName}
             <span style={{ fontSize: 14, fontWeight: 'normal', color: '#888', marginLeft: 8 }}>
-              {/* PLANS の price は税別。ここを「税込」と書くと数字と合わない */}
-              ¥{(planInfo.price || 0).toLocaleString()}/月（税別）
-              {planInfo.price > 0 && `　税込 ¥${Math.round(planInfo.price * 1.1).toLocaleString()}`}
+              {/* ★総額表示。免税事業者のため消費税の内訳は出さない（適格請求書と誤認される記載を避ける） */}
+              ¥{(planInfo.price || 0).toLocaleString()}/月
             </span>
           </div>
           <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>{planInfo.description}</div>
@@ -740,12 +739,11 @@ function PlanManagement() {
                   {/* 法人カスタムは個別見積なので金額を出さない。0円と出ると無料に見える */}
                   {key === 'enterprise' ? '個別お見積り' : p.price === 0 ? '無料' : `¥${p.price.toLocaleString()}`}
                   {key !== 'enterprise' && p.price > 0 && (
-                    <span style={{ fontSize: 11, fontWeight: 'normal' }}>/月（税別）</span>
+                    <span style={{ fontSize: 11, fontWeight: 'normal' }}>/月</span>
                   )}
                 </div>
                 <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
                   月 {key === 'enterprise' ? '個別設定' : p.monthlyLimit + '単位'}
-                  {key !== 'enterprise' && p.price > 0 && `　／　税込 ¥${Math.round(p.price * 1.1).toLocaleString()}`}
                 </div>
                 <div style={{ fontSize: 11, color: '#aaa', marginBottom: 8 }}>{p.description}</div>
                 {canRequest && (

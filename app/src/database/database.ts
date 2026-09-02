@@ -75,7 +75,9 @@ export function vacuum() {
 }
 
 // ── プラン定義 ──
-// price は【月額・税込】。画面の表記も「/月」に揃えてある。
+// price は【月額の総額】。消費税の内訳は出さない（免税事業者のため、登録番号の無い
+// 書類に消費税額を明記して適格請求書と誤認されるのを避ける）。Stripeの決済リンクも
+// この金額をそのまま請求している。★変えたらStripeのリンクも作り直すこと。
 // 単位（monthlyLimit）が上がるほど月に回せる見積の本数が増える。
 export const PLANS: Record<string, { name: string; monthlyLimit: number; price: number; description: string }> = {
   demo:       { name: 'デモ',           monthlyLimit: 10,   price: 0,       description: '無料体験（月10単位・2週間）' },
