@@ -556,6 +556,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   } | null>(null);
   // 読み取りモード。auto=AIに判定させる / drawing=図面として記載値を読む / photo=写真として概算
   const [readMode, setReadMode] = useState<'auto' | 'drawing' | 'photo'>('auto');
+  // 住所から航空写真を引く経路。写真の目測よりスケールが確定するぶん確か
+  const [siteAddress, setSiteAddress] = useState('');
+  const [aerial, setAerial] = useState<any>(null);
+  const [aerialLoading, setAerialLoading] = useState(false);
   const [checkingArea, setCheckingArea] = useState(false);
   const [confirmArea, setConfirmArea] = useState('');
   const [learned, setLearned] = useState<{ calibration: number; samples: number } | null>(null);
@@ -700,6 +704,28 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       analyze();
     } finally {
       setCheckingArea(false);
+    }
+  };
+
+  // 住所から航空写真を引いて面積を出す。
+  // 写真の目測はスケールの推定で外れる（実測33回で平均誤差46%・同じ写真で3.7倍違う答え）。
+  // 地理院タイルは縮尺が確定しているので、その工程がまるごと消える。
+  const runAerial = async () => {
+    const addr = siteAddress.trim();
+    if (!addr) { setError('住所を入力してください'); return; }
+    setAerialLoading(true);
+    setError('');
+    startBusy({ key: 'aerial', title: '航空写真から面積を読み取っています', etaSec: AREA_SEC, sub: '住所を検索し、真上からの写真を取得中' });
+    try {
+      const res = await (window as any).api.areaFromAddress({ address: addr, comment });
+      endBusy();
+      setAerial(res);
+      if (res?.quantityM2 > 0) setConfirmArea(String(Math.round(res.quantityM2)));
+    } catch (e: any) {
+      endBusy({ ok: false });
+      setError((e?.message || '航空写真の取得に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
+    } finally {
+      setAerialLoading(false);
     }
   };
 
@@ -2067,6 +2093,81 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   </label>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* ── 面積をより確かに出すための2つの道 ──
+              実測で分かっていること（app/tools/harness-area）:
+                斜め・航空写真からの目測  平均誤差 52.6%
+                屋根の上から撮った写真    平均誤差 18.1%
+              撮り方を変えるだけで誤差が1/3になる。住所から地理院の航空写真を引けば
+              縮尺が確定するので、スケールを推定する工程そのものが消える。 */}
+          {!area.trim() && (
+            <div style={{ marginTop: 12, padding: '12px 14px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 'bold', color: '#166534', marginBottom: 8 }}>
+                面積の精度を上げるには
+              </div>
+
+              <div style={{ fontSize: 12, color: '#14532d', lineHeight: 1.8, marginBottom: 10 }}>
+                <div><strong>① 屋根の上・真上から近づいて撮る</strong>　斜めや航空写真だと誤差が3倍になります（実測 52.6% → 18.1%）</div>
+                <div><strong>② 寸法が分かるものを一緒に写す</strong>　A4の紙・メジャー・1mの棒を屋根に置いて撮ると、それを物差しにできます</div>
+              </div>
+
+              <div style={{ borderTop: '1px solid #bbf7d0', paddingTop: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 'bold', color: '#166534', marginBottom: 6 }}>
+                  ③ 住所から航空写真で測る（写真より確か）
+                </div>
+                <div style={{ fontSize: 11, color: '#15803d', marginBottom: 6 }}>
+                  国土地理院の航空写真は縮尺が確定しているので、AIがスケールを推測する必要がありません。
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    type="text"
+                    value={siteAddress}
+                    onChange={(e) => setSiteAddress(e.target.value)}
+                    placeholder="例: 東京都千代田区永田町1-7-1（番地まで）"
+                    style={{ flex: 1, padding: '8px 10px', fontSize: 13, border: '1px solid #86efac', borderRadius: 4 }}
+                  />
+                  <button className="btn" onClick={runAerial} disabled={aerialLoading || !siteAddress.trim()}
+                    style={{ fontSize: 13, padding: '8px 16px', whiteSpace: 'nowrap' }}>
+                    {aerialLoading ? '取得中...' : '航空写真で測る'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 航空写真の結果 */}
+          {aerial && (
+            <div className="card" style={{ marginTop: 12, background: '#eff6ff', border: '1px solid #93c5fd', padding: '14px 16px' }}>
+              <div style={{ fontSize: 13, fontWeight: 'bold', color: aerial.isEstimate ? '#b45309' : '#1e40af', marginBottom: 6 }}>
+                {aerial.isEstimate
+                  ? `🛰 中心の建物を特定できませんでした`
+                  : `🛰 航空写真から読み取った屋根の面積です。合っていますか？（信頼度: ${aerial.confidence}）`}
+              </div>
+              <div style={{ fontSize: 12, color: '#1e3a8a', marginBottom: 6 }}>
+                {aerial.address}　／　<strong>1ピクセル = {aerial.mPerPx} m</strong>（{aerial.viewWidthM}m四方・ズーム{aerial.zoom}）
+              </div>
+              {!!aerial.aerialImage && (
+                <img src={aerial.aerialImage} alt="航空写真"
+                  style={{ width: '100%', maxWidth: 420, borderRadius: 4, border: '1px solid #93c5fd', display: 'block', marginBottom: 6 }} />
+              )}
+              {!aerial.isEstimate && (
+                <div style={{ fontSize: 13, color: '#1e3a8a', marginBottom: 4 }}>
+                  間口 {aerial.widthM}m × 桁行 {aerial.lengthM}m（{aerial.shape}）
+                  {aerial.slopeFactor > 1 && ` × 勾配${aerial.slopeFactor}`}
+                  　→ <strong>{aerial.quantityM2}㎡</strong>
+                </div>
+              )}
+              {!!aerial.pixelReading && <div style={{ fontSize: 12, color: '#475569' }}>換算: {aerial.pixelReading}</div>}
+              {!!aerial.basis && <div style={{ fontSize: 12, color: '#475569' }}>根拠: {aerial.basis}</div>}
+              {!!aerial.needsDimension && (
+                <div style={{ fontSize: 12, color: '#78350f', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, padding: '6px 8px', marginTop: 6 }}>
+                  <strong>{aerial.needsDimension}</strong> が分かれば正確に計算できます。
+                </div>
+              )}
+              {/* 地理院タイルは出典の明示が利用規約で求められている */}
+              <div style={{ fontSize: 11, color: '#64748b', marginTop: 8 }}>出典: {aerial.attribution}</div>
             </div>
           )}
 

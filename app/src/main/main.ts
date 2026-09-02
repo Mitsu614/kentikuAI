@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
+import { geocode, fetchAerial, pickZoom, metersPerPixel, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, normalizeWorkType, sendMailEdge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
@@ -7375,6 +7376,17 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
   //   「屋根面積 33.8m² 折板屋根面積×1.4 → 数量48m²」と明記されている（森鉄筋 養老工場）。
   //   これを掛け忘れると構造的に約40%の過小見積になる。
   const AREA_SCALE_GUIDE = `
+## ★★★まず、寸法が確定した基準物が写っていないか探せ★★★
+依頼者が意図的に置いた基準物があれば、**それを最優先で使う**。規格寸法からの逆算より確実だ。
+- **メジャー・コンベックス**（目盛りが読めるなら、それがそのまま物差し）
+- **A4の紙**（297×210mm）／**A3**（420×297mm）
+- **1mの棒・スケール棒・折尺**
+- **ヘルメット**（一般的な作業用で前後約28cm）※他に無いときだけ
+これらが屋根の上に写っていたら scaleRef に「置かれた基準物: A4用紙 297mm」のように書き、
+confidence を「高」にしてよい。**この場合だけは屋根材の働き幅より優先する。**
+
+置かれた基準物が無いなら、以下の手順に進め。
+
 ## ★★基準スケールは「屋根と同じ平面」にあるものを1つだけ選べ★★
 参照物が測定対象と別の平面・別の高さにあると、視差(パララックス)で誤差が入る。
 カメラに近い屋根を、地面の車で測ると**面積が実際より大きく出る**（空撮でとくに顕著）。
@@ -7677,6 +7689,128 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
   });
 
   ipcMain.handle('ai:areaCalibration', (_e, target?: string) => getAreaCalibration(getEstimateTenant(), target));
+
+  // ── 住所から航空写真を引いて面積を出す ────────────────────────────
+  //
+  // 写真から測るのをやめる経路。写真だとAIが「屋根材の働き幅333mm」のような
+  // 規格寸法を物差しにしてスケールを逆算するため、その物差しが外れると面積が全部ずれる。
+  // 実測33回で平均誤差46%、同じ写真で3.7倍違う答えが出た。斜め・航空写真はとくに悪く52.6%。
+  //
+  // 地理院タイルは**縮尺が確定している**ので「1px = 0.49m」とこちらから渡せる。
+  // AIの仕事は輪郭を読むことだけになり、いちばん外れやすい工程が消える。
+  // 較正係数も掛けない（目測の癖を直す係数なので、確定スケールには不要）。
+  ipcMain.handle('ai:areaFromAddress', async (_e, data: { address?: string; comment?: string; expectAreaM2?: number }) => {
+    const address = String(data?.address || '').trim();
+    if (!address) throw new Error('ERROR: 住所を入力してください。');
+
+    const tid = getCurrentTenant();
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
+    try { runSql('CREATE TABLE IF NOT EXISTS area_precheck_log (tenant_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (tenant_id, day))', []); } catch (_) {}
+    const used = queryOne('SELECT count FROM area_precheck_log WHERE tenant_id = ? AND day = ?', [tid, today])?.count || 0;
+    if (used >= AREA_PRECHECK_DAILY_LIMIT) throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力してください。');
+
+    const hit = await geocode(address);
+    if (!hit) throw new Error('ERROR: その住所が見つかりませんでした。番地まで入れるか、近くの住所でお試しください。');
+
+    const z = pickZoom(hit.lat, Number(data?.expectAreaM2) || 0, 3);
+    const air = await fetchAerial(hit.lat, hit.lon, z, 3);
+
+    const config = loadApiConfig();
+    if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。設定画面からAPIキーを入力してください。');
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: config.anthropicKey });
+    const response = await client.messages.create({
+      model: 'claude-opus-4-8',
+      max_tokens: 4000,
+      thinking: { type: 'adaptive' },
+      system: 'あなたは建築の積算担当者です。航空写真から建物の寸法だけを読み取ります。金額は一切出しません。',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: air.dataUrl } },
+          {
+            type: 'text',
+            text: `${data?.comment ? `依頼内容: ${data.comment}\n\n` : ''}これは「${hit.title}」を中心とした真上からの航空写真です。
+
+## ★この写真の縮尺は確定している★
+**1ピクセル = ${air.mPerPx.toFixed(4)} m**（画像は ${air.sizePx}×${air.sizePx}px ＝ 一辺 ${air.widthM.toFixed(0)} m の範囲）
+中心（${Math.round(air.sizePx / 2)}, ${Math.round(air.sizePx / 2)} px の位置）が指定された住所だ。
+
+**スケールを推測するな。上の値をそのまま使え。**
+屋根材の働き幅・車・人など、写真の中から物差しを探す必要はない。
+その推測こそが誤差の原因なので、やってはいけない。
+
+## やること
+1. 中心にある建物を特定する。隣家と間違えるな。中心から最も近い、まとまった屋根だ。
+2. その建物の**水平投影**の外形を読み、間口(m)と桁行(m)をピクセルから換算する。
+   例: 屋根が横 62px なら 62 × ${air.mPerPx.toFixed(4)} = ${(62 * air.mPerPx).toFixed(1)} m
+3. L字・コの字など長方形でないときは、長方形に分けて合計し、basis に内訳を書け。
+
+## 気をつけること
+- 航空写真は**水平投影**なので、勾配のぶんは含まれない。slopeFactor で別途返せ。
+- 木や電線で隠れている部分は、建物の対称性から補え。補ったことを basis に書け。
+- 中心の建物が判別できない（更地・雲・解像度不足）なら widthM = 0 とし、
+  askUserFor に「建物の間口(m)と桁行(m)」と書け。**当てずっぽうを返すな。**
+
+以下のJSONのみを返してください（説明文は不要）:
+{
+  "found": true か false。中心の建物を特定できたか,
+  "widthM": 間口方向の水平投影長さ(m、数値),
+  "lengthM": 奥行方向の水平投影長さ(m、数値),
+  "slopeFactor": 勾配補正係数(数値。折板1.005 / 戸建て4寸1.077・5寸1.118。分からなければ1.0),
+  "shape": "長方形" / "L字" / "コの字" / "複雑",
+  "pixelReading": "何ピクセルをどう換算したか（例: 横128px × 0.4851 = 62.1m）",
+  "basis": "どの建物をどう特定し、隠れている部分をどう補ったか",
+  "askUserFor": found が false のとき、1つ聞けば確定する情報。true なら null,
+  "confidence": "高/中/低"
+}`,
+          },
+        ],
+      }],
+    });
+
+    const text = ((response.content as any[]).find((b) => b?.type === 'text') || {}).text || '';
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('航空写真の読み取りに失敗しました。面積を直接入力してください。');
+    const r = parseLenientJson(match[0]);
+
+    const w = Number(r.widthM) || 0;
+    const l = Number(r.lengthM) || 0;
+    const slope = Number(r.slopeFactor) > 0 ? Number(r.slopeFactor) : 1;
+    const plan = w * l;
+
+    runSql('INSERT INTO area_precheck_log (tenant_id, day, count) VALUES (?, ?, 1) ON CONFLICT(tenant_id, day) DO UPDATE SET count = count + 1', [tid, today]);
+
+    const ok = r.found !== false && plan > 0;
+    const out: any = {
+      mode: 'aerial',
+      // 縮尺が確定しているので較正は掛けない。目測の癖を直す係数はここでは不要
+      calibration: 1,
+      target: 'roof',
+      targetLabel: '屋根',
+      address: hit.title,
+      lat: hit.lat, lon: hit.lon, zoom: air.z,
+      mPerPx: Math.round(air.mPerPx * 10000) / 10000,
+      viewWidthM: Math.round(air.widthM),
+      attribution: AERIAL_ATTRIBUTION,
+      aerialImage: `data:image/jpeg;base64,${air.dataUrl}`,
+      tilesMissing: air.missing,
+      widthM: w, lengthM: l, slopeFactor: slope,
+      shape: r.shape || null,
+      pixelReading: r.pixelReading || null,
+      basis: r.basis || '',
+      confidence: r.confidence || '中',
+      isEstimate: !ok,
+      planAreaM2: ok ? Math.round(plan * 10) / 10 : 0,
+      quantityM2: ok ? Math.round(plan * slope * 10) / 10 : 0,
+    };
+    out.assumedArea = ok ? `屋根 ${Math.round(out.quantityM2)}㎡` : '';
+    if (!ok) out.needsDimension = r.askUserFor || '建物の間口(m)と桁行(m)';
+
+    console.log(`[航空写真] tenant ${tid}: ${hit.title} z=${air.z} 1px=${air.mPerPx.toFixed(3)}m ` +
+      `${ok ? `${w}×${l}m → ${out.quantityM2}㎡` : '建物を特定できず'} (${out.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
+    return out;
+  });
 
   // mode: 'auto'（既定・AIの判定に従う） / 'drawing'（図面として読む） / 'photo'（写真として概算）
   ipcMain.handle('ai:estimateArea', async (_e, data: { imageBase64?: string; comment?: string; mode?: string }) => {
