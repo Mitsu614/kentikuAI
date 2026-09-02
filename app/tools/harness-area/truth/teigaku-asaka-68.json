@@ -1,0 +1,9 @@
+{
+  "target": "roof",
+  "truthM2": 68,
+  "file": "C:/Users/mitsu/OneDrive/Desktop/kentikuAI/app/tools/harness-roof/imgs/teigaku-asaka-68.jpg",
+  "comment": "戸建て住宅の屋根カバー工法。屋根面積を知りたい",
+  "viewType": "oblique",
+  "coversWhole": false,
+  "note": "harness-roof/ds_truth.json から移行（戸建て住宅 化粧スレート）"
+}

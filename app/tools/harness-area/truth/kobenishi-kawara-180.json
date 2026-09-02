@@ -1,0 +1,9 @@
+{
+  "target": "roof",
+  "truthM2": 180,
+  "file": "C:/Users/mitsu/OneDrive/Desktop/kentikuAI/app/tools/harness-roof/imgs/kobenishi-kawara-180.jpg",
+  "comment": "戸建て住宅の屋根葺き替え。屋根面積を知りたい",
+  "viewType": "ground",
+  "coversWhole": false,
+  "note": "harness-roof/ds_truth.json から移行（戸建て住宅 和瓦）"
+}

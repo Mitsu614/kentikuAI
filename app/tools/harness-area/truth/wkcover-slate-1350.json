@@ -1,0 +1,9 @@
+{
+  "target": "roof",
+  "truthM2": 1350,
+  "file": "C:/Users/mitsu/OneDrive/Desktop/kentikuAI/app/tools/harness-roof/imgs/wkcover-slate-1350.jpg",
+  "comment": "工場の屋根改修。施工面積を知りたい",
+  "viewType": "oblique",
+  "coversWhole": false,
+  "note": "harness-roof/ds_truth.json から移行（工場 スレート大波）"
+}

@@ -1,0 +1,9 @@
+{
+  "target": "roof",
+  "truthM2": 2200,
+  "file": "C:/Users/mitsu/OneDrive/Desktop/kentikuAI/app/tools/harness-roof/imgs/miracool-seppan-2200.jpg",
+  "comment": "倉庫の折板屋根の遮熱塗装。屋根面積を知りたい",
+  "viewType": "oblique",
+  "coversWhole": false,
+  "note": "harness-roof/ds_truth.json から移行（倉庫 折板屋根）"
+}
