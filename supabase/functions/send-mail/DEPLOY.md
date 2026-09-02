@@ -24,7 +24,35 @@ supabase secrets set \
   化けた値が入っていた場合、関数側で検知して既定値「建築ブースト」に戻す実装にはしてあるが、
   そもそも設定しない（省略して既定値に任せる）のがいちばん安全。
 - Google Workspace に移行したら `SMTP_USER` / `SMTP_PASS` / `OWNER_EMAIL` を
-  `info@kentiku-boost.jp` 系に差し替えるだけでよい（アプリの再ビルドは不要）
+  `info@kentiku-boost.jp` 系に差し替える（アプリの再ビルドは不要）。ただし **先に下の DNS を済ませること**
+
+### ⚠️ 独自ドメインに差し替える前に、DNS を先に整えること
+
+2026-08-27 時点の実測: `kentiku-boost.jp` には **MX も SPF も DMARC も無い**。
+この状態で `SMTP_USER` だけ `info@kentiku-boost.jp` に変えると、差出人のドメインに送信認証が
+何も無いまま送ることになり、**Gmail・携帯キャリア宛がまとめて迷惑メール行き**になる。
+学習完了メールもライセンス通知も「送ったのに届かない」形で失敗し、しかもこちらからは気づけない。
+
+順番は必ず DNS が先。
+
+1. Google Workspace 側でドメインを追加し、指示された **MX** を設定
+2. **SPF** を TXT に追加 … `v=spf1 include:_spf.google.com ~all`
+3. **DKIM** を Workspace 管理コンソールで生成し、指示された TXT を追加（鍵長2048bit）
+4. **DMARC** を TXT に追加 … `_dmarc.kentiku-boost.jp` に
+   `v=DMARC1; p=none; rua=mailto:（レポート受信先）` から始め、様子を見て `p=quarantine` へ上げる
+5. ここまで済ませてから `SMTP_USER` / `SMTP_PASS` / `OWNER_EMAIL` を差し替え、**テスト送信して着信を確認**
+
+確認コマンド（どれも値が返れば設定済み）:
+
+```bash
+nslookup -type=MX kentiku-boost.jp 8.8.8.8
+nslookup -type=TXT kentiku-boost.jp 8.8.8.8          # v=spf1 が返るか
+nslookup -type=TXT _dmarc.kentiku-boost.jp 8.8.8.8   # v=DMARC1 が返るか
+```
+
+なお `nakanokoumuten.com`（Xserver）にも DMARC が無い。こちらは SPF はあるので即死はしないが、
+なりすまし対策としては入れておいた方がよい。
+
 
 ## 2. デプロイ
 

@@ -8,7 +8,10 @@
     "start": "npm run build && electron .",
     "dev": "webpack --config webpack.config.js --watch",
     "dist": "npm run build && electron-builder --win",
-    "dist:portable": "npm run build && electron-builder --win portable"
+    "dist:portable": "npm run build && electron-builder --win portable",
+    "check:prompt": "node tools/harness-takeoff/check-prompt-sync.js",
+    "harness:takeoff": "node tools/harness-takeoff/check-prompt-sync.js && node tools/harness-takeoff/accuracy.js",
+    "harness:dry": "node tools/harness-takeoff/check-prompt-sync.js && node tools/harness-takeoff/accuracy.js --dry"
   },
   "keywords": [
     "建築",

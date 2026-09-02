@@ -54,8 +54,10 @@ function loadKey() {
 }
 
 // ── main.ts takeoffDrawingCore と同一のプロンプト本体 ──
-// ★ここを直したら main.ts も直すこと（ズレると計測の意味が無くなる）
-const PROMPT = fs.readFileSync(path.join(DIR, 'prompt.txt'), 'utf-8');
+// ★本番(main.ts)と同一。check-prompt-sync.js が両方の一致を見張っている。
+//   ズレたまま測ると『本番ではない別物』の精度を測ることになるので、回す前に必ず照合すること。
+const PROMPT = fs.readFileSync(path.join(DIR, "prompt.txt"), "utf-8");
+const { fillPrompt } = require(path.join(DIR, "context.js"));
 
 function parseJson(text) {
   const m = text.match(/```json\s*([\s\S]*?)```/) || text.match(/\{[\s\S]*\}/);
@@ -87,7 +89,8 @@ function grade(got, want) {
   return { mark: a <= 0.05 ? '◎' : a <= 0.15 ? '○' : '×', err };
 }
 
-async function runOnce(client, spec) {
+// 投げる文面を組む。API は叩かない（--dry から呼んで目視できるようにするため）。
+function buildContent(spec) {
   const buf = fs.readFileSync(spec.file);
   const isPdf = path.extname(spec.file).toLowerCase() === '.pdf';
   const b64 = buf.toString('base64');
@@ -95,30 +98,15 @@ async function runOnce(client, spec) {
   content.push(isPdf
     ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
     : { type: 'image', source: { type: 'base64', media_type: buf[0] === 0x89 ? 'image/png' : 'image/jpeg', data: b64 } });
-  // 本番(main.ts)と同じく、依頼文の面積を確定値として先頭に置く
-  const areas = String((spec.comment || '') + ' ' + (spec.targets || '')).normalize('NFKC');
-  const found = [];
-  { const re = /(床面積|延床面積|延床|施工面積|対象面積|壁面積|天井面積|屋根面積|外壁面積|塗装面積|面積)?\s*[:：]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(㎡|m2|m²|平米|坪)/g;
-    let m; const seen = new Set();
-    while ((m = re.exec(areas)) !== null) {
-      const v = Number(String(m[2]).replace(/,/g, ''));
-      if (!(v > 0) || v > 1000000) continue;
-      const raw = m[1] || '';
-      const label = (!raw || raw === '面積') ? '床面積' : raw;
-      const key = label + ':' + v; if (seen.has(key)) continue; seen.add(key);
-      found.push('- ' + label + ': ' + v.toLocaleString() + (m[3] === '坪' ? '坪' : '㎡'));
-    } }
-  const areaSec = found.length
-    ? '## ★依頼文で指定された面積（依頼者の申告値・最優先で使え）★\n' + found.join('\n')
-      + '\nこれは依頼者が図面・現場を見て書いた確定値である。**推定でこの数字を上書きするな。**'
-      + '\n**部位ごとの行の合計を、この面積と一致させろ。**合わなければ拾い落としがある。\n\n'
-    : '';
-  const head = [
-    spec.targets ? `\n## ★拾ってほしい対象（これを最優先）★\n${spec.targets}\n` : '',
-    spec.comment ? `\n## 工事内容・条件\n${spec.comment}\n` : '',
-  ].join('');
-  content.push({ type: 'text', text: PROMPT.replace('## 拾い出しの鉄則', head + '\n## 拾い出しの鉄則') });
+  // 差し込む中身（面積セクション・対象・工事内容・縮尺）の組み立ては context.js に集約。
+  // ここで書き写すと本番とズレる（実際にズレていた）。
+  content.push({ type: "text", text: fillPrompt(PROMPT, spec) });
 
+  return content;
+}
+
+async function runOnce(client, spec) {
+  const content = buildContent(spec);
   const res = await client.messages.stream({
     model: 'claude-sonnet-4-6', max_tokens: 64000, temperature: 0,
     system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
@@ -134,11 +122,28 @@ async function runOnce(client, spec) {
     console.error('truth/<名前>.json を1つ作ってから回してください（書き方はこのファイルの先頭コメント参照）');
     process.exit(1);
   }
-  const only = process.argv[2];
-  const times = Number(process.argv[3] || 1);
+  const argv = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+  const only = argv[0];
+  const times = Number(argv[1] || 1);
   const files = fs.readdirSync(TRUTH_DIR).filter((f) => f.endsWith('.json'))
     .filter((f) => !only || f.replace(/\.json$/, '') === only);
   if (!files.length) { console.error('対象の正解ファイルがありません'); process.exit(1); }
+
+  // --dry: API を叩かず、投げる文面だけ確かめる（課金なし）。
+  //   本番とズレていないかを回す前に見るためのもの。check-prompt-sync.js と併せて使う。
+  if (process.argv.includes("--dry")) {
+    for (const f of files) {
+      const spec = JSON.parse(fs.readFileSync(path.join(TRUTH_DIR, f), "utf-8"));
+      if (!fs.existsSync(spec.file)) { console.log(f + ": 図面が見つかりません → " + spec.file); continue; }
+      const text = buildContent(spec).filter((c) => c.type === "text").map((c) => c.text).join(String.fromCharCode(10));
+      console.log("=== " + f + " ===");
+      console.log("  資料           : " + path.basename(spec.file));
+      console.log("  文面           : " + text.length + "文字");
+      console.log("  面積セクション : " + (text.includes("依頼文で指定された面積") ? "あり" : "なし（依頼文に面積の記載が無いため。本番も同じ挙動）"));
+      console.log("  未展開の目印   : " + (text.includes("{{") ? "★残っている（バグ）" : "なし"));
+    }
+    process.exit(0);
+  }
 
   const Anthropic = require(path.join(DIR, '..', '..', 'node_modules', '@anthropic-ai', 'sdk'));
   const client = new Anthropic({ apiKey: loadKey() });

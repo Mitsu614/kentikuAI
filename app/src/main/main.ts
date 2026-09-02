@@ -7310,8 +7310,29 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
       takeoff.warnings.unshift('★この拾い出しは、項目が多く出力の途中で切れています。表の末尾に抜けがあります。「拾ってほしい対象」欄で部位を絞る（例:「床と幅木だけ」）か、図面を分けて拾い直してください。');
     }
 
+    const rawItems: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
+
+    // ★数量を出せなかった行（quantity が null / 0）を、表にそのまま残さない。
+    //   以前は Number(it.quantity) || 0 で 0 に潰して items に通していたため、
+    //   「廊下・玄関・EV・階段・機械浴室…（差引き）」のように**工事範囲は表に載っているのに数量0＝0円**
+    //   という行が、そのまま見積へ流れていた。範囲が書いてある分、拾い落としより気づきにくい。
+    //   （老人ホーム1階のPDFで実際に発生。2026-08-27 のハーネス計測で発覚）
+    //   拾えなかったものは unreadable に回す。画面の「⚠図面から拾えなかった項目」に出て、
+    //   「推測で数量を作っていない・実測値を入れてほしい」と利用者に伝わる。
+    const unquantified = rawItems.filter((it: any) => !(Number(it.quantity) > 0));
+    if (unquantified.length > 0) {
+      takeoff.unreadable = Array.isArray(takeoff.unreadable) ? takeoff.unreadable : [];
+      unquantified.forEach((it: any) => {
+        const label = [it.part, it.name].filter(Boolean).join(' ').trim() || '名称の無い項目';
+        const why = String(it.note || it.formula || '').trim();
+        takeoff.unreadable.push(
+          `${label} … 数量を出せませんでした${why ? `（${why}）` : ''}。0円で計上しないよう表から外しています。実測値を入れてください。`
+        );
+      });
+    }
+
     // 数量の整合は機械側で担保する（AIは quantityWithLoss の掛け忘れ・桁落ちをやる）
-    takeoff.items = Array.isArray(takeoff.items) ? takeoff.items.map((it: any) => {
+    takeoff.items = rawItems.filter((it: any) => Number(it.quantity) > 0).map((it: any) => {
       const q = Number(it.quantity) || 0;
       const loss = Number(it.lossRate) || 0;
       const withLoss = Number(it.quantityWithLoss) || 0;
@@ -7319,7 +7340,7 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
       // 申告値が期待値と5%以上ずれていたら、式のほうを信じて引き直す
       const fixed = (withLoss > 0 && Math.abs(withLoss - expected) / Math.max(expected, 1) < 0.05) ? withLoss : expected;
       return { ...it, quantity: q, lossRate: loss, quantityWithLoss: fixed };
-    }) : [];
+    });
 
     // 原本を保存して履歴に残す（OCRと同じ ocr_files ディレクトリ。DBにはパスだけ＝DB肥大化を避ける）
     let takeoffLogId: number | null = null;
