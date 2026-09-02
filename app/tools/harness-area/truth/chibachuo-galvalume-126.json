@@ -1,0 +1,9 @@
+{
+  "target": "roof",
+  "truthM2": 126,
+  "file": "C:/Users/mitsu/OneDrive/Desktop/kentikuAI/app/tools/harness-roof/imgs/chibachuo-galvalume-126.jpg",
+  "comment": "戸建て住宅の屋根カバー工法。屋根面積を知りたい",
+  "viewType": "oblique",
+  "coversWhole": true,
+  "note": "harness-roof/ds_truth.json から移行（戸建て住宅 ガルバリウム）"
+}

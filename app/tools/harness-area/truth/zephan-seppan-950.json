@@ -1,0 +1,9 @@
+{
+  "target": "roof",
+  "truthM2": 950,
+  "file": "C:/Users/mitsu/OneDrive/Desktop/kentikuAI/app/tools/harness-roof/imgs/zephan-seppan-950.jpg",
+  "comment": "倉庫の折板屋根カバー工事。施工面積を知りたい",
+  "viewType": "oblique",
+  "coversWhole": true,
+  "note": "harness-roof/ds_truth.json から移行（倉庫 折板屋根）"
+}
