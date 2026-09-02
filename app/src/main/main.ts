@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { geocode, fetchAerial, pickZoom, metersPerPixel, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
+import { geocode, fetchAerial, pickView, metersPerPixel, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, normalizeWorkType, sendMailEdge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
@@ -7712,8 +7712,10 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     const hit = await geocode(address);
     if (!hit) throw new Error('ERROR: その住所が見つかりませんでした。番地まで入れるか、近くの住所でお試しください。');
 
-    const z = pickZoom(hit.lat, Number(data?.expectAreaM2) || 0, 3);
-    const air = await fetchAerial(hit.lat, hit.lon, z, 3);
+    // 地理院タイルは z=18 が上限（実測で確認）。解像度は上げられないので、
+    // 視野はタイル枚数で調整する。小さい建物ほど枚数を減らして隣家を写し込まない。
+    const view = pickView(hit.lat, Number(data?.expectAreaM2) || 0);
+    const air = await fetchAerial(hit.lat, hit.lon, view.z, view.grid);
 
     const config = loadApiConfig();
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。設定画面からAPIキーを入力してください。');
