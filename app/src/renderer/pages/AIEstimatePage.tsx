@@ -567,6 +567,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 中心・幅・高さ・角度で持つ。左上基準だと、回転させたとき「反対側の角を固定して伸ばす」
   // 計算ができない（角の位置が回転に依存するため）。中心基準なら素直に書ける。
   const [aerialRect, setAerialRect] = useState<{ cx: number; cy: number; w: number; h: number; rot: number } | null>(null);
+  // ★L字・コの字の建物は長方形では囲めない。頂点を足して輪郭をなぞれるようにする。
+  //   null のあいだは長方形モード（移動・拡縮・回転）。多角形にすると長方形の四隅が
+  //   そのまま頂点になり、あとは足す・削る・動かすで形を作る。単位は画像px。
+  //   長方形の状態は残しておくので「長方形に戻す」で行き来できる。
+  const [aerialPoly, setAerialPoly] = useState<{ x: number; y: number }[] | null>(null);
   const aerialDrag = useRef<any>(null);
   // 写真の表示位置（CSS px）。広めに読み込んだ画像の、どこを見せているか。
   // ★離すたびに取り直すとカクつくので、読み込んだ範囲の中は通信なしで滑らかに動かす。
@@ -599,6 +604,71 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     const ix = (ax - aerialOff.x) / aerialZoom, iy = (ay - aerialOff.y) / aerialZoom;
     setAerialZoom(nz);
     setAerialOff(clampOff({ x: ax - ix * nz, y: ay - iy * nz }, aerial.sizePx * nz));
+  };
+
+  // 赤い四角は、写真が出た時点から置いておく。
+  // AIの読みを待たなくても、掴んで建物に合わせればそのまま面積になる
+  // （縮尺は確定しているので、合わせたぶんだけ正確になる）。
+  // 何も出ていないと「まず何をすればいいのか」が分からず、AI推定を押しに行ってしまう。
+  // prev を渡すと前の四角の実寸と向きを引き継ぐ。写す範囲を変えても建物の大きさは
+  // 変わらないので、ピクセルのまま引き継ぐと勝手に伸び縮みして見える。
+  const makeAerialRect = (res: any, prev?: { w: number; h: number; rot: number; mPerPx: number } | null) => {
+    const size = res?.sizePx || 256;
+    const mpp = Number(res?.mPerPx) > 0 ? Number(res.mPerPx) : 0.5;
+    const carry = prev && prev.mPerPx > 0 ? prev.mPerPx / mpp : 0;
+    const w = carry ? Math.min(size * 0.9, prev!.w * carry) : Math.min(size * 0.35, 12 / mpp);
+    const h = carry ? Math.min(size * 0.9, prev!.h * carry) : w;
+    return { cx: size / 2, cy: size / 2, w, h, rot: prev?.rot ?? 0 };
+  };
+  // いまの四角の実寸と向き。写真を取り直しても引き継げるように控えておく
+  const aerialRectMeta = () =>
+    aerialRect ? { ...aerialRect, mPerPx: Number(aerial?.mPerPx) || 0 } : null;
+  const aerialPolyMeta = () =>
+    aerialPoly && aerialPoly.length >= 3
+      ? { pts: aerialPoly.map(q => ({ ...q })), mPerPx: Number(aerial?.mPerPx) || 0 }
+      : null;
+  // 多角形も写真を取り直したら引き継ぐ。重心を写真の中心へ置き直すだけで、形は変えない
+  const carryAerialPoly = (res: any, prev?: { pts: { x: number; y: number }[]; mPerPx: number } | null) => {
+    if (!prev || prev.pts.length < 3) return null;
+    const size = res?.sizePx || 256;
+    const mpp = Number(res?.mPerPx) > 0 ? Number(res.mPerPx) : 0.5;
+    const k = prev.mPerPx > 0 ? prev.mPerPx / mpp : 1;
+    const cx = prev.pts.reduce((t, q) => t + q.x, 0) / prev.pts.length;
+    const cy = prev.pts.reduce((t, q) => t + q.y, 0) / prev.pts.length;
+    return prev.pts.map(q => ({ x: size / 2 + (q.x - cx) * k, y: size / 2 + (q.y - cy) * k }));
+  };
+  // 回転を反映した長方形の四隅。多角形へ移るときの出発点になる
+  const aerialRectCorners = (R: { cx: number; cy: number; w: number; h: number; rot: number }) => {
+    const rad = (R.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+    return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => {
+      const lx = sx * R.w / 2, ly = sy * R.h / 2;
+      return { x: R.cx + lx * cos - ly * sin, y: R.cy + lx * sin + ly * cos };
+    });
+  };
+  // 多角形の面積（靴ひも公式）。自分で交差していなければこれで正しい
+  const polyAreaPx = (pts: { x: number; y: number }[]) => {
+    let t = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      t += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(t) / 2;
+  };
+  const polyBBox = (pts: { x: number; y: number }[]) => ({
+    x0: Math.min(...pts.map(q => q.x)), x1: Math.max(...pts.map(q => q.x)),
+    y0: Math.min(...pts.map(q => q.y)), y1: Math.max(...pts.map(q => q.y)),
+  });
+  // 長方形 ⇄ 多角形。戻すときは多角形を囲む長方形にするので、位置を見失わない
+  const toAerialPolygon = () => { if (aerialRect) setAerialPoly(aerialRectCorners(aerialRect)); };
+  const toAerialRect = () => {
+    if (aerialPoly && aerialPoly.length >= 3) {
+      const b = polyBBox(aerialPoly);
+      setAerialRect({
+        cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2,
+        w: Math.max(6, b.x1 - b.x0), h: Math.max(6, b.y1 - b.y0), rot: 0,
+      });
+    }
+    setAerialPoly(null);
   };
 
   // ── 航空写真測定は プロプラン以上の機能 ──
@@ -799,6 +869,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       const res = await (window as any).api.areaFromAddress({ address: addr, comment, fetchOnly: true });
       endBusy();
       setAerial(res);
+      // 写真と一緒に四角も出す。あとは利用者が建物へ合わせるだけ
+      setAerialRect(makeAerialRect(res));
+      setAerialPoly(null);
     } catch (e: any) {
       endBusy({ ok: false });
       setError((e?.message || '航空写真の取得に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
@@ -812,6 +885,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const refetchAerial = async (grid: number) => {
     const addr = siteAddress.trim();
     if (!addr || aerialLoading) return;
+    const prevRect = aerialRectMeta();
+    const prevPoly = aerialPolyMeta();
     setAerialLoading(true);
     setError('');
     try {
@@ -823,6 +898,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         viewLat: aerial?.viewLat, viewLon: aerial?.viewLon,
       });
       setAerial(res);
+      setAerialRect(makeAerialRect(res, prevRect));
+      setAerialPoly(carryAerialPoly(res, prevPoly));
     } catch (e: any) {
       setError((e?.message || '航空写真の取得に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
     } finally {
@@ -869,6 +946,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       // 端まで来て、さらに強く引っぱったときだけ その先を読みに行く。
       // 少し当たった程度で取り直すと、意図せず読み込みが走ってうるさい。
       if (!p || p.over < 70) return;
+      const prevRect = aerialRectMeta();
+      const prevPoly = aerialPolyMeta();
       const c = aerialCenterPx();
       setAerialLoading(true);
       try {
@@ -877,7 +956,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           viewLat: aerial.viewLat, viewLon: aerial.viewLon, panTo: { x: c.x, y: c.y },
         });
         setAerial(res);
-        setAerialRect(null);
+        // 継ぎ足した写真は別物なので、形だけ引き継いで中央へ置き直す
+        setAerialRect(makeAerialRect(res, prevRect));
+        setAerialPoly(carryAerialPoly(res, prevPoly));
       } catch (e: any) {
         setError((e?.message || '航空写真の取得に失敗しました').replace(/^ERROR: /, ''));
       } finally {
@@ -961,6 +1042,55 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     window.addEventListener('mouseup', onUp);
   };
 
+  // 頂点を動かす（which に番号）／多角形ごと動かす（which='move'）。
+  // seed は「頂点を足した直後、その頂点をそのまま掴んで動かす」ために使う。
+  // state の反映を待つと、増やした直後の1回目のドラッグが古い配列を掴んでしまう。
+  const startPolyDrag = (ev: React.MouseEvent, which: number | 'move', seed?: { x: number; y: number }[]) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const base = seed || aerialPoly;
+    if (!base || !aerial) return;
+    const box = (ev.currentTarget as HTMLElement).closest('[data-aerial-box]') as HTMLElement;
+    if (!box) return;
+    const scale = aerial.sizePx / box.getBoundingClientRect().width;   // 表示px → 画像px
+    const sx = ev.clientX, sy = ev.clientY;
+    const pts = base.map(q => ({ ...q }));
+    const lim = (v: number) => Math.max(0, Math.min(v, aerial.sizePx));
+    // 全体を動かすときは、点ごとに写真の外へ出ないよう留めると形がゆがむ。
+    // 動かす量そのものを制限して、形を保ったまま端で止める
+    const bb = polyBBox(pts);
+    const onMove = (e: MouseEvent) => {
+      let dx = (e.clientX - sx) * scale, dy = (e.clientY - sy) * scale;
+      if (which === 'move') {
+        dx = Math.max(-bb.x0, Math.min(dx, aerial.sizePx - bb.x1));
+        dy = Math.max(-bb.y0, Math.min(dy, aerial.sizePx - bb.y1));
+        setAerialPoly(pts.map(q => ({ x: q.x + dx, y: q.y + dy })));
+      } else {
+        setAerialPoly(pts.map((q, i) => i === which ? { x: lim(q.x + dx), y: lim(q.y + dy) } : q));
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+  // 辺の真ん中の＋をつまむと、そこに頂点が増えてそのまま引っぱれる
+  const addPolyVertexAt = (ev: React.MouseEvent, i: number) => {
+    if (!aerialPoly) return;
+    const a = aerialPoly[i], b = aerialPoly[(i + 1) % aerialPoly.length];
+    const next = aerialPoly.map(q => ({ ...q }));
+    next.splice(i + 1, 0, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+    setAerialPoly(next);
+    startPolyDrag(ev, i + 1, next);
+  };
+  // 頂点のダブルクリックで削除。三角形より減らすと面積が出せないので止める
+  const removePolyVertex = (i: number) => {
+    if (!aerialPoly || aerialPoly.length <= 3) return;
+    setAerialPoly(aerialPoly.filter((_, j) => j !== i));
+  };
+
   // 四角から面積を出す。縮尺は確定しているので掛けるだけ。
   //
   // 航空写真で読めるのは**水平投影面積**。そこから施工数量までは2段ある。
@@ -969,10 +1099,15 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 遮熱シートやカバー工法は材料が山谷に沿うので、展開係数を掛けないと
   // 折板88mmで4割、150mmなら7割足りない見積になる。
   const aerialRectArea = () => {
-    if (!aerialRect || !aerial?.mPerPx) return null;
-    const wM = aerialRect.w * aerial.mPerPx;
-    const hM = aerialRect.h * aerial.mPerPx;
-    const plan = wM * hM;
+    if (!aerial?.mPerPx) return null;
+    const mpp = Number(aerial.mPerPx);
+    // 多角形のときは靴ひも公式で実面積を出す。外接の縦横は見当をつけるための参考値
+    const poly = aerialPoly && aerialPoly.length >= 3 ? aerialPoly : null;
+    if (!poly && !aerialRect) return null;
+    const bb = poly ? polyBBox(poly) : null;
+    const wM = poly ? (bb!.x1 - bb!.x0) * mpp : aerialRect!.w * mpp;
+    const hM = poly ? (bb!.y1 - bb!.y0) * mpp : aerialRect!.h * mpp;
+    const plan = poly ? polyAreaPx(poly) * mpp * mpp : wM * hM;
     const slope = Number(aerial.slopeFactor) > 0 ? Number(aerial.slopeFactor) : 1;
     const roof = plan * slope;
     // 画面で選んだ屋根種別が最優先。選んでいなければ航空写真からの判定を候補として使う
@@ -983,6 +1118,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       wM, hM, plan, slope, roof, dev,
       area: roof * dev,
       devFrom: picked ? 'user' : suggest ? 'ai' : 'none',
+      isPoly: !!poly, pts: poly ? poly.length : 4,
     };
   };
 
@@ -999,8 +1135,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     const y = Math.round((ev.clientY - rect.top) * scale);
     // いまの四角の大きさと角度を覚えておく。
     // 同じ区画の建物は向きも揃っていることが多いので、角度も引き継ぐと合わせ直しが減る
-    const keep = aerialRect ? { w: aerialRect.w, h: aerialRect.h } : null;
-    const keepRot = aerialRect?.rot ?? 0;
+    const prevRect = aerialRectMeta();
+    const prevPoly = aerialPolyMeta();
     setAerialLoading(true);
     setError('');
     try {
@@ -1010,10 +1146,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         viewLat: aerial.viewLat, viewLon: aerial.viewLon, panTo: { x, y },
       });
       setAerial({ ...res, slopeFactor: aerial.slopeFactor || 1 });
-      const size = res.sizePx || 256;
-      const w = keep ? keep.w : Math.min(size * 0.35, 12 / (res.mPerPx || 0.5));
-      const h = keep ? keep.h : w;
-      setAerialRect({ cx: size / 2, cy: size / 2, w, h, rot: keepRot });
+      setAerialRect(makeAerialRect(res, prevRect));
+      setAerialPoly(carryAerialPoly(res, prevPoly));
     } catch (e: any) {
       setError((e?.message || '航空写真の取得に失敗しました').replace(/^ERROR: /, ''));
     } finally {
@@ -1051,6 +1185,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       } else {
         setAerialRect(null);
       }
+      // AIが返すのは間口×桁行の長方形。多角形のままだと読みを重ねられないので解除する
+      setAerialPoly(null);
       if (res?.quantityM2 > 0) setConfirmArea(String(Math.round(res.quantityM2)));
     } catch (e: any) {
       endBusy({ ok: false });
@@ -2521,9 +2657,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               {/* 住所の解決点は建物の上に落ちないことが多い。人に選んでもらう。 */}
               {aerial.step === 'pick' && (
                 <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1e40af', background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: 4, padding: '8px 10px', marginBottom: 6 }}>
-                  👇 測りたい建物を<span style={{ textDecoration: 'underline' }}>ダブルクリック</span>してください（何度でも変えられます）
+                  👇 <span style={{ textDecoration: 'underline' }}>赤い四角を、測りたい建物に合わせてください</span>（合わせた四角がそのまま面積になります）
                   <div style={{ fontSize: 11, fontWeight: 'normal', color: '#1e3a8a', marginTop: 3, lineHeight: 1.7 }}>
-                    写真は<strong>押しっぱなしで動かせます</strong>（上下左右）。目的の建物を画面に入れてから、ダブルクリックしてください。<br />
+                    四角は<strong>中をドラッグで移動</strong>／<strong>四隅で大きさ変更</strong>／<strong>上の青い丸で回転</strong>できます。<br />
+                    写真は<strong>押しっぱなしで動かせます</strong>（上下左右）。離れた建物へは<strong>ダブルクリック</strong>で寄れます。<br />
                     住所だけでは建物を特定できません（番地まで入れても街区の代表点が返るため）。
                     青い十字が住所の位置です。ずれていても問題ありません。
                   </div>
@@ -2610,7 +2747,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         点の印だけだと「どの建物を、どこまで測ったのか」が分からない。
                         間口×桁行を実寸で描けば、別の建物を測っていないか・隣家まで
                         巻き込んでいないかが一目で分かる。 */}
-                    {aerialRect && (() => {
+                    {aerialRect && !aerialPoly && (() => {
                       const a = aerialRectArea();
                       const R = aerialRect;
                       const pc = (v: number) => `${v / aerial.sizePx * 100}%`;
@@ -2680,6 +2817,68 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         </div>
                       );
                     })()}
+                    {/* ★多角形モード。L字・コの字の建物は長方形では囲めない。
+                        頂点＝白い四角（ドラッグで移動／ダブルクリックで削除）、
+                        辺の真ん中＝＋（つまむとそこに頂点が増え、そのまま引っぱれる）。
+                        面積は靴ひも公式なので、何点でも凹んでいても正しく出る。 */}
+                    {aerialPoly && aerialPoly.length >= 3 && (() => {
+                      const a = aerialRectArea();
+                      const P = aerialPoly;
+                      const pc = (v: number) => `${v / aerial.sizePx * 100}%`;
+                      const pts = P.map(q => `${q.x},${q.y}`).join(' ');
+                      const bb = polyBBox(P);
+                      return (
+                        <>
+                          <svg viewBox={`0 0 ${aerial.sizePx} ${aerial.sizePx}`} preserveAspectRatio="none"
+                            style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'visible', zIndex: 2 }}>
+                            {/* 白フチ→赤 の二度描き。航空写真の上でも輪郭が沈まない。
+                                線の太さは表示倍率で変えたくないので non-scaling-stroke */}
+                            <polygon points={pts} fill="rgba(220,38,38,.14)" stroke="#fff" strokeWidth={6}
+                              vectorEffect="non-scaling-stroke"
+                              style={{ pointerEvents: 'auto', cursor: 'grab' }}
+                              onMouseDown={(e) => startPolyDrag(e, 'move')} />
+                            <polygon points={pts} fill="none" stroke="#dc2626" strokeWidth={3}
+                              vectorEffect="non-scaling-stroke" style={{ pointerEvents: 'none' }} />
+                          </svg>
+                          {P.map((q, i) => {
+                            const r = P[(i + 1) % P.length];
+                            return (
+                              <div key={`mid${i}`} onMouseDown={(e) => addPolyVertexAt(e, i)}
+                                title="つまむと、ここに頂点が増えます"
+                                style={{
+                                  position: 'absolute', left: pc((q.x + r.x) / 2), top: pc((q.y + r.y) / 2),
+                                  width: 15, height: 15, marginLeft: -7.5, marginTop: -7.5, zIndex: 3,
+                                  cursor: 'copy', borderRadius: '50%', background: '#fff',
+                                  border: '2px solid #dc2626', color: '#dc2626',
+                                  fontSize: 10, fontWeight: 'bold', lineHeight: '11px', textAlign: 'center',
+                                  boxShadow: '0 1px 3px rgba(0,0,0,.5)', userSelect: 'none',
+                                }}>＋</div>
+                            );
+                          })}
+                          {P.map((q, i) => (
+                            <div key={`v${i}`} onMouseDown={(e) => startPolyDrag(e, i)}
+                              onDoubleClick={(e) => { e.stopPropagation(); removePolyVertex(i); }}
+                              title={P.length > 3 ? 'ドラッグで移動／ダブルクリックで削除' : 'ドラッグで移動（3点より減らせません）'}
+                              style={{
+                                position: 'absolute', left: pc(q.x), top: pc(q.y),
+                                width: 16, height: 16, marginLeft: -8, marginTop: -8, zIndex: 4,
+                                cursor: 'move', background: '#fff', border: '3px solid #dc2626',
+                                borderRadius: 3, boxShadow: '0 1px 3px rgba(0,0,0,.5)',
+                              }} />
+                          ))}
+                          <span style={{
+                            position: 'absolute', left: pc((bb.x0 + bb.x1) / 2), top: pc(bb.y0),
+                            transform: 'translate(-50%, -160%)', zIndex: 4,
+                            background: '#dc2626', color: '#fff', fontSize: 11, fontWeight: 'bold',
+                            padding: '2px 7px', borderRadius: 3, whiteSpace: 'nowrap',
+                            boxShadow: '0 1px 3px rgba(0,0,0,.4)', pointerEvents: 'none',
+                          }}>
+                            {a ? `${P.length}点 ${a.plan.toFixed(1)}㎡` : ''}
+                            {a && a.dev !== 1 ? ` ×${a.dev} → ${a.area.toFixed(1)}㎡` : ''}
+                          </span>
+                        </>
+                      );
+                    })()}
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 14, fontSize: 11, color: '#475569', marginBottom: 6 }}>
@@ -2698,15 +2897,30 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   </div>
                 </>
               )}
-              {aerialRect && (
+              {(aerialRect || aerialPoly) && (
                 <div style={{ fontSize: 12, color: '#166534', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 4, padding: '7px 9px', marginBottom: 6, lineHeight: 1.7 }}>
-                  <strong>赤い四角を、建物の輪郭に合わせてください。</strong><br />
-                  中をドラッグすると動きます。<strong>四隅の白い四角</strong>をつまむと大きさを変えられます。
-                  合わせた四角の面積がそのまま使えます（縮尺は確定しているので、合わせた分だけ正確になります）。<br />
-                  <span style={{ color: '#475569' }}>
-                    別の建物へは<strong>ダブルクリック</strong>で何度でも移れます（AIを使わないので無料・無制限）。
-                    写真は押しっぱなしで動かせます。
-                  </span>
+                  {aerialPoly ? (
+                    <>
+                      <strong>赤い線を、建物の輪郭に合わせてください。</strong><br />
+                      <strong>白い四角（頂点）</strong>をドラッグで移動、<strong>辺の真ん中の＋</strong>をつまむと頂点が増えます。
+                      いらない頂点は<strong>ダブルクリック</strong>で消せます（3点までは残ります）。
+                      中をドラッグすれば全体が動きます。<br />
+                      <span style={{ color: '#475569' }}>
+                        囲んだ形の面積がそのまま使えます。L字・コの字も、角に頂点を足せば1つで囲めます。
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <strong>赤い四角を、建物の輪郭に合わせてください。</strong><br />
+                      中をドラッグすると動きます。<strong>四隅の白い四角</strong>をつまむと大きさを、
+                      <strong>上の青い丸</strong>をつまむと向きを変えられます（Shiftで15度ずつ）。
+                      合わせた四角の面積がそのまま使えます（縮尺は確定しているので、合わせた分だけ正確になります）。<br />
+                      <span style={{ color: '#475569' }}>
+                        L字など長方形で囲めない建物は、下の<strong>「✏️ 多角形にする」</strong>で角を足せます。
+                        別の建物へは<strong>ダブルクリック</strong>で何度でも移れます（AIを使わないので無料・無制限）。
+                      </span>
+                    </>
+                  )}
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -2714,11 +2928,26 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   style={{ fontSize: 12, padding: '6px 12px' }}>
                   ← 広い範囲に戻す
                 </button>
+                {/* 長方形で囲めない建物のための切り替え。行き来しても位置は見失わない */}
+                {aerialRect && !aerialPoly && (
+                  <button className="btn" onClick={toAerialPolygon}
+                    style={{ fontSize: 12, padding: '6px 12px' }}
+                    title="いまの四角の四隅を頂点にして、角を足せる多角形にします（L字・コの字の建物用）">
+                    ✏️ 多角形にする（L字など）
+                  </button>
+                )}
+                {aerialPoly && (
+                  <button className="btn" onClick={toAerialRect}
+                    style={{ fontSize: 12, padding: '6px 12px' }}
+                    title="いまの多角形を囲む長方形に戻します">
+                    □ 長方形に戻す
+                  </button>
+                )}
                 {/* AIの推定は任意。1日の上限を使うので、押したときだけ走らせる */}
-                {aerialRect && (
+                {(aerialRect || aerialPoly) && (
                   <button className="btn" onClick={measureAerialAt} disabled={aerialLoading}
                     style={{ fontSize: 12, padding: '6px 12px' }}
-                    title="画面中央の建物の大きさをAIに推定させます。1日の面積確認の回数を1回使います">
+                    title="画面中央の建物の大きさをAIに推定させます。1日の面積確認の回数を1回使います（AIが返すのは長方形なので、多角形は解除されます）">
                     🤖 中央の建物の大きさをAIに推定させる
                   </button>
                 )}
@@ -2752,7 +2981,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               {/* 測れたら、そのまま見積へ。
                   航空写真は縮尺が確定しているので、写真の目測と違い実測値と同じ扱いにしてよい。
                   面積は編集できるようにしておく（勾配や下屋の有無で調整したいことがある）。 */}
-              {aerialRect && (
+              {(aerialRect || aerialPoly) && (
                 <div style={{ borderTop: '1px solid #93c5fd', marginTop: 10, paddingTop: 10 }}>
                   {(() => {
                     const a = aerialRectArea();
@@ -2776,7 +3005,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         )}
                         {/* 水平投影 → 屋根面積 → 施工数量。遮熱シートはここが本体 */}
                         <div style={{ fontSize: 13, color: '#1e3a8a', lineHeight: 1.9 }}>
-                          <div>水平投影: <strong>{a.wM.toFixed(1)}m × {a.hM.toFixed(1)}m = {a.plan.toFixed(1)}㎡</strong></div>
+                          <div>
+                            水平投影: <strong>
+                              {a.isPoly
+                                ? `${a.pts}点の多角形 = ${a.plan.toFixed(1)}㎡`
+                                : `${a.wM.toFixed(1)}m × ${a.hM.toFixed(1)}m = ${a.plan.toFixed(1)}㎡`}
+                            </strong>
+                            {a.isPoly && (
+                              <span style={{ fontSize: 11, color: '#475569' }}>
+                                　（外接する長方形 {a.wM.toFixed(1)}×{a.hM.toFixed(1)}m）
+                              </span>
+                            )}
+                          </div>
                           {a.slope !== 1 && <div>× 勾配補正 {a.slope} → 屋根面積 <strong>{a.roof.toFixed(1)}㎡</strong></div>}
                           {a.dev !== 1 && (
                             <div style={{ color: '#b91c1c' }}>
