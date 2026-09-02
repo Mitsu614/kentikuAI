@@ -869,9 +869,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       const res = await (window as any).api.areaFromAddress({ address: addr, comment, fetchOnly: true });
       endBusy();
       setAerial(res);
-      // 写真と一緒に四角も出す。あとは利用者が建物へ合わせるだけ
-      setAerialRect(makeAerialRect(res));
-      setAerialPoly(null);
+      // 写真と一緒に枠も出す。あとは利用者が建物へ合わせるだけ。
+      // ★最初から多角形で置く。建物は長方形とは限らないのに「角を足せる」ことに
+      //   気づかないまま長方形で囲まれると、L字の中庭やへこみまで面積に入ってしまう。
+      //   まっすぐな長方形で囲みたい人は「□ 長方形に戻す」で切り替えられる。
+      const r0 = makeAerialRect(res);
+      setAerialRect(r0);
+      setAerialPoly(aerialRectCorners(r0));
     } catch (e: any) {
       endBusy({ ok: false });
       setError((e?.message || '航空写真の取得に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
@@ -1181,12 +1185,15 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       // AIの読み取りを四角の初期値にする。あとは人が合わせる
       if (res?.widthM > 0 && res?.mPerPx > 0) {
         const w = res.widthM / res.mPerPx, h = res.lengthM / res.mPerPx;
-        setAerialRect({ cx: res.targetPx.x, cy: res.targetPx.y, w, h, rot: aerialRect?.rot ?? 0 });
+        const r = { cx: res.targetPx.x, cy: res.targetPx.y, w, h, rot: aerialRect?.rot ?? 0 };
+        setAerialRect(r);
+        // AIが返すのは間口×桁行の長方形。多角形で見ているなら、その四隅を頂点にして
+        // 渡す（形は上書きされるが、そこから角を動かして輪郭へ寄せられる）
+        setAerialPoly(aerialPoly ? aerialRectCorners(r) : null);
       } else {
         setAerialRect(null);
+        setAerialPoly(null);
       }
-      // AIが返すのは間口×桁行の長方形。多角形のままだと読みを重ねられないので解除する
-      setAerialPoly(null);
       if (res?.quantityM2 > 0) setConfirmArea(String(Math.round(res.quantityM2)));
     } catch (e: any) {
       endBusy({ ok: false });
@@ -2657,9 +2664,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               {/* 住所の解決点は建物の上に落ちないことが多い。人に選んでもらう。 */}
               {aerial.step === 'pick' && (
                 <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1e40af', background: '#dbeafe', border: '1px solid #93c5fd', borderRadius: 4, padding: '8px 10px', marginBottom: 6 }}>
-                  👇 <span style={{ textDecoration: 'underline' }}>赤い四角を、測りたい建物に合わせてください</span>（合わせた四角がそのまま面積になります）
+                  👇 <span style={{ textDecoration: 'underline' }}>赤い枠を、測りたい建物に合わせてください</span>（囲んだ形がそのまま面積になります）
                   <div style={{ fontSize: 11, fontWeight: 'normal', color: '#1e3a8a', marginTop: 3, lineHeight: 1.7 }}>
-                    四角は<strong>中をドラッグで移動</strong>／<strong>四隅で大きさ変更</strong>／<strong>上の青い丸で回転</strong>できます。<br />
                     写真は<strong>押しっぱなしで動かせます</strong>（上下左右）。離れた建物へは<strong>ダブルクリック</strong>で寄れます。<br />
                     住所だけでは建物を特定できません（番地まで入れても街区の代表点が返るため）。
                     青い十字が住所の位置です。ずれていても問題ありません。
@@ -2907,6 +2913,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       中をドラッグすれば全体が動きます。<br />
                       <span style={{ color: '#475569' }}>
                         囲んだ形の面積がそのまま使えます。L字・コの字も、角に頂点を足せば1つで囲めます。
+                        別の建物へは<strong>ダブルクリック</strong>で何度でも移れます（AIを使わないので無料・無制限）。
+                        まっすぐな長方形で囲みたいときは、下の<strong>「□ 長方形に戻す」</strong>で切り替えられます。
                       </span>
                     </>
                   ) : (
