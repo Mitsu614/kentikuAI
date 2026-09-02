@@ -648,7 +648,9 @@ function PlanManagement() {
           <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2c3e50' }}>
             {planInfo.planName}
             <span style={{ fontSize: 14, fontWeight: 'normal', color: '#888', marginLeft: 8 }}>
-              ¥{(planInfo.price || 0).toLocaleString()}/月（税込）
+              {/* PLANS の price は税別。ここを「税込」と書くと数字と合わない */}
+              ¥{(planInfo.price || 0).toLocaleString()}/月（税別）
+              {planInfo.price > 0 && `　税込 ¥${Math.round(planInfo.price * 1.1).toLocaleString()}`}
             </span>
           </div>
           <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>{planInfo.description}</div>
@@ -738,11 +740,12 @@ function PlanManagement() {
                   {/* 法人カスタムは個別見積なので金額を出さない。0円と出ると無料に見える */}
                   {key === 'enterprise' ? '個別お見積り' : p.price === 0 ? '無料' : `¥${p.price.toLocaleString()}`}
                   {key !== 'enterprise' && p.price > 0 && (
-                    <span style={{ fontSize: 11, fontWeight: 'normal' }}>/月</span>
+                    <span style={{ fontSize: 11, fontWeight: 'normal' }}>/月（税別）</span>
                   )}
                 </div>
                 <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
                   月 {key === 'enterprise' ? '個別設定' : p.monthlyLimit + '単位'}
+                  {key !== 'enterprise' && p.price > 0 && `　／　税込 ¥${Math.round(p.price * 1.1).toLocaleString()}`}
                 </div>
                 <div style={{ fontSize: 11, color: '#aaa', marginBottom: 8 }}>{p.description}</div>
                 {canRequest && (
