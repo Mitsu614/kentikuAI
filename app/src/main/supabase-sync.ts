@@ -51,8 +51,20 @@ export function licenseRegister(companyName: string): Promise<any> {
 }
 // 承認制の新規申請: pending行をサーバー側で作成しトークンを受け取る（anon直INSERTの置換）
 //   { token, status: 'pending', active: false } | { error } | null
+//   ★2026-09-03に承認制をやめたので、新規はこれを使わない（過去の申請行の互換のために残す）。
 export function licenseRegisterPending(companyName: string, note = ''): Promise<any> {
   return licenseRequest({ action: 'register_pending', company_name: companyName, note });
+}
+// デモ開始(1) 申込み → サーバーが確認番号をメールで送る
+//   { status: 'code_sent', existing, to } | { error: 'company_already_has_demo'|'demo_expired'|... } | null
+//   ★この時点ではトークンを受け取らない。メールを受け取れた人だけが次で受け取る。
+export function licenseDemoStart(companyName: string, email: string, tel: string, deviceHash: string): Promise<any> {
+  return licenseRequest({ action: 'demo_start', company_name: companyName, email, tel, device_hash: deviceHash }, 20000);
+}
+// デモ開始(2) 確認番号 → トークンとプランを受け取る
+//   { token, plan, credits, max_credits, expires_at } | { error: 'wrong_code'|'code_expired'|... } | null
+export function licenseDemoVerify(email: string, code: string, deviceHash: string, ticket = ''): Promise<any> {
+  return licenseRequest({ action: 'demo_verify', email, code, device_hash: deviceHash, ticket });
 }
 // 管理: 全ライセンス一覧（承認/管理画面用。要 adminSecret） { ok, rows } | { error } | null
 export function licenseList(adminSecret: string): Promise<any> {

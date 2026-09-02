@@ -274,6 +274,8 @@ contextBridge.exposeInMainWorld('api', {
   getTenantUsage: (tenantId: number) => ipcRenderer.invoke('tenants:getUsage', tenantId),
   setTenantActive: (tenantId: number, active: boolean) => ipcRenderer.invoke('tenants:setActive', tenantId, active),
   register: (data: any) => ipcRenderer.invoke('auth:register', data),
+  demoStart: (data: any) => ipcRenderer.invoke('auth:demoStart', data),
+  demoVerify: (data: any) => ipcRenderer.invoke('auth:demoVerify', data),
   join: (data: any) => ipcRenderer.invoke('auth:join', data),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   checkUpdate: () => ipcRenderer.invoke('update:check'),

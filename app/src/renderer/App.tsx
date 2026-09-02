@@ -42,6 +42,14 @@ export default function App() {
   const [regEmail, setRegEmail] = useState('');
   const [regTel, setRegTel] = useState('');
   const [regMessage, setRegMessage] = useState('');
+  // デモ開始は2段階。'form'=申込み / 'code'=メールに届いた確認番号を入れる
+  const [regStep, setRegStep] = useState<'form' | 'code'>('form');
+  const [regCode, setRegCode] = useState('');
+  const [regSentTo, setRegSentTo] = useState('');
+  // 申込みの引換券（サーバーの行ID）。再開のときは申込みメールと登録済みメールが
+  // 違うので、これが無いと確認の段で対象を引けない。
+  const [regTicket, setRegTicket] = useState('');
+  const [regBusy, setRegBusy] = useState(false);
   const [regError, setRegError] = useState('');
   const [showPassReset, setShowPassReset] = useState(false);
   const [resetUser, setResetUser] = useState('');
@@ -147,27 +155,59 @@ export default function App() {
     setCurrentPage('dashboard');
   };
 
-  const handleRegister = async () => {
+  // デモ開始(1) 申込み → 確認番号のメールを送ってもらう。承認は無い。
+  const handleDemoStart = async () => {
     if (!regUser.trim() || !regPass || !regCompany.trim() || !regEmail.trim() || !regTel.trim()) {
       setRegError('全ての項目を入力してください');
       return;
     }
-    setRegError('');
+    setRegError(''); setRegMessage(''); setRegBusy(true);
     try {
-      const res = await (window as any).api.register({
-        username: regUser.trim(), password: regPass,
-        company: regCompany.trim(), email: regEmail.trim(), tel: regTel.trim(),
+      const res = await (window as any).api.demoStart({
+        username: regUser.trim(), company: regCompany.trim(),
+        email: regEmail.trim(), tel: regTel.trim(),
       });
       if (res.ok) {
-        // 「いつまで待てばいいのか」が分からないと不安になるので、目安を必ず添える
-        setRegMessage('登録申請を送信しました。\n承認は通常30分〜数時間で完了します（営業時間外の場合は翌営業日までにご連絡します）。\n承認後、アプリを再起動するとご利用いただけます。');
-        setRegUser(''); setRegPass(''); setRegCompany(''); setRegEmail(''); setRegTel('');
+        setRegSentTo(res.sentTo || regEmail.trim());
+        setRegTicket(res.ticket || '');
+        setRegStep('code');
+        setRegMessage(res.existing
+          ? 'この会社はすでに登録があります。登録済みのメールアドレスに確認番号を送りました。\n番号を入力すると、残っている単位と期間のまま再開できます。'
+          : '確認番号をメールで送りました。届いた6桁の番号を入力してください。');
       } else {
-        setRegError(res.error || '登録に失敗しました');
+        setRegError(res.error || 'デモの開始に失敗しました');
       }
     } catch (e: any) {
       setRegError('エラー: ' + e.message);
     }
+    setRegBusy(false);
+  };
+
+  // デモ開始(2) 確認番号 → その場で使えるようになる（そのままログイン状態にする）
+  const handleDemoVerify = async () => {
+    if (!regCode.trim()) { setRegError('メールに届いた確認番号を入力してください'); return; }
+    setRegError(''); setRegBusy(true);
+    try {
+      const res = await (window as any).api.demoVerify({
+        username: regUser.trim(), password: regPass, company: regCompany.trim(),
+        email: regEmail.trim(), tel: regTel.trim(), code: regCode.trim(), ticket: regTicket,
+      });
+      if (res.ok) {
+        setSessionInfo(res);
+        setLoggedIn(true);
+        setCurrentTenant(res.tenantId);
+        setTenantKey(k => k + 1);
+        setRegUser(''); setRegPass(''); setRegCompany(''); setRegEmail(''); setRegTel('');
+        setRegCode(''); setRegStep('form'); setRegMessage(''); setShowRegister(false);
+        const onboardingKey = `onboarding_done_${res.username}`;
+        if (!localStorage.getItem(onboardingKey)) { setShowOnboarding(true); setOnboardingStep(0); }
+      } else {
+        setRegError(res.error || '確認に失敗しました');
+      }
+    } catch (e: any) {
+      setRegError('エラー: ' + e.message);
+    }
+    setRegBusy(false);
   };
 
   const handleJoin = async () => {
@@ -393,9 +433,9 @@ export default function App() {
           >ログイン</button>
           </form>
           <div style={{ marginTop: 16, display: 'flex', justifyContent: 'center', gap: 16 }}>
-            <span onClick={() => { setShowRegister(!showRegister); setShowPassReset(false); setShowJoin(false); setRegMessage(''); setRegError(''); }}
+            <span onClick={() => { setShowRegister(!showRegister); setShowPassReset(false); setShowJoin(false); setRegMessage(''); setRegError(''); setRegStep('form'); setRegCode(''); }}
               style={{ fontSize: 14, color: '#3a7bd5', cursor: 'pointer' }}>
-              {showRegister ? '← ログインに戻る' : '新規登録はこちら'}
+              {showRegister ? '← ログインに戻る' : '無料デモを今すぐ始める'}
             </span>
             {!showRegister && !showPassReset && (
               <span onClick={() => { setShowJoin(!showJoin); setShowRegister(false); setShowPassReset(false); setJoinError(''); }}
@@ -442,7 +482,10 @@ export default function App() {
           )}
           {showRegister && (
             <div style={{ marginTop: 16, textAlign: 'left', borderTop: '1px solid #eee', paddingTop: 16 }}>
-              <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 12, textAlign: 'center', color: '#1a2332' }}>新規登録（承認制）</div>
+              <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 4, textAlign: 'center', color: '#1a2332' }}>無料デモを始める</div>
+              <div style={{ fontSize: 12, color: '#888', marginBottom: 12, textAlign: 'center', lineHeight: 1.7 }}>
+                承認待ちはありません。メールに届く確認番号を入れると、その場で使えます（10単位・30日）。
+              </div>
               {regMessage && <div style={{ color: '#27ae60', fontSize: 14, marginBottom: 12, textAlign: 'center', whiteSpace: 'pre-line', lineHeight: 1.7 }}>{regMessage}</div>}
               {regError && <div style={{ color: '#e74c3c', fontSize: 14, marginBottom: 12, textAlign: 'center' }}>{regError}</div>}
               <input value={regCompany} onChange={e => setRegCompany(e.target.value)} placeholder="会社名（必須）"
@@ -460,13 +503,36 @@ export default function App() {
               <input value={regTel} onChange={e => setRegTel(e.target.value)} placeholder="電話番号（必須）"
                 style={{ width: '100%', padding: '12px 14px', border: '2px solid #e0e0e0', borderRadius: 10, fontSize: 16, marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 48 }}
                 onFocus={e => e.target.style.borderColor = '#3a7bd5'} onBlur={e => e.target.style.borderColor = '#e0e0e0'} />
-              <button onClick={handleRegister}
-                style={{ width: '100%', padding: '14px', background: '#27ae60', color: '#fff', border: 'none', borderRadius: 10, fontSize: 16, fontWeight: 'bold', cursor: 'pointer', minHeight: 52 }}>
-                登録申請する
-              </button>
-              <div style={{ fontSize: 12, color: '#888', marginTop: 8, textAlign: 'center' }}>
-                ※ 管理者の承認後にログインできるようになります
-              </div>
+              {regStep === 'form' ? (
+                <>
+                  <button onClick={handleDemoStart} disabled={regBusy}
+                    style={{ width: '100%', padding: '14px', background: regBusy ? '#95a5a6' : '#27ae60', color: '#fff', border: 'none', borderRadius: 10, fontSize: 16, fontWeight: 'bold', cursor: regBusy ? 'wait' : 'pointer', minHeight: 52 }}>
+                    {regBusy ? '送信中...' : '確認番号をメールで受け取る'}
+                  </button>
+                  <div style={{ fontSize: 12, color: '#888', marginTop: 8, textAlign: 'center', lineHeight: 1.7 }}>
+                    ※ 1社につき1回です。入れ直しても単位は増えません。<br />
+                    ※ 同じ会社の2台目以降は「参加コードで参加」からお願いします。
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 13, color: '#1e40af', background: '#eff6ff', border: '1px solid #93c5fd', borderRadius: 8, padding: '8px 10px', marginBottom: 8, lineHeight: 1.7 }}>
+                    <strong>{regSentTo}</strong> に確認番号を送りました。<br />
+                    届かないときは迷惑メールもご確認ください（30分で無効になります）。
+                  </div>
+                  <input value={regCode} onChange={e => setRegCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+                    inputMode="numeric" placeholder="確認番号（6桁）"
+                    style={{ width: '100%', padding: '12px 14px', border: '2px solid #27ae60', borderRadius: 10, fontSize: 22, letterSpacing: '0.35em', textAlign: 'center', marginBottom: 8, boxSizing: 'border-box', outline: 'none', minHeight: 52 }} />
+                  <button onClick={handleDemoVerify} disabled={regBusy}
+                    style={{ width: '100%', padding: '14px', background: regBusy ? '#95a5a6' : '#27ae60', color: '#fff', border: 'none', borderRadius: 10, fontSize: 16, fontWeight: 'bold', cursor: regBusy ? 'wait' : 'pointer', minHeight: 52 }}>
+                    {regBusy ? '確認中...' : 'デモを始める'}
+                  </button>
+                  <div onClick={() => { setRegStep('form'); setRegCode(''); setRegError(''); setRegMessage(''); }}
+                    style={{ fontSize: 12, color: '#3a7bd5', marginTop: 10, textAlign: 'center', cursor: 'pointer', textDecoration: 'underline' }}>
+                    ← 入力しなおす（メールアドレスを変える）
+                  </div>
+                </>
+              )}
             </div>
           )}
           {showJoin && (

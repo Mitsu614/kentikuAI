@@ -111,7 +111,17 @@ export const CREDIT_COSTS: Record<string, number> = {
 // plan_started_at + DEMO_PERIOD_DAYS を残日数として全経路（画面・利用通知メール）に流す。
 function demoDaysLeft(tenantRow: any): { expiresAt: string | null; daysLeft: number | null } {
   const plan = tenantRow?.plan;
-  if ((plan !== 'demo' && plan !== 'trial') || !tenantRow?.plan_started_at) return { expiresAt: null, daysLeft: null };
+  if (plan !== 'demo' && plan !== 'trial') return { expiresAt: null, daysLeft: null };
+  // ★サーバーが持つ期限(plan_expires_at)が最優先。
+  //   開始日だけをローカルで見ていたころは、アプリを入れ直すと日付が戻って期間が復活した。
+  const fromServer = tenantRow?.plan_expires_at ? new Date(tenantRow.plan_expires_at).getTime() : NaN;
+  if (!isNaN(fromServer)) {
+    return {
+      expiresAt: new Date(fromServer).toLocaleDateString('sv-SE'),
+      daysLeft: Math.ceil((fromServer - Date.now()) / 86400000),
+    };
+  }
+  if (!tenantRow?.plan_started_at) return { expiresAt: null, daysLeft: null };
   const started = new Date(tenantRow.plan_started_at).getTime();
   if (isNaN(started)) return { expiresAt: null, daysLeft: null };
   const end = started + DEMO_PERIOD_DAYS * 86400000;
@@ -124,7 +134,7 @@ function demoDaysLeft(tenantRow: any): { expiresAt: string | null; daysLeft: num
 // ── クレジット管理（月次プラン制） ──
 export function getMonthlyUsage(tenantId?: number): { used: number; limit: number; plan: string; remaining: number; expiresAt?: string | null; daysLeft?: number | null } {
   const tid = tenantId ?? currentTenantId;
-  const tenant = queryOne('SELECT plan, plan_limit, credits, plan_started_at FROM tenants WHERE id = ?', [tid]);
+  const tenant = queryOne('SELECT plan, plan_limit, credits, plan_started_at, plan_expires_at FROM tenants WHERE id = ?', [tid]);
   const plan = tenant?.plan || 'standard';
   const planDef = PLANS[plan];
   const limit = tenant?.plan_limit || planDef?.monthlyLimit || 50;
@@ -174,11 +184,13 @@ export function useCredits(amount: number, operation: string, tenantId?: number)
   // 消費0の操作は常に許可
   if (amount === 0) return { success: true };
 
-  // デモ・トライアルは開始から DEMO_PERIOD_DAYS 日で期限切れ（使い切り＋2週間）
-  const tp = queryOne('SELECT plan, plan_started_at FROM tenants WHERE id = ?', [tid]);
-  if (tp && (tp.plan === 'trial' || tp.plan === 'demo') && tp.plan_started_at) {
-    const started = new Date(tp.plan_started_at).getTime();
-    if (!isNaN(started) && (Date.now() - started) / 86400000 > DEMO_PERIOD_DAYS) {
+  // デモ・トライアルの期限切れ。サーバーの期限があればそれを見る（入れ直しで戻らない）。
+  const tp = queryOne('SELECT plan, plan_started_at, plan_expires_at FROM tenants WHERE id = ?', [tid]);
+  if (tp && (tp.plan === 'trial' || tp.plan === 'demo')) {
+    const end = tp.plan_expires_at
+      ? new Date(tp.plan_expires_at).getTime()
+      : (tp.plan_started_at ? new Date(tp.plan_started_at).getTime() + DEMO_PERIOD_DAYS * 86400000 : NaN);
+    if (!isNaN(end) && Date.now() > end) {
       return { success: false, limitReached: true, expired: true };
     }
   }
@@ -718,6 +730,11 @@ function migrate() {
     // 学習完了メールの送信済み日（1日1通までの制御用）
     if (!tenantCols.find((c: any) => c.name === 'learning_notified_date')) {
       db.run('ALTER TABLE tenants ADD COLUMN learning_notified_date TEXT');
+    }
+    // デモの期限（サーバーが持つ値の写し）。入れ直しても期間が戻らないようにするため、
+    // 開始日ではなく「いつ終わるか」をサーバーからもらって保存する。
+    if (!tenantCols.find((c: any) => c.name === 'plan_expires_at')) {
+      db.run('ALTER TABLE tenants ADD COLUMN plan_expires_at TEXT');
     }
 
     // 図面・物件写真のディスク退避先。DBにはサムネだけ残す（estimate_log と同じ方式）。

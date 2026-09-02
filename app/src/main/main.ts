@@ -6,7 +6,7 @@ import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, 
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, normalizeWorkType, sendMailEdge } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 
@@ -142,6 +142,39 @@ let currentLicenseToken = '';
 function getStoredLicenseToken(): string {
   try { return loadApiConfig().licenseToken || ''; } catch { return ''; }
 }
+// この端末を表す指紋。デモを「1台1回」にするために使う。
+//   ・アプリを入れ直しても、DBを消しても変わらない（機種の情報から作る）
+//   ・生の値は送らずSHA-256だけを送る（どのPCかはサーバーからは分からない）
+//   ★MACアドレスは仮想アダプタで増減するので、内蔵の物理アダプタだけを昇順で使う。
+//     並び順が変わると別端末になってしまうため、必ずソートする。
+function getDeviceHash(): string {
+  try {
+    const os = require('os');
+    const nets = os.networkInterfaces() || {};
+    const macs: string[] = [];
+    for (const name of Object.keys(nets)) {
+      for (const n of (nets[name] || [])) {
+        if (n.internal) continue;
+        const mac = String(n.mac || '');
+        if (!mac || mac === '00:00:00:00:00:00') continue;
+        if (!macs.includes(mac)) macs.push(mac);
+      }
+    }
+    macs.sort();
+    const seed = [
+      os.hostname(),
+      os.platform(),
+      os.arch(),
+      (os.cpus()[0] || {}).model || '',
+      String(os.totalmem()),
+      macs.join(','),
+    ].join('|');
+    return crypto.createHash('sha256').update(seed).digest('hex');
+  } catch (_) {
+    return crypto.createHash('sha256').update(String(require('os').hostname())).digest('hex');
+  }
+}
+
 function storeLicenseToken(token: string) {
   if (!token) return;
   try {
@@ -223,7 +256,7 @@ async function flushPendingConsumes(): Promise<void> {
     const res = await licenseConsume(currentLicenseToken, pending);
     if (res && res.ok) {
       subPendingConsume(pending);                 // 確定：サーバーが減算済み
-    } else if (res && (res.error === 'inactive' || res.error === 'invalid_token' || res.error === 'insufficient')) {
+    } else if (res && (res.error === 'inactive' || res.error === 'invalid_token' || res.error === 'insufficient' || res.error === 'expired')) {
       subPendingConsume(pending);                 // 再送しても無駄 → 諦めてサーバー値でreconcile
     }
     // res===null（ネット不通/timeout）はキュー保持 → 次回再送
@@ -2141,6 +2174,9 @@ app.whenReady().then(async () => {
         // クレジットは上書きせず、プラン/上限のみ同期（未送信の消費を守る）
         runSql('UPDATE tenants SET plan_limit = ?, plan = ? WHERE id = ?', [remoteLimit, remotePlan, getCurrentTenant()]);
       }
+      // デモの期限もサーバーの値で上書きする。ローカルの開始日だけで数えていたころは、
+      // 入れ直すと日付が戻って期間が復活していた。有料は expires_at が無いので null で消える。
+      runSql('UPDATE tenants SET plan_expires_at = ? WHERE id = ?', [lic.expires_at || null, getCurrentTenant()]);
     } catch (e: any) {
       // 利用停止エラーは上に伝播させる
       if (e?.message?.includes('停止')) throw e;
@@ -3754,6 +3790,79 @@ app.whenReady().then(async () => {
     }
 
     return { ok: true };
+  });
+
+  // ── デモ開始（承認なし）──────────────────────────────────────────────
+  //   (1) auth:demoStart  … 会社名・メール・電話を送り、確認番号をメールで受け取る
+  //   (2) auth:demoVerify … 番号を入れるとトークンが返り、その場で使えるようになる
+  //
+  //   承認制をやめたので、ここで身元を確かめるのは「メールを受け取れること」だけ。
+  //   同じ会社が名前を変えて取り直すのはサーバー側で止める（端末指紋・メール・会社名）。
+  //   ★ローカルにユーザーを作るのは(2)が通ってから。(1)で作ると、番号を入れずに
+  //     閉じた人のユーザー名が埋まってしまい、やり直せなくなる。
+  ipcMain.handle('auth:demoStart', async (_e, data: any) => {
+    const company = String(data?.company || '').trim();
+    const email = String(data?.email || '').trim();
+    const tel = String(data?.tel || '').trim();
+    const username = String(data?.username || '').trim();
+    if (!company || !email || !username) return { ok: false, error: '会社名・メールアドレス・ユーザー名を入力してください' };
+    if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(email)) return { ok: false, error: 'メールアドレスの形式が正しくありません' };
+    if (queryOne('SELECT id FROM users WHERE username = ?', [username])) {
+      return { ok: false, error: 'このユーザー名は既に使われています' };
+    }
+    const res = await licenseDemoStart(company, email, tel, getDeviceHash());
+    if (!res) return { ok: false, error: 'サーバーに接続できませんでした。通信環境をご確認ください。' };
+    if (res.error) {
+      // サーバーが日本語の説明を付けてきたものはそのまま見せる（断る理由が伝わるように）
+      if (res.message) return { ok: false, error: res.message };
+      if (res.error === 'rate_limited') return { ok: false, error: '混み合っています。少し待ってからもう一度お試しください。' };
+      if (res.error === 'invalid_email') return { ok: false, error: 'メールアドレスの形式が正しくありません' };
+      return { ok: false, error: 'デモの開始に失敗しました（' + res.error + '）' };
+    }
+    return { ok: true, sentTo: res.to || '', existing: !!res.existing, ticket: res.ticket || '' };
+  });
+
+  ipcMain.handle('auth:demoVerify', async (_e, data: any) => {
+    const company = String(data?.company || '').trim();
+    const email = String(data?.email || '').trim();
+    const tel = String(data?.tel || '').trim();
+    const username = String(data?.username || '').trim();
+    const password = String(data?.password || '');
+    const code = String(data?.code || '').replace(/[^0-9]/g, '');
+    if (!username || !password) return { ok: false, error: 'ユーザー名とパスワードを入力してください' };
+    if (!code) return { ok: false, error: 'メールに届いた確認番号を入力してください' };
+    if (queryOne('SELECT id FROM users WHERE username = ?', [username])) {
+      return { ok: false, error: 'このユーザー名は既に使われています' };
+    }
+    const res = await licenseDemoVerify(email, code, getDeviceHash(), String(data?.ticket || ''));
+    if (!res) return { ok: false, error: 'サーバーに接続できませんでした。通信環境をご確認ください。' };
+    if (res.error === 'wrong_code') {
+      const left = Number(res.attempts_left);
+      return { ok: false, error: '確認番号が違います' + (left >= 0 ? `（あと${left}回）` : '') };
+    }
+    if (res.error === 'code_expired') return { ok: false, error: '確認番号の有効時間が切れました。もう一度やり直してください。' };
+    if (res.error === 'too_many_attempts') return { ok: false, error: '入力の失敗が続いたため止めました。お問い合わせください。' };
+    if (res.error || !res.token) return { ok: false, error: 'デモの開始に失敗しました（' + (res.error || 'no_token') + '）' };
+
+    storeLicenseToken(res.token);
+
+    // ローカルに active なテナント＋ユーザーを作る（サーバーの値をそのまま写す）
+    const plan = res.plan || 'demo';
+    const limit = res.max_credits || res.credits || 10;
+    const tenantId = runSql(
+      'INSERT INTO tenants (name, plan, plan_limit, credits, contact_company, contact_email, contact_tel, plan_started_at, plan_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [username, plan, limit, (res.credits ?? limit), company || res.company_name || '', email, tel,
+       new Date().toISOString(), res.expires_at || null]
+    );
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.createHash('sha256').update(salt + password).digest('hex');
+    runSql('INSERT INTO users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)',
+      [username, `${salt}:${hash}`, 'admin', tenantId]);
+    logAudit('register', 'user', tenantId, `${company} (${username}) — デモ開始`);
+
+    setCurrentTenant(tenantId);
+    currentSession = { username, tenantId, role: 'admin' };
+    return { ok: true, username, tenantId, role: 'admin', plan, credits: res.credits ?? limit, expiresAt: res.expires_at || null };
   });
 
   // ── 参加（マルチシート）: 会社名＋参加コードで席を取り、承認なしで即利用開始 ──

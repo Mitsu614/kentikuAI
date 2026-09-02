@@ -573,8 +573,9 @@ export default function AdminPage() {
                         <td style={styles.td}><strong>{r.company_name}</strong></td>
                         <td style={styles.td}>{(r.blocked_message || '').match(/ユーザー: ([^,]+)/)?.[1] || '-'}</td>
                         <td style={{ ...styles.td, fontSize: 11 }}>
-                          {(r.blocked_message || '').match(/メール: ([^,]+)/)?.[1] || '-'}<br/>
-                          {(r.blocked_message || '').match(/電話: ([^,]+)/)?.[1] || ''}
+                          {/* デモの自己申込みは列に入る。承認制のころの行は申請メモから拾う */}
+                          {r.contact_email || (r.blocked_message || '').match(/メール: ([^,]+)/)?.[1] || '-'}<br/>
+                          {r.contact_tel || (r.blocked_message || '').match(/電話: ([^,]+)/)?.[1] || ''}
                         </td>
                         <td style={styles.td}>
                           <span style={{ ...styles.badge(isPending ? '#fff3e0' : '#e8f5e9', isPending ? '#e65100' : '#2e7d32') }}>
@@ -617,9 +618,29 @@ export default function AdminPage() {
                           )}
                         </td>
                         <td style={styles.td}>
-                          <span style={{ ...styles.badge(r.active ? '#e8f5e9' : '#fce4ec', r.active ? '#2e7d32' : '#c62828') }}>
-                            {r.active ? '有効' : '無効'}
-                          </span>
+                          {(() => {
+                            // デモは期限で自動的に止まる。残り日数が見えないと、切れる前の
+                            // 声かけ（＝いちばん決まりやすいタイミング）を逃す。
+                            const days = r.expires_at
+                              ? Math.ceil((new Date(r.expires_at).getTime() - Date.now()) / 86400000)
+                              : null;
+                            const dead = days !== null && days <= 0;
+                            return (
+                              <>
+                                <span style={{ ...styles.badge(r.active && !dead ? '#e8f5e9' : '#fce4ec', r.active && !dead ? '#2e7d32' : '#c62828') }}>
+                                  {dead ? '期限切れ' : r.active ? '有効' : '無効'}
+                                </span>
+                                {days !== null && !dead && (
+                                  <div style={{ fontSize: 11, color: days <= 7 ? '#e67e22' : '#888', marginTop: 3 }}>
+                                    残り{days}日（{String(r.expires_at).split('T')[0]}まで）
+                                  </div>
+                                )}
+                                {!r.verified_at && r.plan === 'demo' && (
+                                  <div style={{ fontSize: 11, color: '#c62828', marginTop: 3 }}>メール未確認</div>
+                                )}
+                              </>
+                            );
+                          })()}
                         </td>
                         <td style={{ ...styles.td, fontSize: 12 }}>{r.created_at?.split('T')[0]}</td>
                         <td style={styles.td}>
