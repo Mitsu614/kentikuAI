@@ -129,7 +129,21 @@ function toArea(r) {
     return;
   }
 
-  const Anthropic = require(path.join(APP, "node_modules/@anthropic-ai/sdk"));
+  // node_modules は worktree には無い（本体の checkout にしか入っていない）。
+  // 実行場所に関係なく動くよう、候補を順に探す。
+  const sdkPath = (() => {
+    const cands = [path.join(APP, "node_modules/@anthropic-ai/sdk")];
+    // <repo>/.claude/worktrees/<name>/app/tools/harness-area → 上へ辿って <repo>/app を探す
+    let d = DIR;
+    for (let i = 0; i < 8; i++) {
+      d = path.dirname(d);
+      cands.push(path.join(d, "app/node_modules/@anthropic-ai/sdk"));
+    }
+    const hit = cands.find(p => fs.existsSync(p));
+    if (!hit) throw new Error("@anthropic-ai/sdk が見つかりません。本体で npm install を済ませてください。\n探した場所:\n  " + cands.join("\n  "));
+    return hit;
+  })();
+  const Anthropic = require(sdkPath);
   const client = new Anthropic({ apiKey: apiKey() });
 
   const rows = [];
@@ -149,21 +163,56 @@ function toArea(r) {
   }
 
   // ── 集計 ──
-  console.log(`\n${C.b}■ 結果${C.x}`);
-  console.log(`  ${"対象".padEnd(8)} n   平均誤差  中央値  ±15%  ${C.b}レンジ被覆${C.x}`);
+  // 画面に出るのは較正後の値なので、較正を掛けてから測る（掛けないと本番と違うものを見ることになる）
+  console.log(`\n${C.b}■ 結果${C.x}  ${C.d}較正を掛けた後＝画面に出る値で測っている${C.x}`);
+  console.log(`  ${"対象".padEnd(8)} n   較正  平均誤差  中央値  ±15%  ${C.b}レンジ被覆${C.x}`);
   for (const k of ["roof", "wall", "floor"]) {
     const rs = rows.filter(r => r.target === k);
     if (!rs.length) continue;
-    const err = rs.map(r => Math.abs(r.got / r.truthM2 - 1)).sort((a, b) => a - b);
+    const cal = post.calibration[k];
+    const est = r => (r.fromStated ? r.got : r.got * cal);
+    const err = rs.map(r => Math.abs(est(r) / r.truthM2 - 1)).sort((a, b) => a - b);
     const [lo, hi] = post.range[k];
-    const covered = rs.filter(r => r.truthM2 >= r.got * lo && r.truthM2 <= r.got * hi).length;
-    const cov = covered / rs.length * 100;
+    const cov = rs.filter(r => r.truthM2 >= est(r) * lo && r.truthM2 <= est(r) * hi).length / rs.length * 100;
     const label = { roof: "屋根", wall: "外壁", floor: "内装" }[k];
-    console.log(`  ${label.padEnd(8)} ${String(rs.length).padStart(2)}  ` +
+    console.log(`  ${label.padEnd(8)} ${String(rs.length).padStart(2)}  ×${cal.toFixed(2)}  ` +
       `${(err.reduce((a, b) => a + b, 0) / err.length * 100).toFixed(1).padStart(6)}%  ` +
       `${(err[Math.floor(err.length / 2)] * 100).toFixed(1).padStart(6)}%  ` +
       `${(err.filter(e => e <= .15).length / err.length * 100).toFixed(0).padStart(3)}%  ` +
-      `${cov >= 85 ? C.g : C.r}${cov.toFixed(0).padStart(6)}%${C.x}  ${cov < 85 ? C.r + "← 幅が正解を捕まえていない。main.ts のレンジを見直すこと" + C.x : ""}`);
+      `${cov >= 85 ? C.g : C.r}${cov.toFixed(0).padStart(6)}%${C.x}  ${cov < 85 ? C.r + "← 幅が正解を捕まえていない" + C.x : ""}`);
+
+    // ★較正の基準値が、いまのプロンプトに合っているか。
+    //   プロンプトを直すとAIの出し方の偏りが変わるので、旧プロンプト時代の係数が
+    //   そのまま残っていると過補正・過少補正になる。ここが一番見落としやすい。
+    const ratios = rs.filter(r => !r.fromStated).map(r => r.truthM2 / r.got);
+    if (ratios.length >= 3) {
+      const geo = Math.exp(ratios.reduce((s, x) => s + Math.log(x), 0) / ratios.length);
+      const gap = Math.abs(geo / cal - 1) * 100;
+      console.log(`  ${"".padEnd(10)}${gap > 20 ? C.r : gap > 10 ? C.y : C.g}較正の当たり: いまの生推定に最も合う係数は ×${geo.toFixed(2)}` +
+        `（設定は ×${cal.toFixed(2)}／ずれ ${gap.toFixed(0)}%）${C.x}` +
+        `${gap > 20 ? C.r + "  ← AREA_CALIBRATION_BASE を見直すこと" + C.x : ""}`);
+    }
+  }
+
+  // ★実行ごとのばらつき。同じ画像を複数回回したときに、答えがどれだけ動くか。
+  //   ここが大きいと、1回の結果でプロンプトの良し悪しを判定できない。
+  //   実測: 同じ画像・同じプロンプト・同じモデルで 11件中3件が1.5倍以上ずれた（2026-09-02）。
+  const byId = {};
+  rows.forEach(r => { (byId[r.id] = byId[r.id] || []).push(r.got); });
+  const repeated = Object.entries(byId).filter(([, v]) => v.length > 1);
+  if (repeated.length) {
+    const spreads = repeated.map(([id, v]) => ({ id, lo: Math.min(...v), hi: Math.max(...v), ratio: Math.max(...v) / Math.min(...v) }));
+    spreads.sort((a, b) => b.ratio - a.ratio);
+    const big = spreads.filter(s => s.ratio >= 1.5).length;
+    console.log(`\n${C.b}■ 実行ごとのばらつき${C.x}  ${C.d}同じ画像を${REPEAT}回ずつ${C.x}`);
+    console.log(`  1.5倍以上ずれた物件: ${big >= 1 ? C.r : C.g}${big}/${spreads.length}件${C.x}`);
+    spreads.slice(0, 5).forEach(s => console.log(`    ${s.id.padEnd(28)} ${s.lo.toFixed(0)}〜${s.hi.toFixed(0)}㎡  ${s.ratio.toFixed(2)}倍${s.ratio >= 1.5 ? C.r + "  ★" + C.x : ""}`));
+    if (big >= 1) {
+      console.log(`  ${C.r}→ 1回の結果でプロンプトの良し悪しを判定しないこと。ノイズを見て決めることになる。${C.x}`);
+    }
+  } else {
+    console.log(`\n  ${C.y}※ --n=1 で回した。写真からの推定は再現しない（同条件2回で11件中3件が1.5倍以上ずれた実績）。`);
+    console.log(`     プロンプトを比べるときは --n=3 以上で回すこと。${C.x}`);
   }
 
   const views = [...new Set(rows.map(r => r.viewType).filter(Boolean))];

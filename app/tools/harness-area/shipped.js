@@ -90,13 +90,17 @@ function modelConfig() {
   return { model, think, system };
 }
 
-/** 後処理の定数（レンジの倍率）。本番を直したらハーネスも自動で追従する */
+/** 後処理の定数（較正の基準値・レンジの倍率）。本番を直したらハーネスも自動で追従する */
 function postConstants() {
   const src = read();
+  const calM = src.match(/const AREA_CALIBRATION_BASE: Record<string, number> = \{ roof: ([\d.]+), wall: ([\d.]+), floor: ([\d.]+) \}/);
+  if (!calM) throw new Error("較正の基準値を読み取れない（main.ts の書き方が変わった？）");
+  const calibration = { roof: Number(calM[1]), wall: Number(calM[2]), floor: Number(calM[3]) };
   const roof = src.match(/target === 'roof'\) \{\s*\n\s*result\.rangeMinM2 = Math\.round\(result\.quantityM2 \* ([\d.]+)\);\s*\n\s*result\.rangeMaxM2 = Math\.round\(result\.quantityM2 \* ([\d.]+)\)/);
   const other = src.match(/\} else \{\s*\n\s*result\.rangeMinM2 = Math\.round\(result\.quantityM2 \* ([\d.]+)\);\s*\n\s*result\.rangeMaxM2 = Math\.round\(result\.quantityM2 \* ([\d.]+)\)/);
   if (!roof || !other) throw new Error("レンジの倍率を読み取れない（main.ts の書き方が変わった？）");
   return {
+    calibration,
     range: {
       roof: [Number(roof[1]), Number(roof[2])],
       wall: [Number(other[1]), Number(other[2])],
