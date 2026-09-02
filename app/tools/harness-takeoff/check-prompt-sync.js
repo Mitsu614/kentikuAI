@@ -1,127 +1,136 @@
-// ハーネスが本番（main.ts）と同じ文面を投げているかを見張る。
+// prompt.txt が main.ts の拾い出しプロンプトとズレていないかを検査する。
 //
-// なぜ要るか: ハーネスは「本番と同じプロンプトを投げる」前提で精度を測っている。
-// ここがズレると、測っているのは本番ではない別物になり、計測の意味が消える。
-// 実際 2026-08-27 に次の2つのズレが見つかった。どちらも人の目では気づけない。
-//   ① prompt.txt の34行目（本番では ${takeoffAreaSection} 等が展開される行）が
-//      テンプレートリテラルのまま貼られて壊れていた。
-//   ② 依頼文の面積セクションを accuracy.js が独自に短く書き直しており、
-//      本番にある「数量をこの面積にぴったり合わせろ」の指示が丸ごと抜けていた。
-//      これが抜けると部屋の拾い落としに気づけない（本番の実測で床が正解の62%だった箇所）。
+// なぜ要るか:
+//   prompt.txt は main.ts takeoffDrawingCore のプロンプトを手でコピーしたもの。
+//   「ここを直したら main.ts も直すこと」と書いてあるが、人間は忘れる。
+//   ズレたまま回すと、本番と違うものを測っていることになり、計測の意味が無くなる。
+//   （面積側で実際に起きた: harness-roof のプロンプトには図面判定が入っていない）
 //
-// 使い方:
-//   node app/tools/harness-takeoff/check-prompt-sync.js          … 照合するだけ（ズレていたら終了コード1）
-//   node app/tools/harness-takeoff/check-prompt-sync.js --write  … 本番に合わせて上書き
+//   node app/tools/harness-takeoff/check-prompt-sync.js
 //
-// リリース前に回すこと。
+// 実際にこの検査で、prompt.txt に紛れ込んだテンプレート構文の残骸
+//   \n` : ''}\n` : ''}\n` : ''}
+// を見つけた（そのままAIに渡っていた）。2026-09-02 に除去済み。
 
-const fs = require('fs');
-const path = require('path');
+const fs = require("fs");
+const path = require("path");
 
-const BT = String.fromCharCode(96);   // バッククォート
-const BS = String.fromCharCode(92);   // バックスラッシュ
 const DIR = __dirname;
-const MAIN = path.join(DIR, '..', '..', 'src', 'main', 'main.ts');
+const MAIN = path.resolve(DIR, "../../src/main/main.ts");
+const PROMPT = path.join(DIR, "prompt.txt");
+const MARK = "";   // 差し込み位置の目印（本文に出てこない文字を使う）
 
-const src = fs.readFileSync(MAIN, 'utf8').replace(/\r\n/g, '\n').split('\n');
-
-function unescapeBackticks(s) {
-  return s.split(BS + BT).join(BT);
+// 比較の前に揃えること:
+//   - 改行コード（worktree は CRLF、本体は LF になりうる）と行末の空白
+//   - テンプレートリテラルのエスケープ（main.ts では ``` が \` \` \` になっている）
+//   - ${...} の差し込み。中身は実行時に決まるので比較対象から外す
+function stripInterpolations(s) {
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "$" && s[i + 1] === "{") {
+      let depth = 1;
+      i += 2;
+      while (i < s.length && depth > 0) {
+        if (s[i] === "{") depth++;
+        else if (s[i] === "}") depth--;
+        i++;
+      }
+      out += MARK;
+      continue;
+    }
+    out += s[i++];
+  }
+  return out;
 }
 
-// ── ① 拾い出しプロンプト本体（takeoffDrawingCore の中） ──
-// 本番で ${...} が展開される行は、ハーネス側では目印にして持つ。
-// accuracy.js / run.js が、ここに面積セクション・対象・工事内容を差し込む。
-function extractPrompt() {
-  const fnAt = src.findIndex((l) => l.includes('const takeoffDrawingCore'));
-  if (fnAt < 0) throw new Error('main.ts に takeoffDrawingCore が見つかりません');
-
-  const openMark = "content.push({ type: 'text', text: " + BT;
-  // 同じ関数内に 【資料N】 を積む content.push も居るので、本文の書き出しで特定する
-  const startAt = src.findIndex((l, i) => i > fnAt && l.includes(openMark) && l.includes('あなたは建築の積算士'));
-  if (startAt < 0) throw new Error('takeoffDrawingCore の中にプロンプト本体が見つかりません');
-
-  const closeMark = BT + ' });';
-  let endAt = -1;
-  for (let i = startAt; i < src.length; i++) {
-    if (i > startAt && src[i].endsWith(closeMark) && !src[i].endsWith(BS + closeMark)) { endAt = i; break; }
-  }
-  if (endAt < 0) throw new Error('プロンプトの終わり（' + closeMark + '）が見つかりません');
-
-  const lines = src.slice(startAt, endAt + 1);
-  lines[0] = lines[0].slice(lines[0].indexOf(openMark) + openMark.length);
-  lines[lines.length - 1] = lines[lines.length - 1].slice(0, -closeMark.length);
-
-  return unescapeBackticks(
-    lines.map((l) => (l.startsWith('${takeoffAreaSection}') ? '{{CONTEXT}}' : l)).join('\n')
-  ).replace(/\n$/, '');
+function norm(s) {
+  const t = stripInterpolations(s.replace(/\r\n/g, "\n").replace(/\\`/g, "`"));
+  return t
+    .split("\n")
+    .map(line => {
+      const bare = line.split(MARK).join("").replace(/\s+$/, "");
+      return bare.trim() === "" ? "" : bare;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
-// ── ② 依頼文で指定された面積のセクション（formatCommentAreasForPrompt の返り値） ──
-// 面積の一覧そのものは呼び出しごとに変わるので {{AREAS}} にして持つ。
-function extractAreaSection() {
-  const fnAt = src.findIndex((l) => l.includes('function formatCommentAreasForPrompt'));
-  if (fnAt < 0) throw new Error('main.ts に formatCommentAreasForPrompt が見つかりません');
+// prompt.txt に紛れ込んだテンプレート構文の残骸（コピペ事故）
+const JUNK = [/`\s*:\s*''\}/, /\$\{/];
 
-  const startAt = src.findIndex((l, i) => i > fnAt && l.trim().startsWith('return ' + BT));
-  if (startAt < 0) throw new Error('面積セクションの本文が見つかりません');
-
-  let endAt = -1;
-  for (let i = startAt + 1; i < src.length; i++) {
-    if (src[i].trim() === BT + ';') { endAt = i; break; }
+function extractFromMain() {
+  const src = fs.readFileSync(MAIN, "utf8");
+  const head = "あなたは建築の積算士（拾い出し20年）です。";
+  const s = src.indexOf(head);
+  if (s < 0) return { ok: false, why: "main.ts に拾い出しプロンプトの冒頭が見つからない" };
+  // テンプレートリテラルの終端 ` まで（${...} の中の } は数える）
+  let i = s;
+  let depth = 0;
+  for (; i < src.length; i++) {
+    const c = src[i];
+    if (c === "\\") { i++; continue; }
+    if (c === "$" && src[i + 1] === "{") { depth++; i++; continue; }
+    if (c === "}" && depth > 0) { depth--; continue; }
+    if (c === "`" && depth === 0) break;
   }
-  if (endAt < 0) throw new Error('面積セクションの終わりが見つかりません');
-
-  const lines = src.slice(startAt, endAt);
-  lines[0] = lines[0].slice(lines[0].indexOf('return ' + BT) + ('return ' + BT).length);
-
-  return unescapeBackticks(
-    lines.map((l) => (l.trim() === '${lines}' ? '{{AREAS}}' : l)).join('\n')
-  );
+  return { ok: true, text: src.slice(s, i) };
 }
 
-const TARGETS = [
-  { file: 'prompt.txt', label: '拾い出しプロンプト本体', want: extractPrompt() },
-  { file: 'area-section.txt', label: '依頼文の面積セクション', want: extractAreaSection() },
-];
+function check() {
+  if (!fs.existsSync(PROMPT)) return { ok: false, why: "prompt.txt が無い" };
+  const got = extractFromMain();
+  if (!got.ok) return got;
 
-const write = process.argv.includes('--write');
-let ng = 0;
+  const rawFile = fs.readFileSync(PROMPT, "utf8");
+  const junkLines = rawFile.split(/\r?\n/).filter(l => JUNK.some(re => re.test(l)));
 
-for (const t of TARGETS) {
-  const p = path.join(DIR, t.file);
+  const a = norm(got.text);
+  const b = norm(rawFile);
 
-  if (write) {
-    fs.writeFileSync(p, t.want + '\n', 'utf8');
-    console.log('更新: ' + t.file + '（' + t.want.split('\n').length + '行 / ' + t.label + '）');
-    continue;
-  }
+  if (a === b && junkLines.length === 0) return { ok: true, why: "一致", chars: a.length };
 
-  const have = fs.existsSync(p) ? fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n').replace(/\n$/, '') : null;
-  if (have === null) { console.error('無い: ' + t.file); ng++; continue; }
-
-  if (have === t.want) {
-    console.log('OK: ' + t.file + ' は main.ts と一致（' + t.want.split('\n').length + '行 / ' + t.label + '）');
-    continue;
-  }
-
-  ng++;
-  const A = t.want.split(String.fromCharCode(10)), B = have.split(String.fromCharCode(10));
-  const diffs = [];
-  for (let i = 0; i < Math.max(A.length, B.length); i++) if (A[i] !== B[i]) diffs.push(i);
-  console.error('ズレ: ' + t.file + '（' + t.label + '） 本番 ' + A.length + '行 / ハーネス ' + B.length + '行、差分 ' + diffs.length + '行');
-  diffs.slice(0, 8).forEach((i) => {
-    console.error('  --- ' + (i + 1) + '行目 ---');
-    console.error('    main.ts : ' + (A[i] === undefined ? '(無し)' : A[i].slice(0, 120)));
-    console.error('    harness : ' + (B[i] === undefined ? '(無し)' : B[i].slice(0, 120)));
-  });
-  if (diffs.length > 8) console.error('  …ほか ' + (diffs.length - 8) + '行');
+  const la = a.split("\n");
+  const lb = b.split("\n");
+  const setA = new Set(la);
+  const setB = new Set(lb);
+  return {
+    ok: false,
+    why: a === b ? "本文は一致しているが、prompt.txt にテンプレート構文の残骸が混ざっている"
+                 : "main.ts と prompt.txt がズレている",
+    chars: [a.length, b.length],
+    onlyMain: la.filter(l => !setB.has(l) && l.trim()),
+    onlyFile: lb.filter(l => !setA.has(l) && l.trim()),
+    junkLines,
+  };
 }
 
-if (write) process.exit(0);
-if (ng) {
-  console.error('\n本番に合わせるなら: node app/tools/harness-takeoff/check-prompt-sync.js --write');
-  console.error('（本番側を直したつもりが無いのにズレているなら、ハーネスを直す前に main.ts の変更を疑うこと）');
+module.exports = { check };
+
+if (require.main === module) {
+  const C = { g: "\x1b[32m", r: "\x1b[31m", d: "\x1b[90m", x: "\x1b[0m" };
+  const r = check();
+  if (r.ok) {
+    console.log(`${C.g}OK${C.x}  prompt.txt は main.ts と一致している（${r.chars}字）`);
+    process.exit(0);
+  }
+  console.log(`${C.r}NG${C.x}  ${r.why}`);
+  if (Array.isArray(r.chars)) console.log(`    main.ts ${r.chars[0]}字 / prompt.txt ${r.chars[1]}字`);
+  if (r.onlyMain && r.onlyMain.length) {
+    console.log(`\n  main.ts にだけある行（${r.onlyMain.length}）:`);
+    r.onlyMain.slice(0, 12).forEach(l => console.log("    + " + l.slice(0, 100)));
+  }
+  if (r.onlyFile && r.onlyFile.length) {
+    console.log(`\n  prompt.txt にだけある行（${r.onlyFile.length}）:`);
+    r.onlyFile.slice(0, 12).forEach(l => console.log("    - " + l.slice(0, 100)));
+  }
+  if (r.junkLines && r.junkLines.length) {
+    console.log(`\n  ${C.r}prompt.txt に残ったテンプレート構文（コピペ事故・${r.junkLines.length}行）:${C.x}`);
+    r.junkLines.slice(0, 6).forEach(l => console.log("    ! " + l.trim().slice(0, 100)));
+    console.log(`  ${C.d}この文字列がそのままAIに渡っている。消すこと。${C.x}`);
+  }
+  console.log(`\n  ${C.d}ズレたまま回すと、本番と違うものを測ることになる。`);
+  console.log(`  main.ts を正として prompt.txt を更新するのが基本。${C.x}`);
   process.exit(1);
 }
-console.log('すべて一致しています。');

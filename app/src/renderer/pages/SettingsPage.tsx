@@ -598,9 +598,15 @@ function PlanManagement() {
     setShowLog(true);
   };
 
+  // 決済リンク（2026-09-02 の月額改定で作り直したもの・継続課金）。
+  // ★価格を変えたら必ずここも作り直すこと。
+  //   前回、旧価格のリンクが残ったまま値下げしたため、3万円のプランを
+  //   申し込んだお客様に120万円を請求する状態になっていた。
+  //   リンクは会社名を必須項目にしてある（承認が会社名でテナントを引くため）。
   const STRIPE_LINKS: Record<string, string> = {
-    standard: 'https://buy.stripe.com/dRmaEYadJ3h95rP9MO24003',
-    pro: 'https://buy.stripe.com/bJe7sMfy36tl7zX0ce24005',
+    standard: 'https://buy.stripe.com/bJecN61Hd191g6t9MO24006',   // 月30,000円（税込33,000円）
+    better:   'https://buy.stripe.com/dRm00k0D9g3V4nLgbc24007',   // 月70,000円（税込77,000円）
+    pro:      'https://buy.stripe.com/7sYcN60D9cRJdYl3oq24008',   // 月100,000円（税込110,000円）
   };
 
   const requestPlan = async (planKey: string) => {
@@ -611,10 +617,9 @@ function PlanManagement() {
 
     const link = STRIPE_LINKS[planKey];
     if (link) {
-      window.open(link, '_blank');
+      window.open(link, '_blank');   // 本体側で既定のブラウザに流す
     } else {
-      // 法人カスタム等: 申請送信済み
-      alert('お問い合わせを送信しました。担当者からご連絡いたします。');
+      alert('お申し込みを受け付けました。担当者より折り返しご連絡し、お支払い方法をご案内いたします。');
     }
   };
 
@@ -643,7 +648,9 @@ function PlanManagement() {
           <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2c3e50' }}>
             {planInfo.planName}
             <span style={{ fontSize: 14, fontWeight: 'normal', color: '#888', marginLeft: 8 }}>
-              ¥{(planInfo.price || 0).toLocaleString()}/年（税込）
+              {/* PLANS の price は税別。ここを「税込」と書くと数字と合わない */}
+              ¥{(planInfo.price || 0).toLocaleString()}/月（税別）
+              {planInfo.price > 0 && `　税込 ¥${Math.round(planInfo.price * 1.1).toLocaleString()}`}
             </span>
           </div>
           <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>{planInfo.description}</div>
@@ -730,11 +737,15 @@ function PlanManagement() {
                 )}
                 <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 4 }}>{p.name}</div>
                 <div style={{ fontSize: 20, fontWeight: 'bold', color: key === 'trial' ? '#27ae60' : '#2c3e50', marginBottom: 4 }}>
-                  {key === 'trial' ? '無料' : `¥${p.price.toLocaleString()}`}
-                  <span style={{ fontSize: 11, fontWeight: 'normal' }}>/年</span>
+                  {/* 法人カスタムは個別見積なので金額を出さない。0円と出ると無料に見える */}
+                  {key === 'enterprise' ? '個別お見積り' : p.price === 0 ? '無料' : `¥${p.price.toLocaleString()}`}
+                  {key !== 'enterprise' && p.price > 0 && (
+                    <span style={{ fontSize: 11, fontWeight: 'normal' }}>/月（税別）</span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
                   月 {key === 'enterprise' ? '個別設定' : p.monthlyLimit + '単位'}
+                  {key !== 'enterprise' && p.price > 0 && `　／　税込 ¥${Math.round(p.price * 1.1).toLocaleString()}`}
                 </div>
                 <div style={{ fontSize: 11, color: '#aaa', marginBottom: 8 }}>{p.description}</div>
                 {canRequest && (
@@ -852,7 +863,7 @@ function PlanAdmin() {
   const changePlan = async (tenantId: number, tenantName: string, newPlan: string) => {
     const planDef = plans[newPlan];
     if (!planDef) return;
-    if (!confirm(`「${tenantName}」のプランを「${planDef.name}（¥${planDef.price.toLocaleString()}/年）」に変更しますか？\n\n入金確認済みの場合のみ実行してください。`)) return;
+    if (!confirm(`「${tenantName}」のプランを「${planDef.name}（¥${planDef.price.toLocaleString()}/月）」に変更しますか？\n\n入金確認済みの場合のみ実行してください。`)) return;
     try {
       await (window as any).api.setPlan(newPlan, tenantId);
       setMsg(`${tenantName} → ${planDef.name}プランに変更しました`);
@@ -1065,9 +1076,10 @@ function UserManagement() {
                   const p = e.target.value;
                   setTenantForm({ ...tenantForm, plan: p, credits: plans[p]?.credits || 20 });
                 }}>
-                  <option value="demo">デモ（30単位）</option>
-                  <option value="standard">スタンダード（100単位/月）</option>
-                  <option value="pro">プロ（500単位/月）</option>
+                  <option value="demo">デモ（10単位/月・無料）</option>
+                  <option value="standard">スタンダード（20単位/月・3万円）</option>
+                  <option value="better">ベター（50単位/月・7万円）</option>
+                  <option value="pro">プロ（100単位/月・10万円／航空写真つき）</option>
                   <option value="enterprise">法人カスタム</option>
                 </select>
               </div>

@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
+import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, normalizeWorkType, sendMailEdge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
@@ -1448,13 +1449,27 @@ function createWindow() {
   });
 
   // CSP（Content Security Policy）設定
+  // ★自分のファイル(file://)にだけ掛けること。
+  //   ここは session 全体のフックなので、外部サイトの応答にも同じヘッダを
+  //   上書きしてしまう。script-src 'self' を外部ページに被せると、その
+  //   ページのスクリプトが全部止まって真っ白になる
+  //   （実際に Stripe の決済画面が白紙になった）。
   mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    if (!String(details.url || '').startsWith('file://')) return callback({});
     callback({
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': ["default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://api.qrserver.com; connect-src 'self'"],
       },
     });
+  });
+
+  // 外部リンクはアプリ内に窓を作らず、既定のブラウザで開く。
+  // 決済や本人確認はブラウザ側でないと、保存済みカードや3Dセキュアが使えない。
+  // アプリ内に任意のページを開かせない、という意味でも安全側。
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
   });
 
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
@@ -2014,11 +2029,17 @@ app.whenReady().then(async () => {
   const allTenants = queryAll('SELECT id FROM tenants WHERE id > 1 ORDER BY id ASC');
   if (allTenants.length > 0) {
     setCurrentTenant(allTenants[0].id);
-    // 管理者のテナントはストック100確保
+    // 管理者（開発機）のテナントだけストック100を確保する。
+    // ★isOwner の判定を外さないこと。
+    //   ここが全員に効くと、どのプランのお客様も起動のたびに 100単位へ
+    //   書き換わってしまい、20/50/100 の段階が意味をなくす
+    //   （スタンダードが100単位だった頃は同じ値だったので表に出ていなかった）。
     const myTenant = allTenants[0];
-    const myPlan = queryOne('SELECT plan, plan_limit FROM tenants WHERE id = ?', [myTenant.id]);
-    if (!myPlan?.plan_limit || myPlan.plan_limit < 100) {
-      runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', ['standard', 100, myTenant.id]);
+    if (isOwner) {
+      const myPlan = queryOne('SELECT plan, plan_limit FROM tenants WHERE id = ?', [myTenant.id]);
+      if (!myPlan?.plan_limit || myPlan.plan_limit < 100) {
+        runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', ['pro', 100, myTenant.id]);
+      }
     }
   }
 
@@ -7391,11 +7412,33 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
   // 無料呼び出しの濫用を防ぐため、画像必須＋テナントごとの1日上限を設ける。
   const AREA_PRECHECK_DAILY_LIMIT = 30;
 
+  // ── 住所からの航空写真測定は プロプラン以上の機能 ──
+  // 写真だけの推定は同じ場所でも答えが1.5倍ぶれるが、こちらは縮尺が確定した
+  // 写真の上で人が輪郭を合わせるので、数量がぶれない。上位プランの決め手になる。
+  //
+  // デモを通しているのは、商談で見せられないと売れないため。
+  // デモ自体が30単位・2週間で自動終了するので、使い続けられはしない。
+  const AERIAL_PLANS = ['pro', 'enterprise', 'demo'];
+  const AERIAL_DENY = 'ERROR: 住所からの航空写真測定は「プロ」プラン以上の機能です。'
+    + '写真だけの推定と違い、縮尺が確定した航空写真の上で範囲を合わせるので数量がぶれません。'
+    + '設定画面の「プラン」からお申し込みいただけます。';
+
   // 写真から面積を読むための基準スケールと手順。建材は規格品なので、写っていれば定規になる。
   // ★展開係数: 折板は山谷があるぶん、実際に張る面積が屋根面積より大きい。自社の見積書に
   //   「屋根面積 33.8m² 折板屋根面積×1.4 → 数量48m²」と明記されている（森鉄筋 養老工場）。
   //   これを掛け忘れると構造的に約40%の過小見積になる。
   const AREA_SCALE_GUIDE = `
+## ★★★まず、寸法が確定した基準物が写っていないか探せ★★★
+依頼者が意図的に置いた基準物があれば、**それを最優先で使う**。規格寸法からの逆算より確実だ。
+- **メジャー・コンベックス**（目盛りが読めるなら、それがそのまま物差し）
+- **A4の紙**（297×210mm）／**A3**（420×297mm）
+- **1mの棒・スケール棒・折尺**
+- **ヘルメット**（一般的な作業用で前後約28cm）※他に無いときだけ
+これらが屋根の上に写っていたら scaleRef に「置かれた基準物: A4用紙 297mm」のように書き、
+confidence を「高」にしてよい。**この場合だけは屋根材の働き幅より優先する。**
+
+置かれた基準物が無いなら、以下の手順に進め。
+
 ## ★★基準スケールは「屋根と同じ平面」にあるものを1つだけ選べ★★
 参照物が測定対象と別の平面・別の高さにあると、視差(パララックス)で誤差が入る。
 カメラに近い屋根を、地面の車で測ると**面積が実際より大きく出る**（空撮でとくに顕著）。
@@ -7699,7 +7742,328 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
 
   ipcMain.handle('ai:areaCalibration', (_e, target?: string) => getAreaCalibration(getEstimateTenant(), target));
 
-  ipcMain.handle('ai:estimateArea', async (_e, data: { imageBase64?: string; comment?: string }) => {
+  // ── 住所から航空写真を引いて面積を出す ────────────────────────────
+  //
+  // 写真から測るのをやめる経路。写真だとAIが「屋根材の働き幅333mm」のような
+  // 規格寸法を物差しにしてスケールを逆算するため、その物差しが外れると面積が全部ずれる。
+  // 実測33回で平均誤差46%、同じ写真で3.7倍違う答えが出た。斜め・航空写真はとくに悪く52.6%。
+  //
+  // 地理院タイルは**縮尺が確定している**ので「1px = 0.49m」とこちらから渡せる。
+  // AIの仕事は輪郭を読むことだけになり、いちばん外れやすい工程が消える。
+  // 較正係数も掛けない（目測の癖を直す係数なので、確定スケールには不要）。
+  // fetchOnly … 航空写真を取ってくるだけ（AIを呼ばない＝無料）。まず見せて建物を選んでもらう
+  // target   … 画像内のピクセル座標。ここにある建物を測る
+  ipcMain.handle('ai:areaFromAddress', async (_e, data: {
+    address?: string; comment?: string; expectAreaM2?: number;
+    fetchOnly?: boolean; target?: { x: number; y: number }; grid?: number;
+    // 画面がいま表示している写真の中心。寄ったあとは住所の位置と違うので、
+    // クリック座標はこれを基準に換算しないと別の場所を指してしまう。
+    viewLat?: number; viewLon?: number;
+    // 写真を掴んで動かしたあと、いま中心に来ている画像座標。ここを新しい中心にする
+    panTo?: { x: number; y: number };
+  }) => {
+    const address = String(data?.address || '').trim();
+    if (!address) throw new Error('ERROR: 住所を入力してください。');
+
+    const tid = getCurrentTenant();
+    // 管理者はすべて素通し。プラン・単位・1日の上限のいずれも当てない。
+    // 動作確認やお客様への実演で自分が引っかかると仕事にならない。
+    const admin = isAdminTenant();
+    // ★画面側でも隠しているが、本体でも必ず止めること。
+    //   画面の出し分けだけだと、開発者ツールから直接呼ばれたときに通ってしまう。
+    //   （写真からの測定 ai:estimateArea は全プランのまま。ここは住所版だけ）
+    if (!admin && !AERIAL_PLANS.includes(getTenantPlan().plan)) throw new Error(AERIAL_DENY);
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
+    try { runSql('CREATE TABLE IF NOT EXISTS area_precheck_log (tenant_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (tenant_id, day))', []); } catch (_) {}
+    const used = queryOne('SELECT count FROM area_precheck_log WHERE tenant_id = ? AND day = ?', [tid, today])?.count || 0;
+    if (!admin && used >= AREA_PRECHECK_DAILY_LIMIT) throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力してください。');
+
+    const hit = await geocode(address);
+    if (!hit) throw new Error('ERROR: その住所が見つかりませんでした。番地まで入れるか、近くの住所でお試しください。');
+
+    // ★新しい住所で航空写真を出すときだけ 3単位。
+    //   掴んで動かす・寄る・建物を選び直すのは、いま見ている中心(viewLat)か
+    //   移動先(panTo)が必ず付いてくるので無料のまま。
+    //   そこで課金すると地図を見回すだけでストックが溶ける。
+    //   住所が見つかったあとに引くこと（見つからない住所で減らさない）。
+    const isNewSite = !data?.panTo && !isFinite(Number(data?.viewLat));
+    if (!admin && isNewSite) {
+      const aerialCost = CREDIT_COSTS['航空写真測定'] ?? 3;
+      const paid = useCredits(aerialCost, '航空写真測定');
+      if (!paid.success) {
+        throw new Error(paid.expired
+          ? 'ERROR: デモ期間が終了しました。プランをお申し込みください。'
+          : `ERROR: 今月のAIストックが足りません（航空写真は${aerialCost}単位）。`);
+      }
+    }
+
+    // 地理院タイルは z=18 が上限（実測で確認）。解像度は上げられないので、
+    // 視野はタイル枚数で調整する。小さい建物ほど枚数を減らして隣家を写し込まない。
+    const view = pickView(hit.lat, Number(data?.expectAreaM2) || 0);
+    // 画面から「広く／せまく」を切り替えられる。奇数枚のみ（中心を作るため）
+    const asked = Number(data?.grid);
+    const grid = [1, 3, 5, 7].includes(asked) ? asked : view.grid;
+    // ★写真の中心は「住所の位置」とは限らない。
+    //   一度クリックして寄ったあとは、画面はその建物を中心にした写真を出している。
+    //   そこで次のクリックを住所基準で換算すると、まったく別の場所を指す
+    //   （実際、何度クリックしても同じ建物が選ばれ続けた）。
+    //   画面が見ている中心を受け取り、それを基準にする。
+    const vLat = Number(data?.viewLat);
+    const vLon = Number(data?.viewLon);
+    const hasView = isFinite(vLat) && isFinite(vLon) && Math.abs(vLat) <= 90 && Math.abs(vLon) <= 180;
+    let centerLat = hasView ? vLat : hit.lat;
+    let centerLon = hasView ? vLon : hit.lon;
+
+    // 写真を掴んで動かしたあと、いま中心に来ている位置を新しい中心にする。
+    // 送られてくるのは「動かす前の写真」での画像座標なので、その写真の大きさで換算する。
+    const pt = data?.panTo;
+    if (pt && isFinite(Number(pt.x)) && isFinite(Number(pt.y))) {
+      const prevSize = 256 * grid;   // 地理院タイルは1枚256px
+      const p = pixelToLonLat(centerLat, centerLon, view.z, prevSize, Number(pt.x), Number(pt.y));
+      centerLat = p.lat; centerLon = p.lon;
+    }
+
+    const air = await fetchAerial(centerLat, centerLon, view.z, grid);
+
+    // ── まず写真だけ返す ──────────────────────────────────
+    // 日本の住所は号まで入れても**街区の代表点**が返ることが多く、建物の上に落ちない。
+    // 実際「都島本通五丁目８番１８号」の解決点は道路上で、AIは中心に近い別の建物を
+    // 測っていた（2026-09-02）。密集地では隣家との区別が付かない。
+    // → 建物の特定を住所に頼るのをやめ、利用者にクリックしてもらう。
+    //   人が得意なこと（自分の建物を見分ける）と機械が得意なこと（確定スケールで測る）を分ける。
+    // この段階では AI を呼ばないので費用もかからない。
+    if (data?.fetchOnly) {
+      return {
+        mode: 'aerial', step: 'pick',
+        address: hit.title, addressLevel: hit.level, addressLevelLabel: LEVEL_LABEL[hit.level],
+        addressPrecise: hit.precise,
+        lat: hit.lat, lon: hit.lon, zoom: air.z,
+        // 次のクリックをこの写真の座標系で換算するために返す
+        viewLat: centerLat, viewLon: centerLon,
+        mPerPx: Math.round(air.mPerPx * 10000) / 10000,
+        viewWidthM: Math.round(air.widthM),
+        sizePx: air.sizePx, grid,
+        centerPx: Math.round(air.sizePx / 2),
+        attribution: AERIAL_ATTRIBUTION,
+        aerialImage: `data:image/jpeg;base64,${air.dataUrl}`,
+        tilesMissing: air.missing,
+      };
+    }
+
+    // ── 対象の建物を指定して測る ──────────────────────────
+    // ★探すのは広く、測るのは寄って。
+    //   広い範囲(373m四方)のまま測らせたら、1棟が36pxしかなく隣の屋根と繋げて読み、
+    //   同じ建物のはずが 252.8㎡ → 400㎡ に膨らんだ（2026-09-02 実測）。
+    //   クリックされた点の緯度経度を出し、そこを中心に**1タイル(124m四方)で取り直して**測る。
+    //   建物が画面の中央に大きく写るので、隣家と混ざりにくい。
+    const tx = Number(data?.target?.x);
+    const ty = Number(data?.target?.y);
+    const hasTarget = isFinite(tx) && isFinite(ty) && tx >= 0 && ty >= 0 && tx < air.sizePx && ty < air.sizePx;
+
+    let shot = air;
+    let px = Math.round(air.sizePx / 2);
+    let py = Math.round(air.sizePx / 2);
+    let recentered = false;
+    let shotLat = centerLat, shotLon = centerLon;
+    if (hasTarget) {
+      // いま画面が見ている写真の中心を基準に、クリック点の緯度経度を出す
+      const p = pixelToLonLat(centerLat, centerLon, air.z, air.sizePx, tx, ty);
+      shot = await fetchAerial(p.lat, p.lon, view.z, 1);   // その建物に寄る
+      shotLat = p.lat; shotLon = p.lon;
+      px = Math.round(shot.sizePx / 2);
+      py = Math.round(shot.sizePx / 2);
+      recentered = true;
+    }
+
+    const config = loadApiConfig();
+    if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。設定画面からAPIキーを入力してください。');
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: config.anthropicKey });
+    const response = await client.messages.create({
+      model: 'claude-opus-4-8',
+      max_tokens: 4000,
+      thinking: { type: 'adaptive' },
+      system: 'あなたは建築の積算担当者です。航空写真から建物の寸法だけを読み取ります。金額は一切出しません。',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: shot.dataUrl } },
+          {
+            type: 'text',
+            text: `${data?.comment ? `依頼内容: ${data.comment}\n\n` : ''}これは「${hit.title}」の付近を真上から撮った航空写真です。
+
+## ★この写真の縮尺は確定している★
+**1ピクセル = ${shot.mPerPx.toFixed(4)} m**（画像は ${shot.sizePx}×${shot.sizePx}px ＝ 一辺 ${shot.widthM.toFixed(0)} m の範囲）
+
+**スケールを推測するな。上の値をそのまま使え。**
+屋根材の働き幅・車・人など、写真の中から物差しを探す必要はない。
+その推測こそが誤差の原因なので、やってはいけない。
+
+## ★測る建物は指定されている★
+**画像の (${px}, ${py}) ピクセルの位置にある建物**を測れ。左上が (0, 0)、右下が (${shot.sizePx - 1}, ${shot.sizePx - 1}) だ。
+${hasTarget
+  ? 'この写真は、利用者が指した建物を**中心に据えて撮り直したもの**だ。中央にある建物を測れ。\n**別の建物を選ぶな。**中心が道路や空地の上なら、そこに最も近い建物を測れ。'
+  : '座標の指定が無いので画像の中心を使っている。中心が道路や空地なら、最も近い建物を測れ。'}
+
+## やること
+1. 指定された座標にある建物の輪郭を追う。**隣の建物と繋げるな。** 屋根の切れ目・棟の向き・
+   壁の影で境目を見分けろ。密集地では隣家と屋根が接して見えることがある。
+2. その建物の**水平投影**の外形を読み、間口(m)と桁行(m)をピクセルから換算する。
+   例: 屋根が横 62px なら 62 × ${shot.mPerPx.toFixed(4)} = ${(62 * shot.mPerPx).toFixed(1)} m
+3. L字・コの字など長方形でないときは、長方形に分けて合計し、basis に内訳を書け。
+
+## 気をつけること
+- 航空写真は**水平投影**なので、勾配のぶんは含まれない。slopeFactor で別途返せ。
+- 木や電線で隠れている部分は、建物の対称性から補え。補ったことを basis に書け。
+- 指定された位置の建物が判別できない（更地・雲・解像度不足・隣家と区別が付かない）なら
+  widthM = 0 とし、askUserFor に何が必要かを書け。**当てずっぽうを返すな。**
+
+以下のJSONのみを返してください（説明文は不要）:
+{
+  "found": true か false。中心の建物を特定できたか,
+  "widthM": 間口方向の水平投影長さ(m、数値),
+  "lengthM": 奥行方向の水平投影長さ(m、数値),
+  "slopeFactor": 勾配補正係数(数値。折板1.005 / 戸建て4寸1.077・5寸1.118。分からなければ1.0),
+  "roofType": 屋根の種別。"折板" / "スレート大波" / "瓦" / "金属平葺き" / "陸屋根" / "不明" のどれか。
+    見分け方: 折板＝工場・倉庫の大きな長方形で、棟から軒へ真っすぐな筋が等間隔に走る。
+             スレート大波＝古い工場。折板より筋が細かく、灰色でくすんでいる。
+             瓦＝戸建て。寄棟・切妻がはっきりし、色が濃い（黒・銀・茶）。
+             金属平葺き＝筋が無く一様。陸屋根＝平らで設備・手すりが見える。
+    ★1ピクセル約0.5mでは山ピッチ（折板88mm等）までは見えない。建物の形・大きさ・
+      筋の有無から言える範囲で答え、迷ったら "不明" にしろ。当てずっぽうを書くな,
+  "roofTypeReason": そう判断した理由（見えた特徴）。"不明" のときは何が見えなかったか,
+  "shape": "長方形" / "L字" / "コの字" / "複雑",
+  "pixelReading": "何ピクセルをどう換算したか（例: 横128px × 0.4851 = 62.1m）",
+  "basis": "どの建物をどう特定し、隠れている部分をどう補ったか",
+  "askUserFor": found が false のとき、1つ聞けば確定する情報。true なら null,
+  "confidence": "高/中/低"
+}`,
+          },
+        ],
+      }],
+    });
+
+    const text = ((response.content as any[]).find((b) => b?.type === 'text') || {}).text || '';
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('航空写真の読み取りに失敗しました。面積を直接入力してください。');
+    const r = parseLenientJson(match[0]);
+
+    const w = Number(r.widthM) || 0;
+    const l = Number(r.lengthM) || 0;
+    const slope = Number(r.slopeFactor) > 0 ? Number(r.slopeFactor) : 1;
+    const plan = w * l;
+
+    runSql('INSERT INTO area_precheck_log (tenant_id, day, count) VALUES (?, ?, 1) ON CONFLICT(tenant_id, day) DO UPDATE SET count = count + 1', [tid, today]);
+
+    // 確定してよいのは「利用者が建物を指した」ときだけ。
+    // 住所だけに頼ると、号まで入れても街区の代表点が返って別の建物を測る
+    // （実測: 都島本通五丁目８番１８号 の解決点は道路上だった）。
+    // 指定が無い＝中心を当て推量で使っている状態なので、確定させない。
+    const ok = r.found !== false && plan > 0 && hasTarget;
+    const out: any = {
+      mode: 'aerial',
+      step: 'result',
+      // 表示するのは寄って撮り直した写真。座標系もそちらに合わせる
+      sizePx: shot.sizePx, grid: recentered ? 1 : grid, centerPx: Math.round(shot.sizePx / 2),
+      targetPx: { x: px, y: py },
+      targetPicked: hasTarget,
+      recentered,
+      // 選び直したいときのために、広い写真に戻す手がかりを残す
+      searchGrid: grid,
+      addressPrecise: hit.precise,
+      addressLevel: hit.level,
+      addressLevelLabel: LEVEL_LABEL[hit.level],
+      // 住所の粒度は「その建物が写野に入っているか」の目安。建物の特定はクリックで行う。
+      addressWarning: hit.precise ? null
+        : hit.level === 'chome'
+          ? `「${hit.title}」の中心を写しています。丁目は数百m四方あるので、目的の建物が写野（${Math.round(air.widthM)}m四方）に入っていないかもしれません。入っていなければ**何番まで**入れて取り直してください。`
+          : `「${hit.title}」までしか特定できませんでした。ここは地域の中心なので、目的の建物はおそらく写っていません。**何丁目何番何号まで**入れて取り直してください（例: ○○町1-2-3）。`,
+      // 縮尺が確定しているので較正は掛けない。目測の癖を直す係数はここでは不要
+      calibration: 1,
+      target: 'roof',
+      targetLabel: '屋根',
+      address: hit.title,
+      lat: hit.lat, lon: hit.lon, zoom: shot.z,
+      // 表示するのは寄った写真。次のクリックはこの中心を基準に換算する
+      viewLat: shotLat, viewLon: shotLon,
+      mPerPx: Math.round(shot.mPerPx * 10000) / 10000,
+      viewWidthM: Math.round(shot.widthM),
+      attribution: AERIAL_ATTRIBUTION,
+      aerialImage: `data:image/jpeg;base64,${shot.dataUrl}`,
+      tilesMissing: shot.missing,
+      widthM: w, lengthM: l, slopeFactor: slope,
+      shape: r.shape || null,
+      // 屋根種別と、そこから決まる展開係数の候補。
+      // 遮熱シート・カバー工法など「材料が山谷に沿って張られる」工事では、
+      // 水平投影のままだと足りない。航空写真は水平投影なので必ず掛ける必要がある。
+      // ただし1px≈0.5mでは山ピッチまで見えないので、あくまで候補。最終判断は人。
+      roofType: r.roofType || '不明',
+      roofTypeReason: r.roofTypeReason || '',
+      developSuggest: ({
+        '折板': { label: '折板 88mm（一般）', factor: 1.41,
+          note: '150mmの大スパンなら ×1.69。航空写真では山ピッチまで見えないので、お客様に確認してください' },
+        'スレート大波': { label: 'スレート大波', factor: 1.1, note: '' },
+        '瓦': { label: '平葺き・瓦・シングル', factor: 1.0, note: '' },
+        '金属平葺き': { label: '平葺き・瓦・シングル', factor: 1.0, note: '' },
+        '陸屋根': { label: '平葺き・瓦・シングル', factor: 1.0, note: '陸屋根は展開なし' },
+      } as any)[r.roofType] || null,
+      pixelReading: r.pixelReading || null,
+      basis: r.basis || '',
+      confidence: r.confidence || '中',
+      isEstimate: !ok,
+      planAreaM2: ok ? Math.round(plan * 10) / 10 : 0,
+      quantityM2: ok ? Math.round(plan * slope * 10) / 10 : 0,
+    };
+    // ★解像度の限界を数字で伝える。
+    //   地理院タイルは z=18 が上限で 1px≈0.49m。戸建て(間口12m)だと24pxしかない。
+    //   輪郭の読み取りは±1px程度ぶれるので、小さい建物ほど面積の誤差が効く。
+    //   「161.7㎡」と細かい数字が出ると精密に見えてしまうため、幅を併記する。
+    if (ok) {
+      const spanPx = Math.min(w, l) / shot.mPerPx;                // 短辺のピクセル数
+      // ★幅は「理論上のピクセル精度」ではなく「実際にぶれた量」で出す。
+      //   最初は±1px（≒±3.6%）で出していたが、同じ座標・同じ写真で3回測ったら
+      //   131.8 / 161.7 / 194.7㎡ と **1.48倍** ぶれた（2026-09-02 実測）。
+      //   AIが屋根のどこを境目と見るかが毎回変わるためで、画素の精度とは別の要因。
+      //   ±1pxの幅を出すのは、持っていない精度を主張することになる。
+      //   写真経路で「幅0.75〜1.35が正解を39%しか含まない」のと同じ失敗を繰り返さない。
+      const area = plan * slope;
+      out.spanPx = Math.round(spanPx);
+      out.rangeMinM2 = Math.round(area * 0.80 * 10) / 10;
+      out.rangeMaxM2 = Math.round(area * 1.25 * 10) / 10;
+      out.rangeBasis = '同じ場所を3回測ったときの実際の振れ幅（1.48倍）から';
+      // 30px を切ると、1pxの読み違いが面積の7%以上に効く
+      if (spanPx < 30) {
+        out.resolutionNote = `この建物は短辺が約${Math.round(spanPx)}ピクセルしかありません（1px=${shot.mPerPx.toFixed(2)}m）。`
+          + `公開されている航空写真はこれが最高解像度なので、これ以上細かくは読めません。`
+          + `同じ場所を測り直しても2〜3割動くことがあります。`
+          + `見積の数量として使うなら、間口と桁行を実測して直してください。`;
+      }
+    }
+    out.assumedArea = ok ? `屋根 ${Math.round(out.quantityM2)}㎡` : '';
+    if (!ok) {
+      out.needsDimension = hit.precise
+        ? (r.askUserFor || '建物の間口(m)と桁行(m)')
+        : '番地まで入れた住所（例: ○○町1-2-3）';
+    }
+
+    // 座標がどう解釈されたかを必ず残す。
+    // 「クリックしても同じ建物が選ばれる」を追ったとき、ログに座標が無くて
+    // 原因の切り分けができなかった。見えないものは直せない。
+    const moved = recentered
+      ? Math.hypot((shotLon - centerLon) * 111320 * Math.cos(centerLat * Math.PI / 180),
+                   (shotLat - centerLat) * 110540)
+      : 0;
+    console.log(`[航空写真] tenant ${tid}: ${hit.title}${hit.precise ? '' : '【番地なし】'} ` +
+      `${recentered ? '[寄って測定]' : '[中心を推定]'} z=${shot.z} 1px=${shot.mPerPx.toFixed(3)}m ` +
+      `${plan > 0 ? `${w}×${l}m → ${Math.round(plan * slope * 10) / 10}㎡` : '建物を特定できず'}` +
+      `${ok ? '' : '（確定させず）'} (${out.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
+    console.log(`           基準:${hasView ? '画面の中心' : '住所'} ${centerLat.toFixed(6)},${centerLon.toFixed(6)} ` +
+      `${hasTarget ? `クリック(${Math.round(tx)},${Math.round(ty)})/${air.sizePx}px → 中心を ${moved.toFixed(1)}m 移動 → ${shotLat.toFixed(6)},${shotLon.toFixed(6)}` : 'クリック指定なし'}`);
+    return out;
+  });
+
+  // mode: 'auto'（既定・AIの判定に従う） / 'drawing'（図面として読む） / 'photo'（写真として概算）
+  ipcMain.handle('ai:estimateArea', async (_e, data: { imageBase64?: string; comment?: string; mode?: string }) => {
     const image = shrinkImageForAI(data?.imageBase64);
     if (!image) throw new Error('ERROR: 面積の事前確認には写真が必要です。');
 
@@ -7707,8 +8071,8 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
     try { runSql('CREATE TABLE IF NOT EXISTS area_precheck_log (tenant_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (tenant_id, day))', []); } catch (_) {}
     const used = queryOne('SELECT count FROM area_precheck_log WHERE tenant_id = ? AND day = ?', [tid, today])?.count || 0;
-    if (used >= AREA_PRECHECK_DAILY_LIMIT) {
-      throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力して見積もりを作成してください。');
+    if (!isAdminTenant() && used >= AREA_PRECHECK_DAILY_LIMIT) {
+      throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力して見積もりを作成してください。');   // 管理者は下の条件で除外済み
     }
 
     const config = loadApiConfig();
@@ -7755,6 +8119,35 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
 
 target が "unknown" のときも寸法を答えず、askUserFor に必要な情報を書け。
 
+━━━━━━ ★最初に判定しろ: これは図面か、写真か★ ━━━━━━
+寸法線・寸法値・室面積表・縮尺表記(S=1/100 等)・通り芯記号(X0,Y1 等)のどれか1つでも読めるなら**図面**だ。
+
+## 図面のとき（sourceKind = "drawing"）
+**目測で測るな。書かれている数値を読んで計算しろ。** これが最も正確な経路だ。
+- readValues に「どこに何と書いてあったか」をそのまま列挙しろ。読めた根拠が残らない数字は使うな。
+  例: ["面積表 1階床面積 1,209.35㎡", "寸法線 X0〜X8 = 21,840", "縮尺 S=1/200"]
+- 面積そのものが書いてあれば statedAreaM2 に入れろ（最優先で使われる）。
+- 面積は無いが寸法線が読めるなら、widthM / lengthM に**読んだ値**を入れ、basis に
+  「どの寸法線をどう足したか」を書け。縮尺から物差しで測るのではなく、**記載値を読む**こと。
+- 図面上に数値が一切書かれていない（意匠パースや寸法の無い平面図）なら、
+  sourceKind = "photo" に落として、下の写真の手順に従え。
+
+## 写真のとき（sourceKind = "photo"）
+下の target 別の手順に従い、**いつもどおり最も確からしい寸法を出せ**。
+
+※ ここに「写真では確定できないので概算でよい」といった趣旨を書かないこと。
+   「写真は概算として扱う」のは製品側の判断であり、main.ts の後処理で強制している。
+   プロンプトの仕事は**寸法をできるだけ正確に読ませること**だけで、精度の限界を
+   AIに教える必要はない（自信を下げる指示が読み取り精度に効く可能性がある）。
+   一度この趣旨の文言を入れて計測したが、実行ごとのばらつきが大きく（下記）、
+   良し悪しを判定できなかった。効果が確かめられない指示は入れない、という判断。
+
+※★写真からの推定は再現しない。同じ画像・同じプロンプト・同じモデルで2回回すと、
+   11件中3件が1.5倍以上ずれた（最悪 0.29倍＝3.4倍の開き／ばらつき±54%）。
+   2026-09-02 計測・app/tools/harness-area/。
+   → プロンプトを直したときは、必ず複数回回して比べること。1回の結果で
+     良くなった悪くなったを判断すると、ノイズを見て意思決定することになる。
+
 ━━━━━━ target = "roof" のとき ━━━━━━
 ${AREA_SCALE_GUIDE}
 
@@ -7769,6 +8162,8 @@ ${FLOOR_SCALE_GUIDE}
 以下のJSONのみを返してください（説明文は不要）:
 {
   "target": "roof" / "wall" / "floor" / "unknown",
+  "sourceKind": "drawing" か "photo"。寸法値・面積表・縮尺・通り芯のどれかが読めれば "drawing",
+  "readValues": sourceKind が "drawing" のとき、読み取った記載値を文字列の配列で（例: ["面積表 1階 1,209.35㎡","寸法線 X0〜X8 = 21,840"]）。写真なら [],
   "coversWholeRoof": true か false。対象の輪郭が写真に収まっているか（roof=四隅と棟から軒 / wall=建物の間口と高さ / floor=部屋の四隅）,
   "missingPart": coversWholeRoof が false のとき、何が写っていないか。true なら null,
   "askUserFor": coversWholeRoof が false のとき、1つ聞けば面積が確定する情報。true なら null,
@@ -7863,29 +8258,70 @@ ${FLOOR_SCALE_GUIDE}
     //   この図面はL字型で、外接の長方形(52m×40m=2,080㎡)で計算すると中庭・テラスまで床に入り、
     //   図面に明記された1,209.35㎡に対して1.57倍に膨らんでいた。
     //   較正係数は「AIが寸法を目測したときの癖」を直すためのもので、書いてある数字に当てるものではない。
+    // ── モード判定 ──────────────────────────────────────────────
+    // 'drawing' … 図面。書かれている数値を読んだ経路。目測の癖を直すための較正は掛けない。
+    //             （読んだ452㎡に×1.5して678㎡にしたら、直すどころか壊す）
+    // 'photo'   … 写真。目測なので較正を掛け、幅を付け、確定させない。
+    // 利用者が明示的に選んだモードはAIの判定より優先する（画面で「図面として読む」を選べる）。
+    const askedMode = ['drawing', 'photo'].includes(String(data?.mode || '')) ? String(data!.mode) : 'auto';
+    const aiSaysDrawing = String(result.sourceKind || '') === 'drawing';
+    const readValues: string[] = Array.isArray(result.readValues) ? result.readValues.filter(Boolean) : [];
+    // 図面と名乗っていても、読めた値が1つも無いなら実質は目測。写真として扱う。
+    const isDrawing = askedMode === 'drawing'
+      ? true
+      : askedMode === 'photo' ? false
+      : (aiSaysDrawing && (readValues.length > 0 || Number(result.statedAreaM2) > 0));
+    result.mode = isDrawing ? 'drawing' : 'photo';
+    result.modeSource = askedMode === 'auto' ? 'auto' : 'user';
+    result.readValues = readValues;
+    if (askedMode === 'drawing' && !aiSaysDrawing && readValues.length === 0) {
+      // 「図面として読む」を選ばれたのに、寸法も面積も読めていない
+      result.modeWarning = '図面として読もうとしましたが、寸法値・面積表・縮尺のいずれも読み取れませんでした。数値の書かれた図面を渡すか、写真として概算してください。';
+    }
+
     const stated = Number(result.statedAreaM2) || 0;
     const useStated = stated > 0;
     if (useStated) {
       raw = stated;
       result.calibrationSkipped = true;
     }
+    // 図面から読んだ値には較正を掛けない（目測の癖を直すための係数なので、読み値には有害）
+    const applyCal = !useStated && !isDrawing;
     if (raw > 0) {
-      const q = useStated ? raw : raw * AREA_CALIBRATION;
+      const q = applyCal ? raw * AREA_CALIBRATION : raw;
       result.quantityM2 = Math.round(q * 10) / 10;
       result.rawM2 = Math.round(raw * 10) / 10;
       if (target === 'roof') {
-        const cal2 = useStated ? 1 : AREA_CALIBRATION;
+        const cal2 = applyCal ? AREA_CALIBRATION : 1;
         result.planAreaM2 = Math.round(w * l * cal2 * 10) / 10;
         result.roofAreaM2 = Math.round(w * l * cal2 * slope * 10) / 10;
       } else if (target === 'floor') {
         result.planAreaM2 = result.quantityM2;
       }
       result.assumedArea = `${LABEL[target]} ${Math.round(result.quantityM2)}㎡`;
-      // ベンチの最悪誤差1.81倍・1.5倍以内10/11 を踏まえたレンジ（屋根で測った値。外壁・内装は未検証）
-      result.rangeMinM2 = Math.round(result.quantityM2 * 0.75);
-      result.rangeMaxM2 = Math.round(result.quantityM2 * 1.35);
+
+      // ── 幅 ──────────────────────────────────────────────────
+      // 旧: ×0.75〜×1.35。だがハーネスで測ると、この幅が正解を捕まえたのは
+      //     本番モデル(opus-4-8+thinking)で 6/11 = 55%、3モデル31件では 39% しか無かった。
+      //     プロンプトに「必ずこの間に収まる」と書いてあるのに6割外れる幅は、幅として機能していない。
+      // 新: ×0.65〜×1.80 で 10/11 = 91%。外れるのは推定が正解の3倍になった1件だけ。
+      //     （2026-08-27 計測 / app/tools/harness-roof/ds_truth.*.harness.json）
+      // 屋根以外は正解データが1件も無いので、さらに広げる。狭い幅を出すほうが有害。
+      if (isDrawing) {
+        // 図面から読んだ値。幅は付けない（読めた数字が根拠なので、そこに目測の散らばりを持ち込まない）
+        result.rangeMinM2 = null;
+        result.rangeMaxM2 = null;
+      } else if (target === 'roof') {
+        result.rangeMinM2 = Math.round(result.quantityM2 * 0.65);
+        result.rangeMaxM2 = Math.round(result.quantityM2 * 1.80);
+        result.rangeBasis = '屋根の実測11件で91%を捕まえる幅';
+      } else {
+        result.rangeMinM2 = Math.round(result.quantityM2 * 0.55);
+        result.rangeMaxM2 = Math.round(result.quantityM2 * 2.20);
+        result.rangeBasis = '外壁・内装は正解データが無いため、屋根より広くとった暫定値';
+      }
     }
-    result.calibration = useStated ? 1 : AREA_CALIBRATION;
+    result.calibration = applyCal ? AREA_CALIBRATION : 1;
     result.calibrationSamples = cal.samples;
 
     // 対象が判別できないなら、数字を作らない。根拠のない面積を出すほうが有害
@@ -7899,20 +8335,48 @@ ${FLOOR_SCALE_GUIDE}
       result.unvalidated = true;
     }
 
-    // 屋根の輪郭が写っていない写真では面積は確定しない。それでも数字が無いと先へ進めないので、
-    // 推測値とレンジは返す。旧実装は根拠なく600/1200㎡だけを返し、正解410㎡に対して1200㎡
-    // （3倍）を出していた。推測であることと、何を聞けば確定するかを必ず添える。
-    if (result.coversWholeRoof === false) {
+    // ── 確定させるかどうかは「写真の写り」ではなく「数値の出どころ」で決める ──
+    //
+    // 旧実装は coversWholeRoof===false のときだけ推測扱いにしていた。つまり
+    // 「屋根全体が写っていれば確定値」としていたが、ハーネスで測るとこれは成り立たない。
+    //   全体が写っている 8件 … 平均誤差 34.9%
+    //   写っていない   23件 … 平均誤差 34.7%
+    // 差が無い（2026-08-27 計測・3モデル31件）。全体が写っていても、写真には寸法の
+    // 基準が無いので精度は上がらない。実際、全体が写っている8件の誤差は 3%〜62% とばらけた。
+    //
+    // よって写真は、どれだけ良く写っていても概算とする。確定するのは
+    //   実測値 > 図面から読んだ値（statedAreaM2 / readValues） の2つだけ。
+    if (isDrawing) {
+      // 図面。読めた値があるなら確定してよい。無いなら上の modeWarning が立っている。
+      if (!useStated && readValues.length === 0) {
+        result.isEstimate = true;
+        result.confidence = '低';
+        result.needsDimension = result.askUserFor || '図面に書かれた寸法または面積';
+      }
+    } else {
       result.isEstimate = true;
-      result.confidence = '低';
-      result.needsDimension = result.askUserFor || '建物の間口(m)と桁行(m)';
+      if (result.coversWholeRoof === false) {
+        result.confidence = '低';
+        result.needsDimension = result.askUserFor || '建物の間口(m)と桁行(m)';
+      } else {
+        // 全体が写っていても確定はしない。ただし「何を聞けば確定するか」は必ず添える。
+        if (!result.confidence || result.confidence === '高') result.confidence = '中';
+        result.needsDimension = result.needsDimension || result.askUserFor
+          || (target === 'roof' ? '建物の間口(m)と桁行(m)、または1階の床面積'
+            : target === 'wall' ? '建物の間口(m)・桁行(m)と軒高(m)'
+            : '部屋の間口(m)と奥行(m)、または床面積');
+      }
     }
 
     runSql(
       'INSERT INTO area_precheck_log (tenant_id, day, count) VALUES (?, ?, 1) ON CONFLICT(tenant_id, day) DO UPDATE SET count = count + 1',
       [tid, today]
     );
-    console.log(`[面積事前確認] tenant ${tid}: ${result.isEstimate ? '【推測】' : ''}${result.assumedArea}${result.isEstimate ? ` (${result.rangeMinM2}〜${result.rangeMaxM2}㎡ / 要: ${result.needsDimension})` : ''} (${result.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
+    console.log(`[面積事前確認] tenant ${tid}: [${result.mode === 'drawing' ? '図面' : '写真'}${result.modeSource === 'user' ? '/指定' : ''}] ` +
+      `${result.isEstimate ? '【概算】' : '【確定】'}${result.assumedArea}` +
+      `${result.rangeMinM2 ? ` (${result.rangeMinM2}〜${result.rangeMaxM2}㎡)` : ''}` +
+      `${result.mode === 'drawing' && readValues.length ? ` 読取:${readValues.length}件` : ''}` +
+      `${result.needsDimension ? ` / 要: ${result.needsDimension}` : ''} (${result.confidence}) ${used + 1}/${AREA_PRECHECK_DAILY_LIMIT}`);
     return result;
   });
   // スマホ経路のエラーはファイルに記録（原因追跡用）

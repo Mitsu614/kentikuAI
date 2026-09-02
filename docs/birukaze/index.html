@@ -1,0 +1,1620 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>風見社長のビル風診断</title>
+<meta name="description" content="建物の高さ・幅・奥行と周辺の街並みを答えるだけで、ビル風の風速増加率と年間の超過確率を試算します。村上らの風環境評価尺度・NEN 8100・Lawson基準の3つで同時に判定。計画初期のスクリーニングに。">
+<link rel="canonical" href="https://mitsu614.github.io/kentikuAI/birukaze/">
+<meta name="theme-color" content="#7f9fbe" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131c25" media="(prefers-color-scheme: dark)">
+<meta name="format-detection" content="telephone=no">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="建築ブースト">
+<meta property="og:locale" content="ja_JP">
+<meta property="og:url" content="https://mitsu614.github.io/kentikuAI/birukaze/">
+<meta property="og:title" content="風見社長のビル風診断">
+<meta property="og:description" content="建てる前に、足元の風が分かる。寸法を答えるだけで風速増加率と年間の超過確率を試算。村上ら(1986)・NEN 8100・Lawson の3基準で判定します。">
+<meta property="og:image" content="https://mitsu614.github.io/kentikuAI/birukaze/ogp.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="風見社長のビル風診断">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="風見社長のビル風診断">
+<meta name="twitter:description" content="建てる前に、足元の風が分かる。村上ら(1986)・NEN 8100・Lawson の3基準で判定するビル風の簡易診断。">
+<meta name="twitter:image" content="https://mitsu614.github.io/kentikuAI/birukaze/ogp.png">
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237f9fbe'/%3E%3Cg stroke='%23fff' stroke-width='4.5' stroke-linecap='round' fill='none' opacity='.95'%3E%3Cpath d='M9 22h28a6 6 0 1 0-6-6'/%3E%3Cpath d='M9 32h34a6.5 6.5 0 1 1-6.5 6.5'/%3E%3Cpath d='M9 43h20'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="ogp.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;500;700&family=Zen+Kaku+Gothic+New:wght@500;700;900&family=Roboto+Mono:wght@400;500;700&display=swap">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "風見社長のビル風診断",
+  "url": "https://mitsu614.github.io/kentikuAI/birukaze/",
+  "applicationCategory": "https://schema.org/BusinessApplication",
+  "operatingSystem": "Web",
+  "inLanguage": "ja",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "JPY" },
+  "description": "建物の寸法と周辺の街並みから、ビル風の風速増加率と歩行者レベル風速の年間超過確率を試算する簡易診断。村上らの風環境評価尺度、NEN 8100、Lawson基準の3つで同時に判定します。",
+  "publisher": { "@type": "Organization", "name": "建築ブースト", "url": "https://mitsu614.github.io/kentikuAI/" }
+}
+</script>
+
+<style>
+/* 最小限のリセット */
+html{-webkit-text-size-adjust:100%;}
+img,svg{max-width:100%;}
+button,input{font:inherit;color:inherit;}
+:root{
+  --wall:#7f9fbe; --wall-2:#6b8dae;
+  --streak:255,255,255; --streak-a:.20;
+  --onwall:rgba(11,28,42,.76); --onwall-strong:#0b1c2a;
+  --ink:#16212b; --ink-2:#54687a; --ink-3:#8298ab;
+  --bar:#f3f6f9; --bar-line:#dbe3ea; --dock:#ffffff;
+  --bot-bg:#ffffff; --bot-ink:#16212b;
+  --me-bg:#06c755; --me-ink:#ffffff;
+  --card:#ffffff; --card-2:#eef3f7; --card-3:#e3ebf2; --line:#dbe4ec;
+  --chip:#ffffff; --chip-ink:#12557c; --chip-line:#b7cfe1; --chip-hover:#e8f2f9;
+  --accent:#0e6ba8; --accent-soft:#d9ecf8;
+  --ok:#1f9d55; --warn:#c98a04; --alert:#dd6b12; --bad:#ce3626;
+  --ok-bg:#e3f5ea; --warn-bg:#faf0d6; --alert-bg:#fceadb; --bad-bg:#fbe4e1;
+  --r-bub:18px;
+  --f-body:"Zen Maru Gothic","Hiragino Maru Gothic ProN","Yu Gothic",system-ui,sans-serif;
+  --f-disp:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic",system-ui,sans-serif;
+  --f-num:"Roboto Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --wall:#131c25; --wall-2:#0c141b;
+    --streak:150,196,231; --streak-a:.17;
+    --onwall:rgba(226,238,248,.78); --onwall-strong:#e8f1f8;
+    --ink:#e7eef5; --ink-2:#9db1c4; --ink-3:#71879b;
+    --bar:#101922; --bar-line:#26333f; --dock:#141e28;
+    --bot-bg:#232f3b; --bot-ink:#e7eef5;
+    --me-bg:#0d9b4e; --me-ink:#ffffff;
+    --card:#1b2530; --card-2:#22303c; --card-3:#2a3947; --line:#2c3a48;
+    --chip:#1d2732; --chip-ink:#9ed2f2; --chip-line:#33465a; --chip-hover:#26374a;
+    --accent:#5cb2ea; --accent-soft:#173044;
+    --ok:#45c47c; --warn:#e5ba43; --alert:#f18a41; --bad:#f26654;
+    --ok-bg:#12301f; --warn-bg:#33290e; --alert-bg:#37220f; --bad-bg:#3a1a17;
+  }
+}
+:root[data-theme="dark"]{
+  --wall:#131c25; --wall-2:#0c141b;
+  --streak:150,196,231; --streak-a:.17;
+  --onwall:rgba(226,238,248,.78); --onwall-strong:#e8f1f8;
+  --ink:#e7eef5; --ink-2:#9db1c4; --ink-3:#71879b;
+  --bar:#101922; --bar-line:#26333f; --dock:#141e28;
+  --bot-bg:#232f3b; --bot-ink:#e7eef5;
+  --me-bg:#0d9b4e; --me-ink:#ffffff;
+  --card:#1b2530; --card-2:#22303c; --card-3:#2a3947; --line:#2c3a48;
+  --chip:#1d2732; --chip-ink:#9ed2f2; --chip-line:#33465a; --chip-hover:#26374a;
+  --accent:#5cb2ea; --accent-soft:#173044;
+  --ok:#45c47c; --warn:#e5ba43; --alert:#f18a41; --bad:#f26654;
+  --ok-bg:#12301f; --warn-bg:#33290e; --alert-bg:#37220f; --bad-bg:#3a1a17;
+}
+
+*{box-sizing:border-box;}
+body{margin:0;background:var(--wall);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.72;-webkit-font-smoothing:antialiased;}
+:focus-visible{outline:2.5px solid var(--accent);outline-offset:2px;border-radius:6px;}
+
+#windfield{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block;
+  background:linear-gradient(160deg,var(--wall) 0%,var(--wall-2) 100%);}
+
+.stage{position:relative;z-index:1;height:100dvh;display:grid;grid-template-columns:1fr;justify-items:center;}
+.rail{display:none;}
+@media (min-width:1080px){
+  .stage{grid-template-columns:1fr auto 1fr;align-items:center;}
+  .rail{display:block;justify-self:end;max-width:300px;padding:0 44px 0 32px;color:var(--onwall-strong);}
+  .rail-2{justify-self:start;padding:0 32px 0 44px;max-width:280px;}
+}
+.rail h1{font-family:var(--f-disp);font-weight:900;font-size:34px;line-height:1.25;margin:0 0 14px;text-wrap:balance;}
+.rail p{margin:0 0 14px;font-size:13.5px;line-height:1.85;opacity:.92;}
+.rail .kicker{font-family:var(--f-disp);font-weight:700;font-size:11px;letter-spacing:.2em;opacity:.78;margin:0 0 10px;}
+.rail .fineprint{font-size:11.5px;line-height:1.8;opacity:.75;border-top:1px solid currentColor;padding-top:12px;margin-top:18px;}
+.rail ol{margin:0;padding-left:1.15em;font-size:13px;line-height:1.8;opacity:.92;}
+.rail ol li{margin-bottom:5px;}
+.rail ol li b{font-family:var(--f-disp);}
+
+.phone{width:min(100%,480px);height:100dvh;display:flex;flex-direction:column;box-shadow:0 0 60px rgba(6,18,30,.3);}
+@media (min-width:1080px){.phone{height:min(94dvh,920px);border-radius:20px;overflow:hidden;}}
+
+.talkbar{flex:0 0 auto;display:flex;align-items:center;gap:11px;padding:11px 14px;background:var(--bar);border-bottom:1px solid var(--bar-line);}
+.talkbar .ava{width:38px;height:38px;flex:0 0 auto;}
+.talkbar .who{flex:1 1 auto;min-width:0;}
+.talkbar .nm{font-family:var(--f-disp);font-weight:700;font-size:15px;line-height:1.3;}
+/* inline-flex にすると中の文字列が縮まずヘッダーからはみ出すので flex + min-width:0 */
+.talkbar .sub{font-size:11px;color:var(--ink-2);line-height:1.45;display:flex;align-items:flex-start;gap:5px;min-width:0;}
+.talkbar .sub .txt{min-width:0;overflow-wrap:anywhere;}
+.talkbar .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:0 0 auto;margin-top:4px;}
+.themer{flex:0 0 auto;border:1px solid var(--bar-line);background:transparent;color:var(--ink-2);
+  border-radius:9px;width:32px;height:32px;cursor:pointer;font-size:14px;display:grid;place-items:center;}
+.themer:hover{background:var(--chip-hover);color:var(--ink);}
+
+.thread{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:16px 12px 22px;display:flex;flex-direction:column;gap:9px;scrollbar-width:thin;}
+.row{display:flex;gap:8px;align-items:flex-end;max-width:100%;}
+.row.bot{justify-content:flex-start;}
+.row.me{justify-content:flex-end;}
+.row .ava{width:36px;height:36px;flex:0 0 auto;margin-bottom:2px;}
+.row .ava.ghost{visibility:hidden;}
+.bub{position:relative;max-width:78%;padding:9px 14px;border-radius:var(--r-bub);font-size:14.5px;line-height:1.75;word-break:break-word;box-shadow:0 1px 2px rgba(8,20,32,.13);}
+.row.bot .bub{background:var(--bot-bg);color:var(--bot-ink);border-top-left-radius:5px;}
+.row.me .bub{background:var(--me-bg);color:var(--me-ink);border-top-right-radius:5px;font-weight:500;}
+.bub .hl{background:linear-gradient(transparent 62%,var(--accent-soft) 62%);font-weight:700;padding:0 1px;}
+.row.me .bub .hl{background:none;}
+.bub cite{font-style:normal;font-size:11.5px;color:var(--ink-2);display:block;margin-top:2px;}
+.stamp{font-size:10px;color:var(--onwall);align-self:flex-end;margin-bottom:3px;flex:0 0 auto;font-family:var(--f-num);}
+.row.bot .stamp{order:3;}
+.row.me .stamp{order:-1;}
+.name-tag{font-size:11px;color:var(--onwall);margin:2px 0 -4px 46px;font-weight:500;}
+
+.typing{display:flex;gap:4px;padding:13px 15px;}
+.typing i{width:7px;height:7px;border-radius:50%;background:var(--ink-3);animation:bob 1.15s infinite ease-in-out;}
+.typing i:nth-child(2){animation-delay:.16s;}
+.typing i:nth-child(3){animation-delay:.32s;}
+@keyframes bob{0%,60%,100%{transform:translateY(0);opacity:.42;}30%{transform:translateY(-5px);opacity:1;}}
+.pop{animation:pop .22s cubic-bezier(.2,.9,.3,1.3) both;}
+@keyframes pop{from{opacity:0;transform:translateY(7px) scale(.97);}to{opacity:1;transform:none;}}
+
+.dock{flex:0 0 auto;background:var(--dock);border-top:1px solid var(--line);
+  padding:9px 12px calc(9px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:9px;max-height:54dvh;}
+.chips{display:flex;flex-wrap:wrap;gap:7px;overflow-y:auto;scrollbar-width:thin;}
+.chips:empty{display:none;}
+/* 下にまだ選択肢があるときだけ、末尾をぼかして続きがあることを示す */
+.chips[data-more="1"]{
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 24px),transparent);
+  mask-image:linear-gradient(to bottom,#000 calc(100% - 24px),transparent);
+}
+.chip{font-family:var(--f-body);font-size:13.5px;font-weight:500;padding:7px 15px;border-radius:999px;
+  border:1.5px solid var(--chip-line);background:var(--chip);color:var(--chip-ink);cursor:pointer;line-height:1.5;
+  transition:background .13s,transform .13s;text-align:left;}
+.chip:hover{background:var(--chip-hover);}
+.chip:active{transform:scale(.96);}
+.chip .u{font-family:var(--f-num);font-weight:500;}
+.chip .sm{display:block;font-size:11px;color:var(--ink-2);font-weight:400;line-height:1.45;}
+.chip.wide{width:100%;}
+.chip.muted{border-style:dashed;color:var(--ink-2);}
+.entry{display:flex;gap:8px;align-items:center;}
+.entry input{flex:1 1 auto;min-width:0;font-family:var(--f-body);font-size:15.5px;padding:10px 15px;border-radius:999px;
+  border:1.5px solid var(--line);background:var(--card-2);color:var(--ink);}
+.entry input::placeholder{color:var(--ink-3);}
+.entry input:disabled{opacity:.55;}
+.entry .unit{font-family:var(--f-disp);font-size:13px;color:var(--ink-2);flex:0 0 auto;margin-left:-4px;}
+.send{flex:0 0 auto;width:42px;height:42px;border-radius:50%;border:0;background:var(--me-bg);color:#fff;cursor:pointer;
+  display:grid;place-items:center;transition:transform .13s,opacity .13s;}
+.send:disabled{opacity:.35;cursor:default;}
+.send:not(:disabled):active{transform:scale(.92);}
+
+/* ── 診断カード ─────────────────────────── */
+.card{max-width:94%;background:var(--card);border-radius:16px;border-top-left-radius:5px;overflow:hidden;box-shadow:0 3px 14px rgba(8,20,32,.22);}
+.card-hd{padding:15px 17px 13px;border-bottom:1px solid var(--line);}
+.card-hd .eyebrow{font-family:var(--f-disp);font-size:10.5px;font-weight:700;letter-spacing:.18em;color:var(--ink-3);margin-bottom:5px;}
+.card-hd h2{font-family:var(--f-disp);font-weight:900;font-size:18px;margin:0;line-height:1.4;text-wrap:balance;}
+.sect{padding:15px 17px;border-bottom:1px solid var(--line);}
+.sect:last-child{border-bottom:0;}
+.sect h3{font-family:var(--f-disp);font-weight:700;font-size:12px;letter-spacing:.08em;color:var(--ink-2);margin:0 0 4px;}
+.sect .src{font-size:10.5px;color:var(--ink-3);line-height:1.6;margin:0 0 11px;}
+
+.verdicts{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;}
+.vc{padding:10px 9px;border-radius:11px;text-align:center;}
+.vc .vl{font-family:var(--f-disp);font-size:9.5px;font-weight:700;letter-spacing:.06em;opacity:.8;line-height:1.4;}
+.vc .vv{font-family:var(--f-disp);font-weight:900;font-size:20px;line-height:1.25;margin:2px 0 1px;}
+.vc .vs{font-size:10px;line-height:1.45;opacity:.88;}
+.vc.ok{background:var(--ok-bg);color:var(--ok);}
+.vc.warn{background:var(--warn-bg);color:var(--warn);}
+.vc.alert{background:var(--alert-bg);color:var(--alert);}
+.vc.bad{background:var(--bad-bg);color:var(--bad);}
+
+.verdict{display:flex;align-items:center;gap:14px;margin-top:13px;}
+.gauge{flex:0 0 auto;width:118px;}
+.gauge text{font-family:var(--f-num);}
+.vtext{flex:1 1 auto;min-width:0;}
+.vtext .lead{font-family:var(--f-disp);font-weight:700;font-size:14.5px;line-height:1.55;margin-bottom:4px;text-wrap:balance;}
+.vtext .note{font-size:12.5px;color:var(--ink-2);line-height:1.7;}
+
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;position:relative;}
+/* 右にまだ列があるときだけ、右端をぼかして横スクロールできることを示す */
+.tw[data-more="1"]{
+  -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 30px),transparent);
+  mask-image:linear-gradient(to right,#000 calc(100% - 30px),transparent);
+}
+table.dt{border-collapse:collapse;width:100%;min-width:322px;font-size:12.5px;}
+table.dt th,table.dt td{padding:7px 7px;text-align:right;border-bottom:1px solid var(--line);}
+table.dt th:first-child,table.dt td:first-child{text-align:left;}
+table.dt thead th{font-family:var(--f-disp);font-weight:700;font-size:10.5px;color:var(--ink-2);border-bottom:1.5px solid var(--line);white-space:nowrap;line-height:1.4;}
+table.dt tbody th{font-family:var(--f-body);font-weight:500;white-space:nowrap;}
+table.dt td{font-family:var(--f-num);font-variant-numeric:tabular-nums;font-weight:500;}
+table.dt td.key{font-weight:700;}
+table.dt tr:last-child th,table.dt tr:last-child td{border-bottom:0;}
+.jg{font-family:var(--f-disp);font-weight:700;font-size:11px;padding:1px 7px;border-radius:999px;}
+.jg.pass{background:var(--ok-bg);color:var(--ok);}
+.jg.fail{background:var(--bad-bg);color:var(--bad);}
+
+.acts{display:flex;flex-direction:column;gap:5px;margin-top:10px;}
+.act{display:flex;align-items:center;gap:9px;font-size:12.5px;}
+.act .an{flex:1 1 auto;min-width:0;}
+.act .av{font-family:var(--f-disp);font-weight:700;font-size:10.5px;padding:2px 9px;border-radius:999px;flex:0 0 auto;}
+.av.good{background:var(--ok-bg);color:var(--ok);}
+.av.mod{background:var(--warn-bg);color:var(--warn);}
+.av.poor{background:var(--bad-bg);color:var(--bad);}
+.act .ath{font-family:var(--f-num);font-size:11px;color:var(--ink-3);flex:0 0 auto;}
+
+.bar{height:9px;border-radius:999px;background:var(--card-3);overflow:hidden;margin:9px 0 6px;}
+.bar i{display:block;height:100%;border-radius:999px;}
+.barlab{display:flex;justify-content:space-between;font-family:var(--f-num);font-size:10.5px;color:var(--ink-3);}
+
+.plan{width:100%;height:auto;display:block;border-radius:10px;background:var(--card-2);}
+.plan text{font-family:var(--f-disp);font-weight:700;}
+.legend{display:flex;flex-wrap:wrap;gap:5px 14px;margin-top:9px;font-size:11.5px;color:var(--ink-2);}
+.legend span{display:inline-flex;align-items:center;gap:5px;min-width:0;max-width:100%;}
+.legend i{width:9px;height:9px;border-radius:50%;display:block;}
+
+.mlist{display:flex;flex-direction:column;gap:6px;}
+.m{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;border-radius:10px;border:1.5px solid var(--line);
+  background:var(--card);cursor:pointer;transition:border-color .13s,background .13s;}
+.m:hover{background:var(--card-2);}
+.m.on{border-color:var(--accent);background:var(--accent-soft);}
+.m input{margin:5px 0 0;accent-color:var(--accent);flex:0 0 auto;width:16px;height:16px;}
+.m .mt{flex:1 1 auto;min-width:0;}
+.m .mn{font-family:var(--f-disp);font-weight:700;font-size:13px;line-height:1.5;display:block;}
+.m .md{font-size:11.5px;color:var(--ink-2);line-height:1.65;margin-top:2px;display:block;}
+.m .mc{font-size:10.5px;color:var(--ink-3);line-height:1.6;margin-top:2px;display:block;}
+.m .mk{font-family:var(--f-disp);font-size:10px;font-weight:700;padding:1px 7px;border-radius:999px;
+  background:var(--card-3);color:var(--ink-2);flex:0 0 auto;margin-top:3px;}
+.mres{margin-top:11px;padding:11px 13px;border-radius:10px;background:var(--card-2);display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;}
+.mres .k{font-size:12px;color:var(--ink-2);}
+.mres .v{font-family:var(--f-num);font-variant-numeric:tabular-nums;font-weight:700;font-size:22px;color:var(--accent);}
+.mres .arrow{color:var(--ink-3);font-family:var(--f-num);}
+.mres .was{font-family:var(--f-num);color:var(--ink-3);text-decoration:line-through;font-size:15px;}
+.caveat{font-size:11.5px;color:var(--ink-2);line-height:1.7;margin-top:8px;}
+
+.adm{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;border-radius:10px;}
+.adm.high{background:var(--bad-bg);} .adm.mid{background:var(--alert-bg);}
+.adm.low{background:var(--warn-bg);} .adm.none{background:var(--ok-bg);}
+.adm .at{font-family:var(--f-disp);font-weight:700;font-size:13px;line-height:1.5;display:block;}
+.adm .ad{font-size:11.5px;line-height:1.7;margin-top:3px;opacity:.88;display:block;color:var(--ink);}
+.adm .ic{flex:0 0 auto;font-family:var(--f-disp);font-weight:900;font-size:13px;}
+.adm.high .ic,.adm.high .at{color:var(--bad);} .adm.mid .ic,.adm.mid .at{color:var(--alert);}
+.adm.low .ic,.adm.low .at{color:var(--warn);} .adm.none .ic,.adm.none .at{color:var(--ok);}
+
+details.fold{border-top:1px solid var(--line);}
+details.fold summary{padding:12px 17px;cursor:pointer;list-style:none;font-family:var(--f-disp);font-weight:700;
+  font-size:12px;color:var(--accent);display:flex;align-items:center;gap:7px;}
+details.fold summary::-webkit-details-marker{display:none;}
+details.fold summary::after{content:"＋";margin-left:auto;font-family:var(--f-num);}
+details.fold[open] summary::after{content:"−";}
+.foldbody{padding:0 17px 15px;font-size:12px;line-height:1.8;color:var(--ink-2);}
+.foldbody p{margin:0 0 9px;}
+.foldbody b{color:var(--ink);font-family:var(--f-disp);}
+.fx{display:block;background:var(--card-2);padding:9px 11px;border-radius:8px;font-family:var(--f-num);font-size:11.5px;
+  color:var(--ink);margin:7px 0;overflow-x:auto;white-space:pre;line-height:1.75;}
+ol.refs{margin:0;padding-left:1.4em;font-size:11.5px;line-height:1.75;}
+ol.refs li{margin-bottom:9px;}
+ol.refs b{font-family:var(--f-disp);color:var(--ink);}
+ol.refs em{font-style:normal;color:var(--ink-3);}
+
+.disclaim{padding:12px 17px;background:var(--card-2);font-size:11.5px;line-height:1.75;color:var(--ink-2);}
+.disclaim b{color:var(--ink);font-family:var(--f-disp);}
+
+@media (prefers-reduced-motion:reduce){*{animation-duration:.001ms !important;transition-duration:.001ms !important;}}
+
+/* ── このサービスについて（モーダル） ─────── */
+dialog#about{
+  border:0;padding:0;max-width:min(92vw,520px);width:100%;
+  border-radius:16px;background:var(--card);color:var(--ink);
+  box-shadow:0 20px 60px rgba(6,18,30,.4);
+}
+dialog#about::backdrop{background:rgba(8,18,28,.6);backdrop-filter:blur(3px);}
+.ab-hd{
+  display:flex;align-items:center;gap:10px;padding:15px 18px;
+  border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--card);border-radius:16px 16px 0 0;
+}
+.ab-hd h2{font-family:var(--f-disp);font-weight:900;font-size:17px;margin:0;flex:1 1 auto;}
+.ab-close{
+  border:1px solid var(--line);background:transparent;color:var(--ink-2);
+  border-radius:9px;width:32px;height:32px;cursor:pointer;display:grid;place-items:center;font-size:15px;flex:0 0 auto;
+}
+.ab-close:hover{background:var(--card-2);color:var(--ink);}
+.ab-body{padding:16px 18px 20px;font-size:13px;line-height:1.85;max-height:min(70dvh,620px);overflow-y:auto;}
+.ab-body h3{
+  font-family:var(--f-disp);font-weight:700;font-size:12px;letter-spacing:.08em;
+  color:var(--ink-2);margin:18px 0 6px;
+}
+.ab-body h3:first-child{margin-top:0;}
+.ab-body p{margin:0 0 8px;color:var(--ink);}
+.ab-body ul{margin:0 0 8px;padding-left:1.25em;color:var(--ink);}
+.ab-body li{margin-bottom:4px;}
+.ab-body a{color:var(--accent);}
+.ab-body .quiet{color:var(--ink-2);font-size:12px;line-height:1.8;}
+.ab-body .flag{
+  padding:10px 12px;border-radius:10px;background:var(--card-2);
+  font-size:12px;line-height:1.75;color:var(--ink);margin:0 0 8px;
+}
+.ab-foot{
+  border-top:1px solid var(--line);padding:12px 18px;
+  display:flex;flex-wrap:wrap;gap:6px 16px;font-size:11.5px;color:var(--ink-2);
+}
+.ab-foot a{color:var(--ink-2);}
+
+/* ── 利用登録フォーム ─────────────────────── */
+.regform{display:flex;flex-direction:column;gap:9px;margin-top:10px;}
+.regform label{display:flex;flex-direction:column;gap:4px;font-size:11.5px;color:var(--ink-2);}
+.regform .req{color:var(--bad);font-size:10.5px;}
+.regform input,.regform textarea{
+  font-family:var(--f-body);font-size:15px;padding:9px 12px;border-radius:9px;
+  border:1.5px solid var(--line);background:var(--card-2);color:var(--ink);width:100%;
+}
+.regform input::placeholder,.regform textarea::placeholder{color:var(--ink-3);}
+.regform textarea{resize:vertical;min-height:56px;line-height:1.6;}
+.regform .hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;}
+.regform button{
+  font-family:var(--f-disp);font-weight:700;font-size:14px;padding:11px 14px;
+  border-radius:10px;border:0;background:var(--me-bg);color:#fff;cursor:pointer;
+  transition:opacity .13s,transform .13s;
+}
+.regform button:disabled{opacity:.5;cursor:default;}
+.regform button:not(:disabled):active{transform:scale(.98);}
+.regnote{font-size:11px;line-height:1.7;color:var(--ink-2);}
+.regnote a{color:var(--accent);}
+.regerr{font-size:11.5px;line-height:1.6;color:var(--bad);}
+.regerr:empty{display:none;}
+
+.noscript{
+  position:relative;z-index:2;max-width:640px;margin:0 auto;padding:56px 24px;
+  color:var(--onwall-strong);font-size:15px;line-height:1.9;
+}
+.noscript h1{font-family:var(--f-disp);font-weight:900;font-size:28px;margin:0 0 14px;}
+</style>
+</head>
+<body>
+
+<canvas id="windfield" aria-hidden="true"></canvas>
+
+<noscript>
+  <div class="noscript">
+    <h1>風見社長のビル風診断</h1>
+    <p>建物の高さ・幅・奥行と、まわりの街並みを答えるだけで、ビル風の風速増加率と歩行者レベル風速の年間超過確率を試算します。判定は村上らの風環境評価尺度（1986）、NEN 8100（2006）、Lawson／LDDC 基準の3本立てです。</p>
+    <p>この診断はブラウザの中だけで計算しています。ご利用には JavaScript を有効にしてください。</p>
+  </div>
+</noscript>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="ava" viewBox="0 0 64 64">
+    <circle cx="32" cy="32" r="32" fill="#c9dbe8"/>
+    <path d="M5 64c1.5-12 8-18.5 17.5-21h19C51 45.5 57.5 52 59 64Z" fill="#22384f"/>
+    <path d="M26 43.5 32 55l6-11.5Z" fill="#eef3f7"/>
+    <path d="M32 50.5 28.4 55 32 64l3.6-9Z" fill="#c8412f"/>
+    <rect x="27.5" y="36" width="9" height="9" rx="3" fill="#e5b795"/>
+    <ellipse cx="32" cy="28.5" rx="13.5" ry="14.5" fill="#f4d3b6"/>
+    <circle cx="18.6" cy="30" r="2.9" fill="#eec4a3"/>
+    <circle cx="45.4" cy="30" r="2.9" fill="#eec4a3"/>
+    <path d="M17.5 26.5c0-9 6.5-15 14.5-15s14.5 6 14.5 15Z" fill="#f2b705"/>
+    <path d="M32 11.5c1.6 0 2.6 6.5 2.6 15h-5.2c0-8.5 1-15 2.6-15Z" fill="#ffd45c"/>
+    <ellipse cx="32" cy="26.6" rx="20" ry="3.4" fill="#d59605"/>
+    <rect x="23.4" y="31.4" width="7" height="2.1" rx="1.05" fill="#3b3b3b" transform="rotate(-6 26.9 32.4)"/>
+    <rect x="33.6" y="31.4" width="7" height="2.1" rx="1.05" fill="#3b3b3b" transform="rotate(6 37.1 32.4)"/>
+    <circle cx="26.4" cy="35.6" r="1.9" fill="#2b2b2b"/>
+    <circle cx="37.6" cy="35.6" r="1.9" fill="#2b2b2b"/>
+    <path d="M27.2 40.4c1.4 1.9 3 2.8 4.8 2.8s3.4-.9 4.8-2.8" fill="none" stroke="#a9603f" stroke-width="1.9" stroke-linecap="round"/>
+  </symbol>
+</svg>
+
+<div class="stage">
+  <aside class="rail">
+    <div class="kicker">確率的風環境評価</div>
+    <h1>ビル風は<br>建てる前に<br>だいたい分かる。</h1>
+    <p>建物の寸法と、まわりの街の高さと、その土地の風の統計。この3つがあれば、足元に落ちてくる風の「年間の起こりやすさ」まで計算できます。風洞実験に進む前の当たり付けを、5分で。</p>
+    <p class="fineprint">判定は村上ら（1986）の風環境評価尺度、NEN 8100、Lawson／LDDC 基準の3本立て。風速比と気象統計を組み合わせる手順は Isyumov &amp; Davenport（1975）に拠っています。</p>
+  </aside>
+
+  <div class="phone">
+    <header class="talkbar">
+      <svg class="ava" aria-hidden="true"><use href="#ava"></use></svg>
+      <div class="who">
+        <div class="nm">風見 剛</div>
+        <div class="sub"><span class="dot"></span><span class="txt">風見テック工業 代表取締役</span></div>
+      </div>
+      <button class="themer" id="abouter" type="button" aria-label="このサービスについて" title="このサービスについて">ⓘ</button>
+      <button class="themer" id="themer" type="button" aria-label="配色を切り替える" title="配色を切り替える">◐</button>
+    </header>
+    <main class="thread" id="thread" role="log" aria-live="polite" aria-label="風見社長との会話"></main>
+    <footer class="dock">
+      <div class="chips" id="chips" role="group" aria-label="選択肢"></div>
+      <form class="entry" id="entry" autocomplete="off">
+        <input id="field" type="text" inputmode="decimal" placeholder="下のボタンから選んでください" disabled aria-label="回答を入力">
+        <span class="unit" id="unit"></span>
+        <button class="send" id="send" type="submit" disabled aria-label="送信">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 12h15M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </form>
+    </footer>
+  </div>
+
+  <aside class="rail rail-2">
+    <div class="kicker">診断でわかること</div>
+    <ol>
+      <li><b>風速増加率</b>と、強くなる場所</li>
+      <li><b>村上ランク1〜4</b>（日最大瞬間風速の超過頻度）</li>
+      <li><b>NEN 8100 クラスA〜E</b>と危険性の判定</li>
+      <li><b>Lawson 基準</b>で「どの行為まで許容できるか」</li>
+      <li>暴風時の歩行者風速と転倒リスク</li>
+      <li>効く対策と、対策後の数字</li>
+      <li>条例・アセスに引っかかりそうかの目安</li>
+    </ol>
+    <p class="fineprint">対策の効き方は Uematsu ら（1992）の隅切り、Tsang ら（2012）のポディウム、Penwarden &amp; Wise（1975）の防風植栽にもとづいています。</p>
+  </aside>
+</div>
+
+<dialog id="about" aria-labelledby="about-title">
+  <div class="ab-hd">
+    <h2 id="about-title">このサービスについて</h2>
+    <button class="ab-close" id="about-close" type="button" aria-label="閉じる">✕</button>
+  </div>
+  <div class="ab-body">
+    <h3>何をするツールか</h3>
+    <p>計画中の建物の寸法と、まわりの街並み、その土地の風の統計から、<b>足元（地上1.5m）にどれくらいの風が落ちてくるか</b>を試算します。建設前の何倍になるか（風速増加率）だけでなく、<b>年間で何日くらい強い風が吹くか</b>という頻度まで出すのが特徴です。</p>
+    <p>境界層風洞実験やCFD解析に進む前の、<b>「そもそも論点になるのか」を見極めるスクリーニング</b>を想定しています。</p>
+
+    <h3>判定に使っている基準</h3>
+    <ul>
+      <li><b>村上周三ほか（1986）</b>　風環境評価尺度。地上1.5mの日最大瞬間風速が 10／15／20 m/s を超える日数の割合でランク1〜4に分ける、日本の風洞実験報告書における事実上の標準。</li>
+      <li><b>NEN 8100（2006）</b>　オランダ規格。時間平均5 m/s の超過確率でクラスA〜E、15 m/s の超過確率で危険性を判定。</li>
+      <li><b>Lawson／LDDC</b>　突風等価平均風速 GEM の年間5%超過値で、着座・立ち止まり・歩行のどこまで許容できるかを判定。</li>
+    </ul>
+    <p class="quiet">風速比と気象統計を組み合わせる評価手順は Isyumov &amp; Davenport（1975）に拠ります。風速比の推定には Wise（1970）、Penwarden &amp; Wise（1975）、Beranek &amp; van Koten（1979）、Uematsu ほか（1992）、Kubota ほか（2008）、Blocken ほか（2007-2008）、Tsang ほか（2012）の知見を取り入れています。出典の全リストは診断結果カードの末尾に掲載しています。</p>
+
+    <h3>この診断でできないこと</h3>
+    <div class="flag">風向別の出現頻度を分けずに全方位を一括で扱っており、周辺建物の個別配置や複数棟の複合効果は見ていません。風速増加率の推定式は公表文献の傾向を組み合わせた独自の簡易式で、<b>公的な基準式ではありません</b>。行政協議・近隣説明に用いる正式な評価には、境界層風洞実験またはCFD解析が必要です。</div>
+
+    <h3>入力したデータの扱い</h3>
+    <p>ビル風の計算はすべて<b>お使いのブラウザの中だけ</b>で行っています。サーバーへ送って計算しているわけではありません。無料でご利用いただけます。</p>
+    <p data-lead-only hidden>ただし、<b>診断結果をご覧いただく前にお名前をうかがっています。</b>そこで入力された会社名・お名前・メールアドレスと、その診断でお使いになった条件および結果は、建築ブーストへ送信されます。<b>ご連絡のためにのみ使用し、第三者へ提供することはありません。</b></p>
+    <p data-nolead-only>登録もログインも不要です。</p>
+    <p class="quiet">配色の設定を、次回の表示のためにブラウザ内に保存しています。<span data-lead-only hidden>登録済みかどうかも同様に保存し、2回目以降はお名前をうかがいません。</span></p>
+
+    <h3>運営</h3>
+    <p>建築ブースト（有限会社中野工務店）</p>
+  </div>
+  <div class="ab-foot">
+    <a href="https://mitsu614.github.io/kentikuAI/">建築ブースト</a>
+    <a href="https://mitsu614.github.io/kentikuAI/%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%83%9D%E3%83%AA%E3%82%B7%E3%83%BC_%E5%BB%BA%E7%AF%89%E3%83%96%E3%83%BC%E3%82%B9%E3%83%88.html">プライバシーポリシー</a>
+    <span data-nolead-only>無料・登録不要</span>
+    <span data-lead-only hidden>無料</span>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+
+/* ══════════════════════════════════════════════════════════════
+   0. 利用登録（診断結果を出す前にお名前をうかがう）の設定
+
+   ★endpoint に Edge Function の URL を入れると有効になります。
+     空のままなら登録フォームは一切出ず、誰でも最後まで無料で使えます。
+
+     supabase functions deploy birukaze-lead --no-verify-jwt
+     → https://<PROJECT>.supabase.co/functions/v1/birukaze-lead
+
+   URLに ?demo を付けると登録を求めません（商談で画面を見せるとき用）。
+   ══════════════════════════════════════════════════════════════ */
+const LEAD = {
+  endpoint: ""
+};
+
+const DEMO_MODE = new URLSearchParams(location.search).has("demo");
+const LEAD_ENABLED = /^https:\/\/[\w.-]+\/functions\/v1\/birukaze-lead$/.test(LEAD.endpoint) && !DEMO_MODE;
+const LEAD_KEY = "kaze-registered";
+
+const isRegistered = () => { try { return !!localStorage.getItem(LEAD_KEY); } catch (e) { return false; } };
+const markRegistered = v => { try { localStorage.setItem(LEAD_KEY, v); } catch (e) {} };
+
+/* ══════════════════════════════════════════════════════════════
+   1. 風工学エンジン
+   ── 評価手順は Isyumov & Davenport (1975)：
+      風洞（ここでは推定式）で求めた風速比に、その土地の風の
+      統計分布を掛け合わせて、年間の超過確率を出す。
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 調整のつまみ ──────────────────────────
+   ここに集約してあるのは、ハーネス（app/tools/harness-birukaze/）から
+   差し替えて較正するため。値の根拠は各所のコメントと参考文献を参照。   */
+const TUNING = {
+  gain:     0.65,   // 風速増加率の全体係数
+  expH:     0.75,   // 突出率の指数 [Wise 1970]
+  expB:     0.30,   // 見付け幅の指数 [Tsang ら 2012]
+  refB:     30,     // 見付け幅の基準(m)
+  dBase:    1.12,   // 奥行比の切片
+  dSlope:   0.16,   // 奥行比の効き
+  pilotis:  1.18,   // ピロティの割増 [Blocken ら 2007-2008]
+  through:  1.25,   // 貫通通路の割増（ピロティより大きい）
+  bcrSlope: 0.010,  // 建蔽率1%あたりの風速比の低下 [Kubota ら 2008]
+  gustPeak: 3.0,    // ガストファクターのピーク係数
+  gustBump: 1.10,   // ビル風影響域での乱れの増し
+  mvrCap:   1.10,   // 歩行者レベル風速比の上限
+  nEff:     6       // 1日のうち独立とみなせる標本数
+};
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const fmt = (v, d = 1) => v.toFixed(d);
+const pct = p => p >= 0.1 ? (p * 100).toFixed(1) + "%" : p >= 0.001 ? (p * 100).toFixed(2) + "%" : (p * 100).toFixed(3) + "%";
+const days = p => (p * 365).toFixed(p * 365 < 1 ? 1 : 0) + "日";
+
+/* ── ワイブル分布 ────────────────────────── */
+function gammaFn(x){
+  const g = 7, C = [0.99999999999980993,676.5203681218851,-1259.1392167224028,
+    771.32342877765313,-176.61502916214059,12.507343278686905,
+    -0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7];
+  if (x < 0.5) return Math.PI / (Math.sin(Math.PI * x) * gammaFn(1 - x));
+  x -= 1;
+  let a = C[0];
+  const t = x + g + 0.5;
+  for (let i = 1; i < g + 2; i++) a += C[i] / (x + i);
+  return Math.sqrt(2 * Math.PI) * Math.pow(t, x + 0.5) * Math.exp(-t) * a;
+}
+const weibullC   = (mean, k) => mean / gammaFn(1 + 1 / k);
+const pExceed    = (u, c, k) => Math.exp(-Math.pow(u / c, k));
+const quantile   = (p, c, k) => c * Math.pow(-Math.log(p), 1 / k);
+/* 日最大値の超過確率。1日24時間のうち独立とみなせる標本数を N_EFF とする */
+const N_EFF = TUNING.nEff;
+const pDailyMax  = (u, c, k) => 1 - Math.pow(1 - pExceed(u, c, k), N_EFF);
+
+/*
+  地表面粗度区分：建設省告示第1454号の区分に準拠。
+  kPed  … 気象官署（粗度II・地上10m）の風速を GL+1.5m に換算する比。
+          粗度層内の対数則プロファイル（ゼロ面変位を考慮）から設定した実務値。
+  Iu    … GL+1.5m の乱れの強さ。ガストファクター GF = 1 + 3.0·Iu
+          （3秒平均の突風を10分間平均で割った比。ピーク係数 3.0）。
+  bcr   … その区分の代表的な建蔽率（Kubota ら 2008 の補正の基準点）。
+  fR    … 相対的な増加率の効きやすさ。地表風が弱い市街地ほど比は大きく出る。
+*/
+const ROUGH = {
+  I:   {Zb:5,  ZG:250, a:0.10, kPed:0.75, Iu:0.18, bcr:0,  fR:0.82, name:"海岸・広い平地"},
+  II:  {Zb:5,  ZG:350, a:0.15, kPed:0.62, Iu:0.25, bcr:10, fR:0.91, name:"田園・郊外"},
+  III: {Zb:5,  ZG:450, a:0.20, kPed:0.45, Iu:0.35, bcr:30, fR:1.00, name:"低中層の市街地"},
+  IV:  {Zb:10, ZG:550, a:0.27, kPed:0.32, Iu:0.45, bcr:50, fR:1.12, name:"中高層が密集する市街地"}
+};
+
+/* 地域の風の統計。Uann＝気象官署（地上10m）の年平均風速、k＝ワイブル形状係数、V0＝地方別基準風速（告示1454号） */
+const REGIONS = [
+  {id:"metro",  l:"三大都市圏の市街地",     s:"東京・名古屋・大阪など",   Uann:3.0, k:1.80, V0:34},
+  {id:"inland", l:"関東・東海・近畿の内陸", s:"内陸の盆地・平野部",       Uann:2.5, k:1.70, V0:34},
+  {id:"north",  l:"北海道・東北",           s:"",                         Uann:3.0, k:1.80, V0:32},
+  {id:"japansea",l:"北陸・山陰など日本海側", s:"冬の季節風が強い",         Uann:3.5, k:1.85, V0:36},
+  {id:"west",   l:"九州・四国・瀬戸内",     s:"",                         Uann:3.0, k:1.78, V0:38},
+  {id:"south",  l:"沖縄・南西諸島",         s:"台風の常襲地域",           Uann:4.9, k:2.00, V0:46}
+];
+
+/* ── 建設前の風速比 ──────────────────────────
+   Kubota ら (2008)：建蔽率が10%増えると平均風速比が0.1 線形に低下する。
+   その勾配を、粗度区分の代表建蔽率からのずれに適用する。          */
+function baseRatio(rough, bcr){
+  const R = ROUGH[rough];
+  const ref = (bcr === null || bcr === undefined) ? R.bcr : bcr;
+  return clamp(R.kPed - TUNING.bcrSlope * (ref - R.bcr), 0.08, 0.95);
+}
+
+/* ── 風速増加率 ──────────────────────────────
+   公表されている風洞実験の傾向を組み合わせた簡易推定式。
+   f_H … 周辺市街地からの突出量。吹き降ろしの主因（Wise 1970 / Penwarden & Wise 1975）
+   f_B … 風上見付け幅。Tsang ら (2012) は高さより幅の寄与が大きいとする
+   f_D … 奥行比。薄い板状ほど角部の加速が強い
+   f_R … 粗度区分の効き
+   足元 … ピロティ・貫通通路（Beranek & van Koten 1979 / Blocken ら 2007-2008）  */
+function speedup(s){
+  const T = TUNING;
+  const fH = Math.pow(clamp((s.H - s.Hs) / s.H, 0, 1), T.expH);
+  const fB = clamp(Math.pow(s.B / T.refB, T.expB), 0.70, 1.45);
+  const fD = T.dBase - T.dSlope * clamp(s.D / s.B, 0.15, 1.5);
+  const fR = ROUGH[s.rough].fR;
+  let R = 1 + T.gain * fH * fB * fD * fR;
+  const foot = s.form === "pilotis" ? T.pilotis : s.form === "through" ? T.through : 1.00;
+  R *= foot;
+  return {R: clamp(R, 1.0, 2.8), fH, fB, fD, fR, foot};
+}
+
+const MEASURES = [
+  {id:"corner",  kind:"形状", f:0.85, n:"隅切り・コーナーカット",
+   d:"角部を辺長の1/10程度カットします。剥離を弱めるため効果が大きい対策です。基本設計の段階でしか打てません。",
+   src:"Uematsu ら (1992)：わずかな角形状の変更でも歩行者レベルの風環境は大きく改善する"},
+  {id:"setback", kind:"形状", f:0.90, n:"頂部・中間部のセットバック",
+   d:"上層を後退させ、引きずり下ろされる風量そのものを減らします。",
+   src:"Wise (1970)：吹き降ろしは風上壁面が受ける運動量に比例する"},
+  {id:"podium",  kind:"形状", f:0.80, n:"低層部の張り出し（ポディウム）",
+   d:"吹き降ろしを低層部の屋根で受け止め、歩行者レベルまで落としません。",
+   src:"Tsang, Kwok & Hitchcock (2012)：ポディウムは塔状部まわりの歩行者レベル風速を有意に低減させる"},
+  {id:"green",   kind:"局所", f:0.78, n:"常緑の多層植栽（高木＋中低木）",
+   d:"樹高の10倍程度下流まで効きます。効果が出るまで数年かかるため、竣工時点の評価には乗せにくい点にご注意ください。",
+   src:"Penwarden & Wise (1975)：植栽帯は乱れを増やさずに平均風速を下げられる"},
+  {id:"screen",  kind:"局所", f:0.70, n:"防風スクリーン（透過率40%前後）",
+   d:"完全に塞ぐより少し風を通したほうが、下流の乱れが小さく有利です。即効性があります。",
+   src:"Penwarden & Wise (1975)：透過性のあるフェンスは下流側の回復距離が長い"}
+];
+const applyMeasures = (R, ids) => {
+  let f = 1;
+  MEASURES.forEach(m => { if (ids.has(m.id)) f *= m.f; });
+  return 1 + (R - 1) * f;
+};
+
+/* ── 判定基準 ① 村上ら (1986) ──────────────
+   GL+1.5m の日最大瞬間風速が 10 / 15 / 20 m/s を超える日数の割合で4段階。 */
+const GUSTS = [10, 15, 20];
+const MURAKAMI = [
+  {r:1, use:"住宅地・商店街など、最も影響を受けやすい用途", lim:[0.10, 0.009, 0.0008]},
+  {r:2, use:"住宅街・公園など、影響を受けやすい用途",       lim:[0.22, 0.036, 0.006]},
+  {r:3, use:"事務所街など、比較的影響を受けにくい用途",     lim:[0.35, 0.07,  0.015]}
+];
+function murakami(cPed, k, GF){
+  const p = GUSTS.map(g => pDailyMax(g / GF, cPed, k));
+  for (const m of MURAKAMI){
+    if (p.every((v, i) => v <= m.lim[i])) return {rank:m.r, use:m.use, p, lim:m.lim};
+  }
+  return {rank:4, use:"ランク3の条件を満たさない領域", p, lim:MURAKAMI[2].lim};
+}
+const RANK_STYLE = {1:"ok", 2:"warn", 3:"alert", 4:"bad"};
+
+/* ── 判定基準 ② NEN 8100 (2006) ────────────
+   GL+1.5m の時間平均風速が 5 m/s を超える確率で A〜E。15 m/s で危険性。 */
+const NEN = [
+  {c:"A", max:0.025, act:["good","good","good"],       s:"長時間の着座にも適する"},
+  {c:"B", max:0.050, act:["good","good","mod"],        s:"散策・短時間の着座に適する"},
+  {c:"C", max:0.100, act:["good","mod","poor"],        s:"歩行は快適、着座には不適"},
+  {c:"D", max:0.200, act:["mod","poor","poor"],        s:"短時間の通行のみ"},
+  {c:"E", max:1.010, act:["poor","poor","poor"],       s:"ほぼすべての用途に不適"}
+];
+const NEN_ACTS = ["通行（歩いて通り抜ける）", "散策（ゆっくり歩く）", "着座（座って過ごす）"];
+function nen8100(cPed, k){
+  const p5  = pExceed(5,  cPed, k);
+  const p15 = pExceed(15, cPed, k);
+  const cls = NEN.find(n => p5 < n.max) || NEN[4];
+  const danger = p15 < 0.0005 ? {c:"ok",   l:"安全",         d:"風による危険性は認められません。"}
+               : p15 < 0.0030 ? {c:"warn", l:"限定的なリスク", d:"重要度の低い場所であれば許容できる範囲です。"}
+                              : {c:"bad",  l:"危険",         d:"対策が必要です。転倒事故のリスクがあります。"};
+  return {p5, p15, cls, danger, style: cls.c === "A" ? "ok" : cls.c === "B" ? "ok" : cls.c === "C" ? "warn" : cls.c === "D" ? "alert" : "bad"};
+}
+
+/* ── 判定基準 ③ Lawson / LDDC ──────────────
+   突風等価平均風速 GEM（Melbourne 1978）＝ max(平均, 瞬間/1.85) の
+   年間5%超過値で、許容できる行為を決める。                          */
+const LAWSON = [
+  {t:2.5, l:"長時間の着座（ベンチ・オープンカフェ）"},
+  {t:4.0, l:"短時間の着座"},
+  {t:6.0, l:"立ち止まり（エントランス・バス停）"},
+  {t:8.0, l:"歩行（通り抜け）"}
+];
+function lawson(cPed, k, GF){
+  const gem = quantile(0.05, cPed, k) * Math.max(1, GF / 1.85);
+  const ok = LAWSON.filter(a => gem <= a.t);
+  return {gem, acts: LAWSON.map(a => ({...a, pass: gem <= a.t})),
+          best: ok.length ? ok[0].l : null,
+          style: gem <= 2.5 ? "ok" : gem <= 4 ? "ok" : gem <= 6 ? "warn" : gem <= 8 ? "alert" : "bad"};
+}
+
+/* ── 体感（ビューフォート風力階級） ────────── */
+function feel(v){
+  if (v < 1.6)  return {t:"ほぼ無風",   d:"風をほとんど感じません。",                               c:"ok"};
+  if (v < 3.4)  return {t:"そよ風",     d:"顔に風を感じる程度です。屋外で快適に過ごせます。",           c:"ok"};
+  if (v < 5.5)  return {t:"やや強い",   d:"髪が乱れます。書類やチラシがめくれます。",                 c:"warn"};
+  if (v < 8.0)  return {t:"強い",       d:"砂ぼこりが舞います。紙や軽いものが飛び、看板がばたつきます。", c:"warn"};
+  if (v < 10.8) return {t:"かなり強い", d:"傘がさしにくくなります。歩きにくくなります。",                     c:"alert"};
+  if (v < 13.9) return {t:"非常に強い", d:"傘が壊れます。歩行が困難になり、駐輪した自転車が倒れます。",     c:"alert"};
+  if (v < 17.2) return {t:"危険",       d:"風に向かって歩けません。転倒の危険があります。",             c:"bad"};
+  return               {t:"極めて危険", d:"屋外での行動は不可能です。飛来物による負傷の危険があります。",       c:"bad"};
+}
+
+/* ── 行政手続きの目安 ────────────────────── */
+function adminHint(H, area){
+  if (H > 100 || (area && area >= 100000)) return {lv:"high", ic:"!!!",
+    t:"環境影響評価（アセス）条例の対象になる可能性が高い",
+    d:"高さ100m超・延床10万㎡超クラスは、多くの自治体で風害の予測評価が義務づけられています。境界層風洞実験またはCFDによる評価書が必要。スケジュールに半年〜1年みておいてください。"};
+  if (H > 60 || (area && area >= 30000)) return {lv:"mid", ic:"!!",
+    t:"大規模建築物の指導要綱・事前協議の対象になりやすい",
+    d:"風害の検討結果と近隣説明を求められるケースが多い規模です。着工前にCFDでの事前検討を済ませておくと協議が早く進みます。"};
+  if (H > 31) return {lv:"low", ic:"!",
+    t:"中高層条例（近隣説明）の対象になりやすい",
+    d:"日影・電波障害とあわせて風害を聞かれることがあります。この診断結果くらいの資料を用意しておくと説明会が荒れにくい。"};
+  return {lv:"none", ic:"OK",
+    t:"条例上の風害検討まで求められないことが多い規模",
+    d:"ただし周辺との高低差が大きい場合は、規模に関係なく苦情の対象になり得ます。閾値は自治体ごとに異なるので所管部署への確認は必須。"};
+}
+
+/* ── 総合 ────────────────────────────────── */
+function diagnose(s, ms){
+  const reg = REGIONS.find(r => r.id === s.region);
+  const k   = reg.k;
+  const cMet = weibullC(reg.Uann, k);
+
+  const mvr0 = baseRatio(s.rough, s.bcr);
+  const sp   = speedup(s);
+  const R    = sp.R;
+  const R2   = applyMeasures(R, ms);
+  const mvrB = mvr0;
+  /* 歩行者レベルの風速比は、最も強い地点でも 1.1 程度が上限（風洞実験の報告値） */
+  const mvrA = clamp(mvr0 * R2, 0.05, TUNING.mvrCap);
+
+  /* 乱れの強さ：ビル風の影響域では 10% 増しとする */
+  const Iu   = ROUGH[s.rough].Iu;
+  const gfB  = 1 + TUNING.gustPeak * Iu;
+  const gfA  = 1 + TUNING.gustPeak * Iu * TUNING.gustBump;
+
+  const evalAt = (mvr, gf) => {
+    const c = cMet * mvr;
+    return {
+      mvr, gf, c,
+      murakami: murakami(c, k, gf),
+      nen: nen8100(c, k),
+      lawson: lawson(c, k, gf),
+      storm: {mean: mvr * reg.V0, gust: mvr * reg.V0 * gf},
+      typical: quantile(0.05, c, k)
+    };
+  };
+
+  const before = evalAt(mvrB, gfB);
+  const after  = evalAt(mvrA, gfA);
+
+  return {reg, k, cMet, mvr0, sp, R, R2, gfB, gfA, before, after,
+          admin: adminHint(s.H, s.area)};
+}
+
+/* 入力の不確かさが判定をどれだけ動かすか。
+   ハーネス（app/tools/harness-birukaze/）の感度分析で、粗度区分の選び方だけで
+   村上ランクが3段階、建蔽率±20%で2段階動くと分かった。どちらも利用者が
+   正確には答えにくい項目で、建蔽率にいたっては「わからない」で飛ばせる。
+   点推定だけを出すと、ありもしない精度があるように見えてしまう。
+   粗度区分を上下1段、建蔽率を±10%振って、ランクの取りうる幅を併記する。 */
+function rankBand(s, ms){
+  const keys = ["I", "II", "III", "IV"];
+  const i = keys.indexOf(s.rough);
+  const roughs = [...new Set([keys[Math.max(0, i - 1)], s.rough, keys[Math.min(3, i + 1)]])];
+  const b0 = (s.bcr === null || s.bcr === undefined) ? ROUGH[s.rough].bcr : s.bcr;
+  const bcrs = [...new Set([Math.max(0, b0 - 10), b0, Math.min(90, b0 + 10)])];
+  let lo = 4, hi = 1;
+  for (const r of roughs){
+    for (const b of bcrs){
+      const k = diagnose(Object.assign({}, s, {rough:r, bcr:b}), ms).after.murakami.rank;
+      if (k < lo) lo = k;
+      if (k > hi) hi = k;
+    }
+  }
+  return {lo, hi, spread: hi - lo};
+}
+
+/* ══════════════════════════════════════════════════════════════
+   2. 会話フロー
+   ══════════════════════════════════════════════════════════════ */
+
+const STEPS = [
+  {id:"H", type:"num", unit:"m", min:3, max:400,
+   q:["まずは計画中の建物からうかがいます。<b class='hl'>高さ</b>は何メートルでしょうか。",
+      "おおよそで構いません。軒高でも最高部でも、大きいほうの数字をお願いします。"],
+   chips:[20,31,45,60,100,150], echo:v => v + " m"},
+
+  {id:"B", type:"num", unit:"m", min:2, max:400,
+   q:["次は<b class='hl'>風上から見た幅</b>、いわゆる見付け幅です。",
+      "香港の Tsang らが風洞で調べたところ、歩行者レベルの風には<b>高さより幅のほうが効く</b>という結果が出ています。広い板のような建物が最も厄介です。<cite>Tsang, Kwok &amp; Hitchcock (2012)</cite>"],
+   chips:[15,25,40,60,90], echo:v => v + " m"},
+
+  {id:"D", type:"num", unit:"m", min:2, max:400,
+   q:"続いて<b class='hl'>奥行き</b>はいかがでしょうか。",
+   chips:[12,18,25,40,60], echo:v => v + " m"},
+
+  {id:"Hs", type:"num", unit:"m", min:0, max:300,
+   q:["ここが最も効いてくるところです。<b class='hl'>まわりの建物の平均的な高さ</b>を教えてください。",
+      "自分だけが突き出ているほど、上空の速い風を地面まで引きずり下ろします。Wise が1970年に整理して以来、ビル風の正体はほぼこれだと分かっています。<cite>Wise (1970) / Penwarden &amp; Wise (1975)</cite>"],
+   chips:[6,10,15,20,31], echo:v => v + " m"},
+
+  {id:"rough", type:"choice",
+   q:"敷地の<b class='hl'>まわりの様子</b>に最も近いものをお選びください。<cite>建設省告示第1454号の地表面粗度区分</cite>",
+   options:[
+     {v:"I",   l:"海沿い・広い田畑",   s:"さえぎるものがほとんどない（粗度区分 I）"},
+     {v:"II",  l:"郊外・住宅がまばら", s:"低い建物が点在している（粗度区分 II）"},
+     {v:"III", l:"ふつうの市街地",     s:"2〜5階建てが連なる／木造密集地（粗度区分 III）"},
+     {v:"IV",  l:"都心・ビルが密集",   s:"中高層が隙間なく建ち並ぶ（粗度区分 IV）"}
+   ]},
+
+  {id:"bcr", type:"choice",
+   q:["まわりの<b class='hl'>建蔽率</b>はどのくらいでしょうか。お分かりにならなければ、飛ばしていただいて構いません。",
+      "久保田らが日本の住宅地22地区を風洞にかけ、<b>建蔽率が10%上がると平均風速比が0.1下がる</b>という関係をはっきり示しています。密集しているほど、地面の風は弱くなります。<cite>Kubota, Miura, Tominaga &amp; Mochida (2008)</cite>"],
+   options:[
+     {v:20, l:"20% 前後", s:"ゆったりした住宅地"},
+     {v:30, l:"30% 前後", s:"一般的な住宅地"},
+     {v:40, l:"40% 前後", s:"やや密集した市街地"},
+     {v:50, l:"50% 前後", s:"密集市街地"},
+     {v:60, l:"60% 以上", s:"商業地・木造密集地"},
+     {v:null, l:"わからない", s:"粗度区分の標準値を使う", muted:true}
+   ]},
+
+  {id:"region", type:"choice",
+   q:["その土地の<b class='hl'>風の統計</b>が必要になります。どのあたりのご計画でしょうか。",
+      "年平均風速とワイブル分布から、年間で何日くらい強い風が吹くかを計算いたします。風洞の風速比に気象統計を掛け合わせる、Isyumov と Davenport が1975年に確立した手順です。<cite>Isyumov &amp; Davenport (1975)</cite>"],
+   options:REGIONS.map(r => ({v:r.id, l:r.l,
+     s:(r.s ? r.s + "／" : "") + "年平均 " + r.Uann + " m/s・基準風速 " + r.V0 + " m/s"}))},
+
+  {id:"form", type:"choice",
+   q:["最後にもうひとつ。建物の<b class='hl'>足元の形</b>はどうなっていますか。",
+      "ここが抜けていると、風が一点に集中します。Blocken らの研究では、通路が狭いほど増速が大きくなります。よく言われるベンチュリ効果ではなく、建物が風をせき止めることで生じる圧力差が原因です。<cite>Blocken, Carmeliet &amp; Stathopoulos (2007-2008)</cite>"],
+   options:[
+     {v:"none",    l:"ふつう（外壁が地面まで）", s:""},
+     {v:"pilotis", l:"ピロティ（1階が柱だけ）",   s:"およそ2割の増速"},
+     {v:"through", l:"建物を貫通する通路がある", s:"およそ2割5分の増速"}
+   ]},
+
+  {id:"area", type:"num", unit:"㎡", min:10, max:2000000, optional:true,
+   q:"参考までに、<b class='hl'>延床面積</b>はお分かりでしょうか。条例に該当するかどうかの目安に使います。",
+   chips:[3000,10000,30000,100000], skipLabel:"まだ決まっていない",
+   echo:v => Number(v).toLocaleString("ja-JP") + " ㎡"}
+];
+
+/* ══════════════════════════════════════════════════════════════
+   3. チャットUI
+   ══════════════════════════════════════════════════════════════ */
+
+const thread  = document.getElementById("thread");
+const chipBox = document.getElementById("chips");
+const entryEl = document.getElementById("entry");
+const field   = document.getElementById("field");
+const unitEl  = document.getElementById("unit");
+const sendBtn = document.getElementById("send");
+
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let lastSide = null, state = {}, stepIx = 0, measures = new Set(), result = null;
+
+const wait = ms => new Promise(r => setTimeout(r, reduced ? Math.min(ms, 40) : ms));
+const scrollDown = () => { thread.scrollTop = thread.scrollHeight; };
+const clockLabel = () => {
+  const d = new Date();
+  return String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+};
+
+function avatarEl(ghost){
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("class","ava" + (ghost ? " ghost" : ""));
+  svg.setAttribute("aria-hidden","true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg","use");
+  use.setAttribute("href","#ava");
+  svg.appendChild(use);
+  return svg;
+}
+
+function addRow(side, node, bare){
+  if (side === "bot" && lastSide !== "bot"){
+    const tag = document.createElement("div");
+    tag.className = "name-tag";
+    tag.textContent = "風見 剛";
+    thread.appendChild(tag);
+  }
+  const row = document.createElement("div");
+  row.className = "row " + side + " pop";
+  if (side === "bot") row.appendChild(avatarEl(lastSide === "bot"));
+  row.appendChild(node);
+  if (!bare){
+    const st = document.createElement("span");
+    st.className = "stamp";
+    st.textContent = clockLabel();
+    row.appendChild(st);
+  }
+  thread.appendChild(row);
+  lastSide = side;
+  scrollDown();
+  return row;
+}
+
+async function say(html){
+  const t = document.createElement("div");
+  t.className = "bub typing";
+  t.innerHTML = "<i></i><i></i><i></i>";
+  const row = addRow("bot", t, true);
+  await wait(340 + Math.min(html.replace(/<[^>]+>/g,"").length * 11, 950));
+  row.remove();
+  if (lastSide === "bot") lastSide = null;
+  const b = document.createElement("div");
+  b.className = "bub";
+  b.innerHTML = html;
+  addRow("bot", b);
+}
+
+function me(text){
+  const b = document.createElement("div");
+  b.className = "bub";
+  b.textContent = text;
+  addRow("me", b);
+}
+
+/* はみ出している要素にだけ「続きがある」印を付ける（見切れと誤解されないように） */
+function updateScrollHints(){
+  document.querySelectorAll(".tw").forEach(el => {
+    el.dataset.more = (el.scrollWidth - el.clientWidth - el.scrollLeft > 2) ? "1" : "0";
+    if (!el.dataset.bound){
+      el.dataset.bound = "1";
+      el.addEventListener("scroll", updateScrollHints, {passive:true});
+    }
+  });
+  chipBox.dataset.more = (chipBox.scrollHeight - chipBox.clientHeight - chipBox.scrollTop > 2) ? "1" : "0";
+}
+const refreshHints = () => requestAnimationFrame(updateScrollHints);
+chipBox.addEventListener("scroll", updateScrollHints, {passive:true});
+addEventListener("resize", refreshHints);
+
+function setChips(list){
+  chipBox.innerHTML = "";
+  list.forEach(c => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chip" + (c.wide ? " wide" : "") + (c.muted ? " muted" : "");
+    btn.innerHTML = c.html;
+    btn.addEventListener("click", () => { chipBox.innerHTML = ""; c.onPick(); });
+    chipBox.appendChild(btn);
+  });
+  refreshHints();
+}
+
+function setEntry(step){
+  if (step && step.type === "num"){
+    field.disabled = false;
+    field.placeholder = "数字を入力（例：" + step.chips[2] + "）";
+    field.value = "";
+    unitEl.textContent = step.unit;
+    sendBtn.disabled = false;
+    if (matchMedia("(min-width:1080px)").matches) field.focus();
+  } else {
+    field.disabled = true;
+    field.placeholder = step ? "下のボタンから選んでください" : "";
+    field.value = "";
+    unitEl.textContent = "";
+    sendBtn.disabled = true;
+  }
+}
+
+async function askStep(){
+  const step = STEPS[stepIx];
+  if (!step){ setEntry(null); setChips([]); await finish(); return; }
+
+  for (const l of (Array.isArray(step.q) ? step.q : [step.q])) await say(l);
+  setEntry(step);
+
+  if (step.type === "choice"){
+    setChips(step.options.map(o => ({
+      wide:true, muted:o.muted,
+      html: o.l + (o.s ? "<span class='sm'>" + o.s + "</span>" : ""),
+      onPick: () => accept(step, o.v, o.l)
+    })));
+  } else {
+    const chips = step.chips.map(v => ({
+      html: "<span class='u'>" + Number(v).toLocaleString("ja-JP") + "</span> " + step.unit,
+      onPick: () => accept(step, v, step.echo(v))
+    }));
+    if (step.optional) chips.push({wide:true, muted:true, html:step.skipLabel, onPick:() => accept(step, null, step.skipLabel)});
+    setChips(chips);
+  }
+}
+
+function accept(step, value, echo){
+  state[step.id] = value;
+  me(echo);
+  setEntry(null);
+  chipBox.innerHTML = "";
+  stepIx++;
+  askStep();
+}
+
+entryEl.addEventListener("submit", e => {
+  e.preventDefault();
+  const step = STEPS[stepIx];
+  if (!step || step.type !== "num") return;
+  const v = parseFloat(field.value.replace(/[^\d.]/g, ""));
+  if (!isFinite(v) || v < step.min || v > step.max){
+    field.value = "";
+    field.placeholder = step.min + "〜" + step.max + " " + step.unit + " の範囲で入力してください";
+    return;
+  }
+  accept(step, v, step.echo(v));
+});
+
+/* ══════════════════════════════════════════════════════════════
+   4. 診断カード
+   ══════════════════════════════════════════════════════════════ */
+
+const sevVar = c => "var(--" + c + ")";
+const ratioStyle = R => R < 1.25 ? "ok" : R < 1.5 ? "warn" : R < 1.8 ? "alert" : "bad";
+
+function gaugeSVG(R){
+  const t = clamp((R - 1) / 1.5, 0, 1);
+  const a = Math.PI * (1 - t);
+  const cx = 59, cy = 56, r = 44;
+  const px = cx - r * Math.cos(a), py = cy - r * Math.sin(a);
+  const col = ratioStyle(R);
+  return `<svg class="gauge" viewBox="0 0 118 78" role="img" aria-label="風速増加率 ${fmt(R,2)}倍">
+    <path d="M15 56 A44 44 0 0 1 103 56" fill="none" stroke="var(--card-3)" stroke-width="9" stroke-linecap="round"/>
+    <path d="M15 56 A44 44 0 0 1 ${px.toFixed(2)} ${py.toFixed(2)}" fill="none" stroke="${sevVar(col)}" stroke-width="9" stroke-linecap="round"/>
+    <text x="59" y="52" text-anchor="middle" font-size="27" font-weight="700" fill="var(--ink)">${fmt(R,2)}</text>
+    <text x="59" y="69" text-anchor="middle" font-size="10.5" fill="var(--ink-2)">倍　建設前比</text>
+  </svg>`;
+}
+
+function planSVG(s, R){
+  const col = ratioStyle(R), c = sevVar(col);
+  const scale = 78 / Math.max(s.B, s.D);
+  const bh = clamp(s.B * scale, 26, 92);
+  const dw = clamp(s.D * scale, 20, 78);
+  const x0 = 128, y0 = 104 - bh / 2, x1 = x0 + dw, y1 = y0 + bh;
+  const strong = clamp((R - 1) / 1.4, .15, 1);
+  const rc = 20 + 16 * strong;
+
+  let arrows = "";
+  for (let i = 0; i < 5; i++){
+    const y = 46 + i * 29;
+    arrows += `<g opacity="0.55"><path d="M14 ${y} H60" stroke="var(--accent)" stroke-width="1.7" stroke-linecap="round"/>` +
+              `<path d="M54 ${y - 4} L61 ${y} L54 ${y + 4}" fill="none" stroke="var(--accent)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></g>`;
+  }
+
+  return `<svg class="plan" viewBox="0 0 300 208" role="img" aria-label="平面図：風の強くなる位置">
+    <defs>
+      <radialGradient id="hot"><stop offset="0%" stop-color="${c}" stop-opacity=".62"/><stop offset="100%" stop-color="${c}" stop-opacity="0"/></radialGradient>
+      <radialGradient id="mid"><stop offset="0%" stop-color="${c}" stop-opacity=".33"/><stop offset="100%" stop-color="${c}" stop-opacity="0"/></radialGradient>
+    </defs>
+    ${arrows}
+    <text x="14" y="24" font-size="10.5" fill="var(--ink-2)">風向</text>
+    <ellipse cx="${x0 - 20}" cy="104" rx="26" ry="${(bh * .46).toFixed(1)}" fill="url(#mid)"/>
+    <ellipse cx="${x1 + 34}" cy="104" rx="40" ry="${(bh * .52).toFixed(1)}" fill="url(#mid)"/>
+    <circle cx="${x0}" cy="${y0.toFixed(1)}" r="${rc.toFixed(1)}" fill="url(#hot)"/>
+    <circle cx="${x0}" cy="${y1.toFixed(1)}" r="${rc.toFixed(1)}" fill="url(#hot)"/>
+    <circle cx="${x1}" cy="${y0.toFixed(1)}" r="${(rc * .72).toFixed(1)}" fill="url(#hot)"/>
+    <circle cx="${x1}" cy="${y1.toFixed(1)}" r="${(rc * .72).toFixed(1)}" fill="url(#hot)"/>
+    <rect x="${x0}" y="${y0.toFixed(1)}" width="${dw.toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="var(--card)" stroke="var(--ink-2)" stroke-width="2"/>
+    ${s.form !== "none" ? `<rect x="${x0}" y="97" width="${dw.toFixed(1)}" height="14" fill="${c}" opacity=".55"/>` : ""}
+    <text x="${(x0 + dw / 2).toFixed(1)}" y="108" text-anchor="middle" font-size="10" fill="var(--ink-2)">計画建物</text>
+    <text x="${x0 - 4}" y="${(y0 - rc * .62).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--ink)">剥離・コーナー風</text>
+    <text x="${x0 - 4}" y="${(y1 + rc * .72).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--ink)">吹き降ろし・逆流</text>
+    <text x="${(x1 + 8).toFixed(1)}" y="${(y1 + 26).toFixed(1)}" font-size="10" fill="var(--ink)">後流の乱れ</text>
+    ${s.form !== "none" ? `<text x="${(x0 + dw / 2).toFixed(1)}" y="${(y1 + 16).toFixed(1)}" text-anchor="middle" font-size="10" fill="${c}" font-weight="700">${s.form === "pilotis" ? "ピロティ" : "貫通通路"}</text>` : ""}
+  </svg>`;
+}
+
+function murakamiTable(d){
+  const mB = d.before.murakami, mA = d.after.murakami;
+  /* ランク1〜3なら「そのランクの限度」、ランク4なら「ランク3の限度」と突き合わせる */
+  const cmpRank = Math.min(mA.rank, 3);
+  const lim = MURAKAMI[cmpRank - 1].lim;
+  const rows = GUSTS.map((g, i) => {
+    const pass = mA.p[i] <= lim[i];
+    return `<tr>
+      <th>${g} m/s 超過</th>
+      <td>${pct(mB.p[i])}</td>
+      <td class="key" style="color:${pass ? "var(--ink)" : "var(--bad)"}">${pct(mA.p[i])}<br><span style="font-size:10.5px;color:var(--ink-3)">年 ${days(mA.p[i])}</span></td>
+      <td>${pct(lim[i])}</td>
+      <td><span class="jg ${pass ? "pass" : "fail"}">${pass ? "適合" : "超過"}</span></td>
+    </tr>`;
+  }).join("");
+  return `<div class="tw"><table class="dt">
+    <thead><tr><th>日最大瞬間風速</th><th>建設前</th><th>建設後</th><th>ランク${cmpRank}<br>の限度</th><th>判定</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>
+    <p class="caveat">建設前はランク${mB.rank}、建設後はランク${mA.rank}。${mA.rank === 4
+      ? "ランク4は、事務所街を想定したランク3の限度すら満たさない領域です。風洞実験を伴う正式評価と、対策の検討が要ります。"
+      : "ランクは「どの用途まで許容できるか」を表します。ランク" + mA.rank + " は<b>" + mA.use + "</b>まで。"}</p>`;
+}
+
+function nenBlock(d){
+  const n = d.after.nen;
+  const w = clamp(n.p5 / 0.25, 0, 1) * 100;
+  const acts = NEN_ACTS.map((a, i) => {
+    const v = n.cls.act[i];
+    const lab = v === "good" ? "良好" : v === "mod" ? "許容" : "不適";
+    return `<div class="act"><span class="an">${a}</span><span class="av ${v}">${lab}</span></div>`;
+  }).join("");
+  return `<div class="bar"><i style="width:${w.toFixed(1)}%;background:${sevVar(n.style)}"></i></div>
+    <div class="barlab"><span>5 m/s 超過確率 ${pct(n.p5)}（年 ${days(n.p5)}）</span><span>クラス ${n.cls.c}</span></div>
+    <div class="acts">${acts}</div>
+    <div class="act" style="margin-top:10px;padding-top:9px;border-top:1px solid var(--line)">
+      <span class="an">危険性の判定<span style="display:block;font-size:11px;color:var(--ink-3)">15 m/s 超過確率 ${pct(n.p15)}（年 ${days(n.p15)}）</span></span>
+      <span class="av ${n.danger.c === "ok" ? "good" : n.danger.c === "warn" ? "mod" : "poor"}">${n.danger.l}</span>
+    </div>`;
+}
+
+function lawsonBlock(d){
+  const L = d.after.lawson;
+  const acts = L.acts.map(a =>
+    `<div class="act"><span class="an">${a.l}</span><span class="ath">≦ ${a.t} m/s</span>` +
+    `<span class="av ${a.pass ? "good" : "poor"}">${a.pass ? "可" : "不可"}</span></div>`).join("");
+  return `<p class="caveat" style="margin:0 0 9px">突風等価平均風速 GEM の年間5%超過値：<b style="font-family:var(--f-num);font-size:16px;color:${sevVar(L.style)}">${fmt(L.gem)}</b> m/s</p>
+    <div class="acts">${acts}</div>
+    ${L.best ? `<p class="caveat">許容できるのは<b>「${L.best}」まで</b>。それより静けさを求める使い方には向きません。</p>`
+             : `<p class="caveat">歩いて通り抜けることすら快適とは言えない水準です。</p>`}`;
+}
+
+function stormBlock(d){
+  const st = d.after.storm, f = feel(st.mean);
+  const bf = d.before.storm;
+  return `<div class="tw"><table class="dt">
+    <thead><tr><th>暴風時（基準風速 ${d.reg.V0} m/s）</th><th>建設前</th><th>建設後</th></tr></thead>
+    <tbody>
+      <tr><th>歩行者レベル 平均風速</th><td>${fmt(bf.mean)}</td><td class="key" style="color:${sevVar(f.c)}">${fmt(st.mean)}</td></tr>
+      <tr><th>歩行者レベル 瞬間風速</th><td>${fmt(bf.gust)}</td><td class="key" style="color:${sevVar(f.c)}">${fmt(st.gust)}</td></tr>
+    </tbody></table></div>
+    <p class="caveat"><b style="font-family:var(--f-disp);color:${sevVar(f.c)}">${f.t}</b>　${f.d}</p>
+    <p class="caveat">基準風速 ${d.reg.V0} m/s は<b>50年に一度の暴風</b>を想定した設計用の値（地上10m・粗度区分II・10分間平均）です。上の数字は、その設計暴風が吹いたときに<b>敷地内で最も風の強い地点</b>で生じうる風速で、気象台の観測記録とは意味が異なります。快適性の判定（①〜③）はワイブル分布による日常〜強風域の評価で、台風のような極値までは外挿していません。</p>`;
+}
+
+function measureBlock(d){
+  const items = MEASURES.map(m => `
+    <label class="m${measures.has(m.id) ? " on" : ""}">
+      <input type="checkbox" data-m="${m.id}"${measures.has(m.id) ? " checked" : ""}>
+      <span class="mt"><span class="mn">${m.n}</span><span class="md">${m.d}</span><span class="mc">${m.src}</span></span>
+      <span class="mk">${m.kind}</span>
+    </label>`).join("");
+  const changed = Math.abs(d.R2 - d.R) > 0.005;
+  const local = [...measures].some(id => MEASURES.find(m => m.id === id).kind === "局所");
+  return `<div class="mlist">${items}</div>
+    <div class="mres">
+      <span class="k">対策後の風速増加率</span>
+      ${changed ? `<span class="was">${fmt(d.R,2)}</span><span class="arrow">→</span>` : ""}
+      <span class="v">${fmt(d.R2,2)} 倍</span>
+      <span class="k">／ 村上ランク${d.after.murakami.rank}・NEN クラス${d.after.nen.cls.c}</span>
+    </div>
+    ${local ? `<p class="caveat">※「局所」の対策は設置した箇所まわりだけの低減です。敷地全体の最大値を下げるには形状の対策が要ります。</p>` : ""}`;
+}
+
+function mathBlock(s, d){
+  const R = ROUGH[s.rough];
+  return `<details class="fold"><summary>計算の中身を見る</summary><div class="foldbody">
+    <p><b>① 建設前の風速比</b>　気象官署（粗度区分II・地上10m）の風速を GL+1.5m に換算し、Kubota ら（2008）の「建蔽率10%増で平均風速比0.1減」という回帰勾配で密度補正しています。</p>
+    <span class="fx">粗度区分 ${s.rough}：${R.name}（α=${R.a}, Z_G=${R.ZG}m, 乱れの強さ Iu=${R.Iu}）
+換算比 K = ${R.kPed}　基準建蔽率 ${R.bcr}%${s.bcr !== null && s.bcr !== undefined ? `　入力 ${s.bcr}%` : "　（入力なし）"}
+MVR_before = ${fmt(d.mvr0, 3)}</span>
+
+    <p><b>② 風速増加率</b>　公表されている風洞実験の傾向を組み合わせた簡易推定式です。<b>いずれか単一の論文の式を再現したものではなく、公的な基準式でもありません。</b></p>
+    <span class="fx">R = 1 + 0.65 × f_H × f_B × f_D × f_R × （足元係数）
+f_H = (1 − Hs/H)^0.75 = ${fmt(d.sp.fH,3)}   突出率 ${fmt((s.H - s.Hs) / s.H * 100, 0)}%   [Wise 1970]
+f_B = (B/30)^0.30 = ${fmt(d.sp.fB,3)}   見付け幅 ${s.B}m   [Tsang ら 2012]
+f_D = 1.12 − 0.16·min(D/B,1.5) = ${fmt(d.sp.fD,3)}   D/B = ${fmt(s.D / s.B,2)}
+f_R = ${d.sp.fR}   足元係数 = ${fmt(d.sp.foot,2)}   [Blocken ら 2007-2008]
+R = ${fmt(d.R,3)}　→　対策後 R' = 1 + (R−1)·Πf = ${fmt(d.R2,3)}
+MVR_after = ${fmt(d.after.mvr,3)}</span>
+
+    <p><b>③ 気象統計との合成</b>　Isyumov &amp; Davenport（1975）の手順です。気象官署の風速をワイブル分布で表し、風速比を掛けて歩行者レベルの分布に変換します。日最大値は、1日24時間のうち独立とみなせる標本を ${N_EFF} 個として求めています（実務では実測時系列から直接算定します）。</p>
+    <span class="fx">${d.reg.l}：年平均風速 ${d.reg.Uann} m/s、形状係数 k = ${d.k}
+尺度係数 c = U_ann / Γ(1+1/k) = ${fmt(d.cMet,3)}
+P(U > u) = exp(−(u / (c·MVR))^k)
+P(日最大 > u) = 1 − (1 − P(U > u))^${N_EFF}
+ガストファクター GF = 1 + 3.0·Iu　建設前 ${fmt(d.gfB,2)} / 建設後 ${fmt(d.gfA,2)}
+（ビル風の影響域では乱れの強さを10%増しとした）
+風速比の上限は 1.10（歩行者レベルの風洞実験の報告値の上限）</span>
+
+    <p><b>④ 3つの尺度で判定</b></p>
+    <span class="fx">村上ら (1986)   日最大瞬間風速 10/15/20 m/s の超過頻度で4段階
+NEN 8100 (2006)  時間平均 5 m/s の超過確率でA〜E、15 m/s で危険性
+Lawson / LDDC    GEM = max(平均, 瞬間/1.85) の年間5%超過値で行為別に判定
+                 GEM の定義は Melbourne (1978)</span>
+  </div></details>`;
+}
+
+const REFS = [
+  ["村上周三ほか（1986）", "市街地における風環境の評価尺度に関する研究", "日本建築学会。GL+1.5m の日最大瞬間風速が 10/15/20 m/s を超える日数の割合で4段階に分ける、日本の風洞実験報告書における事実上の標準。本ツールのランク判定に使用。"],
+  ["NEN 8100（2006）／ Willemsen &amp; Wisse（2007）", "Wind comfort and wind danger in the built environment", "J. Wind Eng. Ind. Aerodyn. 95:1541–1550。時間平均 5 m/s の超過確率でクラスA〜E、15 m/s の超過確率で危険性を3段階に判定。"],
+  ["Lawson, T.V.（1978）／ LDDC Lawson Comfort Criteria", "The wind content of the built environment", "GEM の年間5%超過値を、常時着座2.5／一時着座4／立ち止まり6／歩行8 m/s と比較して行為別に判定。"],
+  ["Melbourne, W.H.（1978）", "Criteria for environmental wind conditions", "J. Industrial Aerodynamics 3:241–249。突風等価平均風速 GEM ＝ max(平均風速, 瞬間風速/1.85) の考え方。"],
+  ["Isyumov, N. &amp; Davenport, A.G.（1975）", "The ground level wind environment in built-up areas", "Proc. 4th Int. Conf. on Wind Effects on Buildings and Structures。風洞の風速比に気象統計を合成して年間の超過確率を求める、確率的評価手順の原典。"],
+  ["Wise, A.F.E.（1970）／ Penwarden, A.D. &amp; Wise, A.F.E.（1975）", "Wind environment around buildings", "BRE Report。低層市街地に高層が単独で建つ場合の吹き降ろしが最も厳しいこと、防風植栽・透過性フェンスの効き方。"],
+  ["Beranek, W.J. &amp; van Koten, H.（1979）", "Beperken van windhinder om gebouwen", "建物まわりの流れを、吹き降ろし・コーナー流・通り抜け・立ち渦などに分類した古典。本ツールの平面図はこの分類に沿っています。"],
+  ["Uematsu, Y., Yamada, M., Higashiyama, H. &amp; Orimo, T.（1992）", "Effects of the corner shape of high-rise buildings on the pedestrian-level wind environment", "J. Wind Eng. Ind. Aerodyn. 44:2289–2300。わずかな角形状の変更でも歩行者レベルの風環境は大きく改善しうる。隅切りの低減率の根拠。"],
+  ["Tsang, C.W., Kwok, K.C.S. &amp; Hitchcock, P.A.（2012）", "Wind tunnel study of pedestrian level wind environment around tall buildings: Effects of building dimensions, separation and podium", "Building and Environment 49:167–181。歩行者レベル風速には高さより<b>幅</b>の寄与が大きいこと、ポディウムが有意に低減させること。"],
+  ["Kubota, T., Miura, M., Tominaga, Y. &amp; Mochida, A.（2008）", "Wind tunnel tests on the relationship between building density and pedestrian-level wind velocity", "Building and Environment 43:1699–1708。日本の住宅地22地区の風洞実験。建蔽率が10%増えると平均風速比が0.1 低下する線形関係。"],
+  ["Blocken, B., Carmeliet, J. &amp; Stathopoulos, T.（2007, 2008）", "CFD evaluation of wind speed conditions in passages between buildings ほか", "J. Wind Eng. Ind. Aerodyn. 95:941–962／ASCE J. Eng. Mech. 134(12):1021–1028。通路の増速はベンチュリ効果ではなく wind-blocking effect で説明され、通路幅が狭いほど増速率は単調に増加する。"],
+  ["建設省告示第1454号", "地表面粗度区分および地方別の基準風速", "粗度区分I〜IVのパラメータと、暴風時の判定に用いる基準風速 V0。"]
+];
+
+function refsBlock(){
+  return `<details class="fold"><summary>参考文献（${REFS.length}件）</summary><div class="foldbody">
+    <ol class="refs">${REFS.map(r => `<li><b>${r[0]}</b>　${r[1]}<br><em>${r[2]}</em></li>`).join("")}</ol>
+  </div></details>`;
+}
+
+function renderCard(){
+  const s = state;
+  const d = diagnose(s, measures);
+  result = d;
+  const mA = d.after.murakami, nA = d.after.nen, lA = d.after.lawson;
+  const jump = mA.rank - d.before.murakami.rank;
+  const band = rankBand(s, measures);
+
+  return `
+  <div class="card-hd">
+    <div class="eyebrow">ビル風 確率的簡易診断</div>
+    <h2>高さ${fmt(s.H,0)}m × 幅${fmt(s.B,0)}m × 奥行${fmt(s.D,0)}m<br>周辺${fmt(s.Hs,0)}m・${ROUGH[s.rough].name}・${d.reg.l}</h2>
+  </div>
+
+  <div class="sect">
+    <div class="verdicts">
+      <div class="vc ${RANK_STYLE[mA.rank]}"><div class="vl">村上ら 1986</div><div class="vv">ランク${mA.rank}</div><div class="vs">${band.spread ? `幅 ${band.lo}〜${band.hi}` : (mA.rank === 4 ? "基準外" : "適合上限")}</div></div>
+      <div class="vc ${nA.style}"><div class="vl">NEN 8100</div><div class="vv">${nA.cls.c}</div><div class="vs">${nA.cls.s}</div></div>
+      <div class="vc ${lA.style}"><div class="vl">LAWSON</div><div class="vv">${fmt(lA.gem)}</div><div class="vs">GEM m/s</div></div>
+    </div>
+    <div class="verdict">
+      ${gaugeSVG(d.R2)}
+      <div class="vtext">
+        <div class="lead">${d.R2 >= 1.6 ? "増加率が大きく、近隣説明で必ず論点になります。" : d.R2 >= 1.35 ? "無視できない増速です。滞留空間の配置にご注意ください。" : "増加率は許容範囲におさまっています。"}</div>
+        <div class="note">${jump > 0 ? `建設によって村上ランクが <b>${d.before.murakami.rank} → ${mA.rank}</b> に${jump}段階下がります。` : "建設前後で村上ランクは変わりません。"}　風速比は ${fmt(d.mvr0,2)} → ${fmt(d.after.mvr,2)}。</div>
+        ${band.spread ? `<div class="note" style="margin-top:6px;color:var(--warn)">まわりの様子の選び方や建蔽率の見立てが1段違うと、<b>ランク${band.lo}〜${band.hi}</b>の範囲で動きます。この幅を込みで見てください。</div>` : ""}
+      </div>
+    </div>
+  </div>
+
+  <div class="sect">
+    <h3>強くなるのはこの場所</h3>
+    <p class="src">流れの分類は Beranek &amp; van Koten (1979) に拠る</p>
+    ${planSVG(s, d.R2)}
+    <div class="legend">
+      <span><i style="background:${sevVar(ratioStyle(d.R2))}"></i>風速の増加域</span>
+      <span><i style="background:var(--accent)"></i>卓越風向</span>
+    </div>
+    <p class="caveat">最大は<b>風上側の角</b>です。エントランス・駐輪場・喫煙所は、ここを外してください。</p>
+  </div>
+
+  <div class="sect">
+    <h3>判定① 村上らの風環境評価尺度</h3>
+    <p class="src">村上周三ほか (1986)／GL+1.5m の日最大瞬間風速の超過頻度で4段階</p>
+    ${murakamiTable(d)}
+  </div>
+
+  <div class="sect">
+    <h3>判定② NEN 8100（オランダ規格）</h3>
+    <p class="src">NEN 8100 (2006) / Willemsen &amp; Wisse (2007)／時間平均 5 m/s の超過確率</p>
+    ${nenBlock(d)}
+  </div>
+
+  <div class="sect">
+    <h3>判定③ Lawson / LDDC 基準</h3>
+    <p class="src">Lawson (1978) ／ GEM の定義は Melbourne (1978)</p>
+    ${lawsonBlock(d)}
+  </div>
+
+  <div class="sect">
+    <h3>暴風時の安全性</h3>
+    <p class="src">建設省告示第1454号の地方別基準風速による</p>
+    ${stormBlock(d)}
+  </div>
+
+  <div class="sect">
+    <h3>対策を選ぶと、3つの判定が同時に動きます</h3>
+    ${measureBlock(d)}
+  </div>
+
+  <div class="sect">
+    <h3>行政手続きの目安</h3>
+    <div class="adm ${d.admin.lv}">
+      <span class="ic">${d.admin.ic}</span>
+      <span><span class="at">${d.admin.t}</span><span class="ad">${d.admin.d}</span></span>
+    </div>
+  </div>
+
+  ${mathBlock(s, d)}
+  ${refsBlock()}
+
+  <div class="disclaim">
+    <b>この診断でできないこと。</b>　風向別の出現頻度を分けずに全方位一括で扱っており、周辺建物の個別配置、複数棟の複合効果、日射・気温の影響も見ていません。増加率の推定式は公表文献の傾向を組み合わせた独自の簡易式で、公的な基準式ではありません。隣に別の高層計画が立てば結果は変わります。<b>行政協議・近隣説明に使う正式な評価には、境界層風洞実験またはCFD解析が必要です。</b>
+  </div>`;
+}
+
+function bindCard(card){
+  card.querySelectorAll("input[data-m]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) measures.add(cb.dataset.m); else measures.delete(cb.dataset.m);
+      const opened = [...card.querySelectorAll("details.fold")].map(x => x.open);
+      const y = thread.scrollTop;
+      card.innerHTML = renderCard();
+      card.querySelectorAll("details.fold").forEach((x, i) => { x.open = !!opened[i]; });
+      bindCard(card);
+      thread.scrollTop = y;
+      refreshHints();
+    });
+  });
+  refreshHints();
+}
+
+function mountCard(){
+  const card = document.createElement("div");
+  card.className = "bub card pop";
+  card.id = "rcard";
+  card.innerHTML = renderCard();
+  bindCard(card);
+  return card;
+}
+
+function summaryText(){
+  const s = state, d = result;
+  const mA = d.after.murakami, nA = d.after.nen, lA = d.after.lawson;
+  const L = [];
+  L.push("■ ビル風 確率的簡易診断（風見社長のビル風診断）");
+  L.push(`計画建物：高さ ${s.H}m ／ 見付幅 ${s.B}m ／ 奥行 ${s.D}m`);
+  L.push(`周辺建物の平均高さ：${s.Hs}m　地表面粗度区分：${s.rough}（${ROUGH[s.rough].name}）` + (s.bcr ? `　建蔽率 ${s.bcr}%` : ""));
+  L.push(`地域：${d.reg.l}（年平均風速 ${d.reg.Uann.toFixed(1)} m/s・k=${d.k}・基準風速 ${d.reg.V0} m/s）`);
+  L.push(`足元の形状：${s.form === "none" ? "ふつう" : s.form === "pilotis" ? "ピロティ" : "貫通通路あり"}` + (s.area ? `　延床 ${s.area.toLocaleString("ja-JP")}㎡` : ""));
+  L.push("");
+  L.push(`風速増加率：${fmt(d.R,2)} 倍` + (Math.abs(d.R2 - d.R) > 0.005 ? ` → 対策後 ${fmt(d.R2,2)} 倍` : ""));
+  L.push(`風速比（GL+1.5m）：${fmt(d.mvr0,2)} → ${fmt(d.after.mvr,2)}`);
+  if (measures.size) L.push(`採用した対策：${[...measures].map(id => MEASURES.find(m => m.id === id).n).join("、")}`);
+  L.push("");
+  L.push("【判定①】村上らの風環境評価尺度（1986）");
+  L.push(`　ランク${d.before.murakami.rank} → ランク${mA.rank}（${mA.use}）`);
+  const cmpRank = Math.min(mA.rank, 3), lim = MURAKAMI[cmpRank - 1].lim;
+  GUSTS.forEach((g, i) => L.push(`　日最大瞬間 ${g} m/s 超過：${pct(mA.p[i])}（年 ${days(mA.p[i])}）／ランク${cmpRank}の限度 ${pct(lim[i])}　${mA.p[i] <= lim[i] ? "適合" : "超過"}`));
+  L.push("");
+  L.push("【判定②】NEN 8100（2006）");
+  L.push(`　クラス ${nA.cls.c}（5 m/s 超過 ${pct(nA.p5)}／年 ${days(nA.p5)}）：${nA.cls.s}`);
+  L.push(`　危険性：${nA.danger.l}（15 m/s 超過 ${pct(nA.p15)}）`);
+  L.push("");
+  L.push("【判定③】Lawson / LDDC");
+  L.push(`　GEM 年間5%超過値 ${fmt(lA.gem)} m/s ／ 許容できるのは「${lA.best || "歩行にも不適"}」まで`);
+  L.push("");
+  L.push(`【暴風時】歩行者レベル 平均 ${fmt(d.after.storm.mean)} m/s ／ 瞬間 ${fmt(d.after.storm.gust)} m/s（${feel(d.after.storm.mean).t}）`);
+  L.push("");
+  L.push(`行政手続きの目安：${d.admin.t}`);
+  L.push("");
+  L.push("※計画初期のスクリーニングを目的とした簡易推定です。増加率の推定式は公表文献の傾向を組み合わせた独自の簡易式であり、公的な基準式ではありません。正式な評価には境界層風洞実験またはCFD解析が必要です。");
+  return L.join("\n");
+}
+
+/* 診断結果を出す前に、お名前をうかがう。
+   送信できなくても結果は必ずお見せする（ご利用者を人質に取らない）。 */
+function askRegistration(diag){
+  return new Promise(resolve => {
+    const b = document.createElement("div");
+    b.className = "bub";
+    b.innerHTML = `
+      <div>診断結果が出ました。<b class="hl">ご覧いただく前に</b>、差し支えなければお名前を教えていただけますか。</div>
+      <form class="regform" novalidate>
+        <label>会社名 <span class="req">必須</span>
+          <input name="company" type="text" autocomplete="organization" placeholder="株式会社○○建設" maxlength="120" required></label>
+        <label>お名前 <span class="req">必須</span>
+          <input name="name" type="text" autocomplete="name" placeholder="中野 太郎" maxlength="80" required></label>
+        <label>メールアドレス <span class="req">必須</span>
+          <input name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.co.jp" maxlength="200" required></label>
+        <label>ご要望・ご質問（任意）
+          <textarea name="note" maxlength="400" placeholder="対策の相談をしたい、など"></textarea></label>
+        <div class="hp"><label>Webサイト<input name="website" type="text" tabindex="-1" autocomplete="off"></label></div>
+        <div class="regerr" role="alert"></div>
+        <button type="submit">結果を見る →</button>
+        <p class="regnote">いただいた情報は、建築ブーストからのご連絡にのみ使用します。第三者へ提供することはありません。<a href="https://mitsu614.github.io/kentikuAI/%E3%83%97%E3%83%A9%E3%82%A4%E3%83%90%E3%82%B7%E3%83%BC%E3%83%9D%E3%83%AA%E3%82%B7%E3%83%BC_%E5%BB%BA%E7%AF%89%E3%83%96%E3%83%BC%E3%82%B9%E3%83%88.html" target="_blank" rel="noopener">プライバシーポリシー</a></p>
+      </form>`;
+    addRow("bot", b);
+
+    const form = b.querySelector("form");
+    const err = b.querySelector(".regerr");
+    const btn = b.querySelector("button");
+
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const company = String(fd.get("company") || "").trim();
+      const name = String(fd.get("name") || "").trim();
+      const email = String(fd.get("email") || "").trim();
+
+      if (!company || !name){ err.textContent = "会社名とお名前を入力してください。"; return; }
+      if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(email)){
+        err.textContent = "メールアドレスの形式をご確認ください。"; return;
+      }
+      err.textContent = "";
+      btn.disabled = true;
+      btn.textContent = "送信しています…";
+
+      try {
+        await fetch(LEAD.endpoint, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            company, name, email,
+            note: String(fd.get("note") || "").trim(),
+            website: String(fd.get("website") || ""),
+            summary: diag
+          })
+        });
+      } catch (e2){
+        /* 通信に失敗しても結果はお見せする。取りこぼしは受け入れる */
+        console.warn("lead send failed", e2);
+      }
+
+      markRegistered(company);
+      form.remove();
+      const done = document.createElement("div");
+      done.style.cssText = "font-size:12.5px;color:var(--ink-2);margin-top:8px;";
+      done.textContent = "ありがとうございます。以下が診断結果です。";
+      b.appendChild(done);
+      me(company + "　" + name);
+      resolve();
+    });
+  });
+}
+
+async function finish(){
+  await say("ありがとうございます。これで揃いました。風速比を出して、その土地の風の統計と掛け合わせます。少々お待ちください。");
+  const t = document.createElement("div");
+  t.className = "bub typing";
+  t.innerHTML = "<i></i><i></i><i></i>";
+  const row = addRow("bot", t, true);
+  await wait(1100);
+  row.remove();
+  lastSide = null;
+
+  /* 先にカードを組み立てておく。要約をメール本文に載せるため */
+  const card = mountCard();
+
+  if (LEAD_ENABLED && !isRegistered()){
+    await askRegistration(summaryText());
+    await wait(300);
+  }
+
+  addRow("bot", card);
+  await wait(500);
+
+  const d = result, mA = d.after.murakami;
+  if (d.before.murakami.rank >= 3){
+    await say(`先に申し上げておきます。<b>この土地は、建物を建てる前からランク${d.before.murakami.rank}です</b>。もともと風の強い場所ということですね。ですからランクの数字そのものより、<b>建物でどれだけ増えたか</b>——今回は${fmt(d.R,2)}倍——のほうをご覧ください。近隣説明で「元から強い土地です」は通用しませんので、増分に対する対策でお示しするほかありません。`);
+  }
+  if (mA.rank >= 3){
+    await say(`率直に申し上げます。村上の尺度で<b>ランク${mA.rank}</b>です。${mA.rank === 4 ? "事務所街の基準すら満たしていません。" : "歩く分には通りますが、人を座らせる場所には使えません。"}<b>この形のままですと、竣工後に苦情が出る可能性が高いです</b>。基本設計のうちに、隅切りかポディウムを入れておくことをお勧めします。実施設計に入ってからでは、植栽とスクリーンしか打つ手がなくなります。`);
+  } else if (d.R >= 1.5){
+    await say(`判定そのものは持ちこたえていますが、<b>増加率が${fmt(d.R,1)}倍を超えています</b>。近隣説明では必ず問われるところです。対策にチェックを入れて、どこまで下がるかご確認ください。`);
+  } else {
+    await say("悪くありません。<b>まわりの街並みから突き出す量が少ない</b>ため、そもそも風を引きずり下ろす力が弱いのです。この規模でしたら、大きな問題にはならないでしょう。");
+  }
+
+  const nA = d.after.nen;
+  if (mA.rank >= 3 && (nA.cls.c === "A" || nA.cls.c === "B")){
+    await say("ひとつお断りしておきます。<b>オランダの NEN 8100 ではクラス" + nA.cls.c + "、つまり「良好」に見えます</b>。日本の村上尺度のほうが厳しいためです。あちらは元々風の強い土地で、閾値も瞬間風速ではなく時間平均の5 m/s です。国内の協議では、村上のほうをご覧ください。");
+  }
+  await say("カードの<b>対策にチェックを入れますと、3つの判定が同時に動きます</b>。どの対策がどれだけ効くかは、論文の実測値から取っています。設計の打ち合わせで、そのまま画面をお見せしながらお使いください。");
+
+  setChips([
+    {wide:true, html:"結果をテキストでコピーする", onPick: copyResult},
+    {wide:true, html:"条件を変えてもう一度診断する", onPick: restart}
+  ]);
+}
+
+async function copyResult(){
+  const text = summaryText();
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (e){ ok = false; }
+  me("結果をコピー");
+  if (ok){
+    await say("コピーいたしました。議事録でも稟議書でも、そのまま貼り付けてお使いください。");
+  } else {
+    await say("この端末ではコピーが使えないようです。お手数ですが、下のテキストを選択してお持ちください。");
+    const b = document.createElement("div");
+    b.className = "bub";
+    const pre = document.createElement("pre");
+    pre.style.cssText = "margin:0;white-space:pre-wrap;font-family:var(--f-num);font-size:11.5px;line-height:1.7;";
+    pre.textContent = text;
+    b.appendChild(pre);
+    addRow("bot", b);
+  }
+  setChips([{wide:true, html:"条件を変えてもう一度診断する", onPick: restart}]);
+}
+
+async function restart(){
+  me("もう一度診断する");
+  state = {}; stepIx = 0; measures = new Set(); result = null;
+  await say("承知しました。もう一度まいりましょう。今度は形を変えてみますか。");
+  askStep();
+}
+
+/* ══════════════════════════════════════════════════════════════
+   5. 背景の風
+   ══════════════════════════════════════════════════════════════ */
+(function windfield(){
+  const cv = document.getElementById("windfield");
+  const ctx = cv.getContext("2d");
+  let W = 0, H = 0, dpr = 1, streaks = [];
+
+  const tokens = () => {
+    const cs = getComputedStyle(document.documentElement);
+    return {rgb: cs.getPropertyValue("--streak").trim() || "255,255,255",
+            a: parseFloat(cs.getPropertyValue("--streak-a")) || .2};
+  };
+  let tk = tokens();
+
+  function seed(){
+    const n = Math.round(clamp(W / 9, 40, 190));
+    streaks = Array.from({length:n}, () => ({
+      x: Math.random() * W, y: Math.random() * H,
+      len: 30 + Math.random() * 130, v: .5 + Math.random() * 2.4,
+      w: .5 + Math.random() * 1.1, o: .25 + Math.random() * .75
+    }));
+  }
+  function size(){
+    dpr = Math.min(devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    seed();
+  }
+  function paint(){
+    ctx.clearRect(0, 0, W, H);
+    ctx.lineCap = "round";
+    for (const s of streaks){
+      ctx.strokeStyle = "rgba(" + tk.rgb + "," + (tk.a * s.o).toFixed(3) + ")";
+      ctx.lineWidth = s.w;
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x + s.len, s.y);
+      ctx.stroke();
+    }
+  }
+  function loop(){
+    paint();
+    for (const s of streaks){
+      s.x += s.v;
+      if (s.x > W + 10){ s.x = -s.len - Math.random() * 200; s.y = Math.random() * H; }
+    }
+    requestAnimationFrame(loop);
+  }
+  addEventListener("resize", size);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { tk = tokens(); if (reduced) paint(); });
+  size();
+  if (reduced) paint(); else loop();
+  window.__refreshWind = () => { tk = tokens(); if (reduced) paint(); };
+})();
+
+/* 利用登録が有効かどうかで、画面の記載を実態に合わせる */
+(function leadCopy(){
+  document.querySelectorAll("[data-lead-only]").forEach(el => { el.hidden = !LEAD_ENABLED; });
+  document.querySelectorAll("[data-nolead-only]").forEach(el => { el.hidden = LEAD_ENABLED; });
+})();
+
+/* このサービスについて */
+(function about(){
+  const dlg = document.getElementById("about");
+  const open = document.getElementById("abouter");
+  const close = document.getElementById("about-close");
+  if (!dlg || !open) return;
+  open.addEventListener("click", () => {
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else dlg.setAttribute("open", "");
+  });
+  close.addEventListener("click", () => dlg.close());
+  /* 背景をクリックしたら閉じる */
+  dlg.addEventListener("click", e => {
+    if (e.target !== dlg) return;
+    const r = dlg.getBoundingClientRect();
+    const outside = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    if (outside) dlg.close();
+  });
+})();
+
+/* テーマ切り替え */
+(function theme(){
+  const btn = document.getElementById("themer");
+  let mode = null;
+  try { mode = localStorage.getItem("kaze-theme"); } catch (e){}
+  if (mode) document.documentElement.setAttribute("data-theme", mode);
+  btn.addEventListener("click", () => {
+    const now = document.documentElement.getAttribute("data-theme");
+    const isDark = now ? now === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    const next = isDark ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("kaze-theme", next); } catch (e){}
+    if (window.__refreshWind) window.__refreshWind();
+  });
+})();
+
+/* ══════════════════════════════════════════════════════════════
+   6. 開始
+   ══════════════════════════════════════════════════════════════ */
+(async function start(){
+  await say("いらっしゃいませ。風見と申します。");
+  await say("<b>ビル風</b>とは、上空を吹く速い風が建物の壁にぶつかり、地面まで引きずり下ろされる現象です。建物の角のところで最も強くなります。");
+  await say("当診断では<b class='hl'>3つの尺度で同時に判定</b>いたします。日本の村上尺度、オランダの NEN 8100、イギリス系の Lawson 基準です。<cite>使用した論文は診断結果カードの末尾にすべて掲載しています</cite>");
+  await say("寸法をいくつか教えていただければ、<b class='hl'>年間で何日くらい強い風が吹くか</b>まで算出いたします。5分ほどで終わります。");
+  askStep();
+})();
+</script>
+
+</body>
+</html>
