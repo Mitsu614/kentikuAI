@@ -124,7 +124,7 @@ function demoDaysLeft(tenantRow: any): { expiresAt: string | null; daysLeft: num
   if (!tenantRow?.plan_started_at) return { expiresAt: null, daysLeft: null };
   const started = new Date(tenantRow.plan_started_at).getTime();
   if (isNaN(started)) return { expiresAt: null, daysLeft: null };
-  const end = started + DEMO_PERIOD_DAYS * 86400000;
+  const end = started + demoPeriodDays(tenantRow.plan_started_at) * 86400000;
   return {
     expiresAt: new Date(end).toLocaleDateString('sv-SE'),
     daysLeft: Math.ceil((end - Date.now()) / 86400000),
@@ -173,9 +173,22 @@ export function getCredits(tenantId?: number): number {
 }
 
 // デモ／トライアルの有効期間（日数）。使い切り＋この日数で終了。
-// 2週間だと商談〜稟議の途中で切れて顧客が事故る（実例: 山下八起テナントが早川鉄筋様の
-// 見積作成中に残3日だった）。1ヶ月に延長。※顧客には非表示の隠し仕様。
-export const DEMO_PERIOD_DAYS = 30;
+// ★2026-09-03に14日へ戻した（承認制をやめてデモが自分で始められるようになったため、
+//   だらだら続く無料利用を作らない）。プラン説明の「2週間」とも一致する。
+//   ※過去に30日へ延ばした経緯: 2週間では商談〜稟議の途中で切れて顧客が事故った
+//     （山下八起テナントが早川鉄筋様の見積作成中に残3日）。同じことが起きたら、
+//     そのお客様だけ管理画面から単位と期限を足して延ばすこと。
+//   ※顧客には非表示の隠し仕様。
+export const DEMO_PERIOD_DAYS = 14;
+// ★短くしたぶんを、すでに使っている方に遡って当てない。
+//   この日より前に始まったデモは、これまでどおり30日で数える。
+//   （途中で残り日数が縮むと、商談の最中に何の予告もなく止まる）
+export const DEMO_PERIOD_DAYS_LEGACY = 30;
+const DEMO_PERIOD_CHANGED_AT = Date.parse('2026-09-03T00:00:00+09:00');
+function demoPeriodDays(startedAt?: string | null): number {
+  const t = startedAt ? Date.parse(startedAt) : NaN;
+  return (!isNaN(t) && t < DEMO_PERIOD_CHANGED_AT) ? DEMO_PERIOD_DAYS_LEGACY : DEMO_PERIOD_DAYS;
+}
 
 export function useCredits(amount: number, operation: string, tenantId?: number): { success: boolean; limitReached?: boolean; expired?: boolean } {
   const tid = tenantId ?? currentTenantId;
@@ -189,7 +202,7 @@ export function useCredits(amount: number, operation: string, tenantId?: number)
   if (tp && (tp.plan === 'trial' || tp.plan === 'demo')) {
     const end = tp.plan_expires_at
       ? new Date(tp.plan_expires_at).getTime()
-      : (tp.plan_started_at ? new Date(tp.plan_started_at).getTime() + DEMO_PERIOD_DAYS * 86400000 : NaN);
+      : (tp.plan_started_at ? new Date(tp.plan_started_at).getTime() + demoPeriodDays(tp.plan_started_at) * 86400000 : NaN);
     if (!isNaN(end) && Date.now() > end) {
       return { success: false, limitReached: true, expired: true };
     }

@@ -28,7 +28,7 @@ const DEFAULT_CREDITS: Record<string, number> = {
 // ── セルフサービスのデモ ──────────────────────────────────────────────
 // 承認制をやめ、メールに届く番号を入れたらその場で始められるようにした。
 // そのぶん「同じ会社が名前を変えて何度でも取る」をサーバーで止める必要がある。
-const DEMO_DAYS = 30;                 // アプリの DEMO_PERIOD_DAYS と揃えること
+const DEMO_DAYS = 14;                 // アプリの DEMO_PERIOD_DAYS と揃えること
 const VERIFY_TTL_MIN = 30;            // 確認番号の有効時間
 const VERIFY_MAX_ATTEMPTS = 5;        // 番号の入力ミス上限（総当り防止）
 
@@ -673,7 +673,7 @@ try {
       const patch: any = {
         plan, credits, max_credits: credits, active: true, blocked_message: null, updated_at: new Date().toISOString(),
         // ★デモから有料へ上げるときは期限を外す。残っていると、お金をいただいたのに
-        //   30日で止まる（デモ行をそのまま昇格させる運用なので必ず消す）。
+        //   14日で止まる（デモ行をそのまま昇格させる運用なので必ず消す）。
         expires_at: null,
       };
       // 承認時にマルチシートを有効化する場合：max_seats 指定があれば席数を設定し、参加コードを発行。
