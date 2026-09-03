@@ -556,6 +556,19 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   } | null>(null);
   // 読み取りモード。auto=AIに判定させる / drawing=図面として記載値を読む / photo=写真として概算
   const [readMode, setReadMode] = useState<'auto' | 'drawing' | 'photo'>('auto');
+  // 例外の文面を人が読める形に直す。
+  //   Electron の IPC は "Error invoking remote method 'ai:xxx': Error: 本文" の形で来る。
+  //   TimeoutError のような種類名もそのままだと英語のまま画面に出る（実際に出た・2026-09-03）。
+  const cleanErr = (e: any, fallback: string) => {
+    const raw = String(e?.message || e || '');
+    const msg = raw
+      .replace(/^Error invoking remote method '[^']*':\s*/, '')
+      .replace(/^[A-Za-z]*Error:\s*/, '')
+      .replace(/^ERROR:\s*/, '')
+      .trim();
+    return msg || fallback;
+  };
+
   // 住所から航空写真を引く経路。写真の目測よりスケールが確定するぶん確か
   const [siteAddress, setSiteAddress] = useState('');
   const [aerial, setAerial] = useState<any>(null);
@@ -878,7 +891,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       setAerialPoly(aerialRectCorners(r0));
     } catch (e: any) {
       endBusy({ ok: false });
-      setError((e?.message || '航空写真の取得に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
+      setError(cleanErr(e, '航空写真の取得に失敗しました'));
     } finally {
       setAerialLoading(false);
     }
@@ -905,7 +918,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       setAerialRect(makeAerialRect(res, prevRect));
       setAerialPoly(carryAerialPoly(res, prevPoly));
     } catch (e: any) {
-      setError((e?.message || '航空写真の取得に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
+      setError(cleanErr(e, '航空写真の取得に失敗しました'));
     } finally {
       setAerialLoading(false);
     }
@@ -964,7 +977,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         setAerialRect(makeAerialRect(res, prevRect));
         setAerialPoly(carryAerialPoly(res, prevPoly));
       } catch (e: any) {
-        setError((e?.message || '航空写真の取得に失敗しました').replace(/^ERROR: /, ''));
+        setError(cleanErr(e, '航空写真の取得に失敗しました'));
       } finally {
         setAerialLoading(false);
       }
@@ -1153,7 +1166,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       setAerialRect(makeAerialRect(res, prevRect));
       setAerialPoly(carryAerialPoly(res, prevPoly));
     } catch (e: any) {
-      setError((e?.message || '航空写真の取得に失敗しました').replace(/^ERROR: /, ''));
+      setError(cleanErr(e, '航空写真の取得に失敗しました'));
     } finally {
       setAerialLoading(false);
     }
@@ -1197,7 +1210,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       if (res?.quantityM2 > 0) setConfirmArea(String(Math.round(res.quantityM2)));
     } catch (e: any) {
       endBusy({ ok: false });
-      setError((e?.message || '測定に失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
+      setError(cleanErr(e, '測定に失敗しました'));
     } finally {
       setAerialLoading(false);
     }

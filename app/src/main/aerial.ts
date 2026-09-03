@@ -18,13 +18,35 @@ export const ATTRIBUTION = '地理院タイル（国土地理院）';
 // 相手は公共のタイルサーバー。名乗って、待ちすぎない。
 const UA = 'kenchiku-boost/1.0 (+https://github.com/Mitsu614/kentikuAI)';
 const TIMEOUT_MS = 12000;
+// ★住所検索だけ長めに待つ。
+//   実測（2026-09-03）: 1回目 10.7秒 / 2回目以降 0.1秒。冷えていると10秒を超え、
+//   12秒の待ちに当たって「操作がタイムアウトしました」で落ちていた。
+//   タイル取得は枚数ぶん並列に走るので、こちらは12秒のままでよい。
+const GEOCODE_TIMEOUT_MS = 25000;
 
-async function get(url: string): Promise<Response> {
-  return fetch(url, {
-    headers: { 'User-Agent': UA },
-    // タイムアウトが無いと、サーバーが黙ったときに画面が固まったままになる
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  });
+// ★1回で諦めない。相手は公共のサーバーで、時間帯によって詰まる。
+//   実際に住所検索が TimeoutError で落ち、画面には英語のまま出た（2026-09-03）。
+//   タイルは1枚ずつ落としても穴が空くだけなので tries=1 で呼ぶ（枚数ぶん待たせない）。
+async function get(url: string, tries = 2, timeoutMs = TIMEOUT_MS): Promise<Response> {
+  let last: any;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fetch(url, {
+        headers: { 'User-Agent': UA },
+        // タイムアウトが無いと、サーバーが黙ったときに画面が固まったままになる
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (e) {
+      last = e;
+      if (i < tries - 1) await new Promise(r => setTimeout(r, 700));
+    }
+  }
+  throw last;
+}
+
+/** 通信が落ちた理由が「待ち時間切れ」かどうか */
+function isTimeout(e: any): boolean {
+  return e?.name === 'TimeoutError' || /abort|timeout/i.test(String(e?.message || ''));
 }
 
 const EARTH_CIRC = 2 * Math.PI * 6378137;   // 赤道一周 40075016.686 m
@@ -112,8 +134,17 @@ export const LEVEL_LABEL: Record<AddressLevel, string> = {
 export async function geocode(address: string): Promise<GeoHit | null> {
   const q = encodeURIComponent(String(address || '').trim());
   if (!q) return null;
-  const res = await get(`https://msearch.gsi.go.jp/address-search/AddressSearch?q=${q}`);
-  if (!res.ok) throw new Error(`住所の検索に失敗しました (${res.status})`);
+  let res: Response;
+  try {
+    res = await get(`https://msearch.gsi.go.jp/address-search/AddressSearch?q=${q}`, 2, GEOCODE_TIMEOUT_MS);
+  } catch (e: any) {
+    // ここを素通しすると "TimeoutError: The operation was aborted due to timeout" が
+    // そのまま画面に出る。何が起きたのか・どうすればいいのかを日本語で返す。
+    throw new Error(isTimeout(e)
+      ? 'ERROR: 住所の検索が時間内に終わりませんでした（国土地理院のサーバーが混み合っています）。少し待ってから、もう一度お試しください。'
+      : 'ERROR: 住所の検索に接続できませんでした。通信環境をご確認ください。');
+  }
+  if (!res.ok) throw new Error(`ERROR: 住所の検索に失敗しました (${res.status})。少し待ってからもう一度お試しください。`);
   const arr: any[] = await res.json();
   if (!Array.isArray(arr) || arr.length === 0) return null;
   const c = arr[0]?.geometry?.coordinates;
@@ -144,7 +175,7 @@ export async function fetchAerial(
       const tx = cx + i, ty = cy + j;
       jobs.push((async () => {
         try {
-          const r = await get(`https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/${z}/${tx}/${ty}.jpg`);
+          const r = await get(`https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/${z}/${tx}/${ty}.jpg`, 1);
           if (!r.ok) return { i, j, buf: null };
           return { i, j, buf: Buffer.from(await r.arrayBuffer()) };
         } catch (_) { return { i, j, buf: null }; }
@@ -153,7 +184,7 @@ export async function fetchAerial(
   }
   const tiles = await Promise.all(jobs);
   const missing = tiles.filter(x => !x.buf).length;
-  if (missing === tiles.length) throw new Error('その場所の航空写真が取得できませんでした。');
+  if (missing === tiles.length) throw new Error('ERROR: その場所の航空写真が取得できませんでした。通信環境をご確認のうえ、少し待ってからもう一度お試しください。');
 
   // 並べる。nativeImage には合成APIが無いので、生のRGBAを自前で敷き詰める。
   const size = TILE * grid;

@@ -7932,7 +7932,21 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
       centerLat = p.lat; centerLon = p.lon;
     }
 
-    const air = await fetchAerial(centerLat, centerLon, view.z, grid);
+    // ★ここで落ちたら、引いた単位を返すこと。
+    //   写真が1枚も出ていないのに3単位だけ減っていると、お客様は納得できない。
+    let air;
+    try {
+      air = await fetchAerial(centerLat, centerLon, view.z, grid);
+    } catch (e: any) {
+      if (!admin && isNewSite) {
+        const back = CREDIT_COSTS['航空写真測定'] ?? 3;
+        try {
+          addCredits(back, '航空写真測定の失敗による返却');
+          runSql('UPDATE tenants SET credits = credits + ? WHERE id = ?', [back, tid]);
+        } catch (_) { /* 返却に失敗しても、元のエラーを優先して伝える */ }
+      }
+      throw e;
+    }
 
     // ── まず写真だけ返す ──────────────────────────────────
     // 日本の住所は号まで入れても**街区の代表点**が返ることが多く、建物の上に落ちない。
