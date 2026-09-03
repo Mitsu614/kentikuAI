@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
-import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION } from './aerial';
+import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION, fetchLandmarks, OSM_ATTRIBUTION, searchPlaces, MIN_ZOOM, MAX_ZOOM, AddressLevel, isPlaceName } from './aerial';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
@@ -7862,6 +7862,57 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
   // 較正係数も掛けない（目測の癖を直す係数なので、確定スケールには不要）。
   // fetchOnly … 航空写真を取ってくるだけ（AIを呼ばない＝無料）。まず見せて建物を選んでもらう
   // target   … 画像内のピクセル座標。ここにある建物を測る
+  // 写真の上に重ねる地図（地理院タイル）。写真と同じサーバーなので、写真が出るなら必ず出る。
+  //   ★AIもクレジットも使わない。第三者のサーバーにも行かない。
+  ipcMain.handle('aerial:mapOverlay', async (_e, data: {
+    lat?: number; lon?: number; z?: number; grid?: number;
+  }) => {
+    const lat = Number(data?.lat), lon = Number(data?.lon);
+    const z = Number(data?.z) || 18;
+    const grid = [1, 3, 5, 7].includes(Number(data?.grid)) ? Number(data?.grid) : 3;
+    if (!isFinite(lat) || !isFinite(lon)) return { mapImage: '' };
+    try {
+      const map = await fetchAerial(lat, lon, z, grid, 'std');
+      return { mapImage: `data:image/png;base64,${map.dataUrl}`, attribution: AERIAL_ATTRIBUTION };
+    } catch (e: any) {
+      logAiError('aerial:mapOverlay 失敗', e);
+      return { mapImage: '' };
+    }
+  });
+
+  // 住所でも建物名でも場所を探す。候補を返すだけなので無料・AIも使わない。
+  //   ここで写真は出さない＝単位も引かない。選んだあと areaFromAddress で出す。
+  ipcMain.handle('aerial:searchPlace', async (_e, data: { query?: string }) => {
+    const q = String(data?.query || '').trim();
+    if (!q) return { places: [] };
+    try {
+      return { places: await searchPlaces(q) };
+    } catch (_) {
+      return { places: [] };
+    }
+  });
+
+  // 写真の上に置く目印。AIもクレジットも使わないので、回数の制限は掛けない。
+  // 失敗しても空配列を返す（目印が出ないだけで、測定は続けられる）。
+  ipcMain.handle('aerial:landmarks', async (_e, data: {
+    lat?: number; lon?: number; z?: number; sizePx?: number;
+  }) => {
+    const lat = Number(data?.lat), lon = Number(data?.lon);
+    const z = Number(data?.z) || 18, sizePx = Number(data?.sizePx) || 256;
+    if (!isFinite(lat) || !isFinite(lon)) return { marks: [] };
+    try {
+      const t0 = Date.now();
+      const marks = await fetchLandmarks(lat, lon, z, sizePx);
+      // 目印が出ないという問い合わせが多い割に、原因が外（OSM側）か中かを切り分けられない。
+      // 何件返ったかだけ残しておく（ai-debug.log）。個人情報は含めない。
+      logAiError('aerial:landmarks', `${marks.length}件 / ${Date.now() - t0}ms`, { z, sizePx });
+      return { marks, attribution: OSM_ATTRIBUTION };
+    } catch (e: any) {
+      logAiError('aerial:landmarks 失敗', e);
+      return { marks: [] };
+    }
+  });
+
   ipcMain.handle('ai:areaFromAddress', async (_e, data: {
     address?: string; comment?: string; expectAreaM2?: number;
     fetchOnly?: boolean; target?: { x: number; y: number }; grid?: number;
@@ -7870,6 +7921,11 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     viewLat?: number; viewLon?: number;
     // 写真を掴んで動かしたあと、いま中心に来ている画像座標。ここを新しい中心にする
     panTo?: { x: number; y: number };
+    // 検索の候補から選ばれた場所。名前で引き直すと別の場所に飛ぶことがあるので、
+    // 選ばれた緯度経度をそのまま使う。★新しい現場であることに変わりはないので課金は同じ。
+    place?: { lat?: number; lon?: number; title?: string; level?: string; precise?: boolean; unmatched?: string };
+    // 引いて広く見るためのズーム。1段下げるごとに写る範囲が2倍になる
+    z?: number;
   }) => {
     const address = String(data?.address || '').trim();
     if (!address) throw new Error('ERROR: 住所を入力してください。');
@@ -7887,16 +7943,35 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     const used = queryOne('SELECT count FROM area_precheck_log WHERE tenant_id = ? AND day = ?', [tid, today])?.count || 0;
     if (!admin && used >= AREA_PRECHECK_DAILY_LIMIT) throw new Error('ERROR: 本日の面積確認の上限に達しました。面積を直接入力してください。');
 
-    const hit = await geocode(address);
-    if (!hit) throw new Error('ERROR: その住所が見つかりませんでした。番地まで入れるか、近くの住所でお試しください。');
+    // 候補から選ばれていれば、それを使う（住所検索を通さない）
+    const picked = data?.place;
+    const pLat = Number(picked?.lat), pLon = Number(picked?.lon);
+    const hasPicked = isFinite(pLat) && isFinite(pLon) && Math.abs(pLat) <= 90 && Math.abs(pLon) <= 180;
+    // 候補から選ばれていれば、その点をそのまま使う。
+    // ★精度は候補が持っている値を使うこと。決め打ちで「建物」にすると、
+    //   市の中心しか出せていないのに「何号まで特定」と表示してしまう（実際に出た）。
+    const hit = hasPicked
+      ? {
+          lat: pLat, lon: pLon,
+          title: String(picked?.title || address),
+          level: (picked?.level || 'building') as AddressLevel,
+          precise: picked?.precise !== false,
+          unmatched: picked?.unmatched,
+        }
+      : await geocode(address);
+    if (!hit) throw new Error('ERROR: その住所が見つかりませんでした。番地まで入れるか、建物の名前でもお試しください。');
 
     // ★新しい住所で航空写真を出すときだけ 3単位。
     //   掴んで動かす・寄る・建物を選び直すのは、いま見ている中心(viewLat)か
     //   移動先(panTo)が必ず付いてくるので無料のまま。
     //   そこで課金すると地図を見回すだけでストックが溶ける。
     //   住所が見つかったあとに引くこと（見つからない住所で減らさない）。
+    // ★住所を特定できなかったときは単位を引かない。
+    //   実測（2026-09-03）: 存在しない住所「鹿児島市柴原町5-40」でも市の中心を写して
+    //   3単位を引いていた。目的の建物が写っていないものに課金してはいけない。
+    const resolvedEnough = !(hit as any).unmatched && hit.level !== 'area';
     const isNewSite = !data?.panTo && !isFinite(Number(data?.viewLat));
-    if (!admin && isNewSite) {
+    if (!admin && isNewSite && resolvedEnough) {
       const aerialCost = CREDIT_COSTS['航空写真測定'] ?? 3;
       const paid = useCredits(aerialCost, '航空写真測定');
       if (!paid.success) {
@@ -7908,7 +7983,11 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
 
     // 地理院タイルは z=18 が上限（実測で確認）。解像度は上げられないので、
     // 視野はタイル枚数で調整する。小さい建物ほど枚数を減らして隣家を写し込まない。
-    const view = pickView(hit.lat, Number(data?.expectAreaM2) || 0);
+    const view = pickView(hit.lat, Number(data?.expectAreaM2) || 0, hit.level);
+    // 画面から z を指定できる。指定が無ければ建物の大きさから選んだ値のまま。
+    // ★下げるほど広く写るが、1pxの実寸も大きくなる（測るときは18に戻す）。
+    const askedZ = Math.round(Number(data?.z));
+    const zoom = isFinite(askedZ) ? Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, askedZ)) : view.z;
     // 画面から「広く／せまく」を切り替えられる。奇数枚のみ（中心を作るため）
     const asked = Number(data?.grid);
     const grid = [1, 3, 5, 7].includes(asked) ? asked : view.grid;
@@ -7928,7 +8007,7 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     const pt = data?.panTo;
     if (pt && isFinite(Number(pt.x)) && isFinite(Number(pt.y))) {
       const prevSize = 256 * grid;   // 地理院タイルは1枚256px
-      const p = pixelToLonLat(centerLat, centerLon, view.z, prevSize, Number(pt.x), Number(pt.y));
+      const p = pixelToLonLat(centerLat, centerLon, zoom, prevSize, Number(pt.x), Number(pt.y));
       centerLat = p.lat; centerLon = p.lon;
     }
 
@@ -7936,7 +8015,7 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     //   写真が1枚も出ていないのに3単位だけ減っていると、お客様は納得できない。
     let air;
     try {
-      air = await fetchAerial(centerLat, centerLon, view.z, grid);
+      air = await fetchAerial(centerLat, centerLon, zoom, grid);
     } catch (e: any) {
       if (!admin && isNewSite) {
         const back = CREDIT_COSTS['航空写真測定'] ?? 3;
@@ -7960,6 +8039,18 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
         mode: 'aerial', step: 'pick',
         address: hit.title, addressLevel: hit.level, addressLevelLabel: LEVEL_LABEL[hit.level],
         addressPrecise: hit.precise,
+        // ★ここに出さないと、建物を選ぶ画面では警告がどこにも出ない。
+        //   「別の街の中心を見ている」ことに気づかないまま測ってしまう。
+        // 単位を使っていないことは、必ず一緒に伝える（黙って引かれたと思われないため）
+        creditCharged: !admin && isNewSite && resolvedEnough,
+        addressWarning: (hit as any).unmatched
+          ? `**「${(hit as any).unmatched}」が住所の辞書に見つかりませんでした。**いま写しているのは「${hit.title}」の中心です。目的の建物はおそらく写っていません。番地の書き方を変えるか、近くの施設名でお探しください。**この表示に単位は使っていません。**`
+          : isPlaceName(address) && hit.level === 'area'
+            ? `**「${address}」という施設が見つかりませんでした。**いま写しているのは「${hit.title}」の中心です。名前が正しいかご確認のうえ、別の言い方（正式名称・近くの学校名など）でお試しください。**この表示に単位は使っていません。**`
+          : hit.precise ? null
+          : hit.level === 'chome'
+            ? `「${hit.title}」の中心を写しています。丁目は数百m四方あるので、目的の建物が写っていないかもしれません。**何番まで**入れて取り直してください。`
+            : `「${hit.title}」までしか特定できませんでした。ここは地域の中心なので、目的の建物はおそらく写っていません。**何丁目何番何号まで**入れてください。`,
         lat: hit.lat, lon: hit.lon, zoom: air.z,
         // 次のクリックをこの写真の座標系で換算するために返す
         viewLat: centerLat, viewLon: centerLon,
@@ -7991,7 +8082,7 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     if (hasTarget) {
       // いま画面が見ている写真の中心を基準に、クリック点の緯度経度を出す
       const p = pixelToLonLat(centerLat, centerLon, air.z, air.sizePx, tx, ty);
-      shot = await fetchAerial(p.lat, p.lon, view.z, 1);   // その建物に寄る
+      shot = await fetchAerial(p.lat, p.lon, zoom, 1);   // その建物に寄る
       shotLat = p.lat; shotLon = p.lon;
       px = Math.round(shot.sizePx / 2);
       py = Math.round(shot.sizePx / 2);

@@ -571,6 +571,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
 
   // 住所から航空写真を引く経路。写真の目測よりスケールが確定するぶん確か
   const [siteAddress, setSiteAddress] = useState('');
+  // 住所でも建物名でも探せるようにする。候補は人に選んでもらう
+  //（同じ名前の施設は各地にあるので、こちらで1つに決めない）。
+  const [places, setPlaces] = useState<any[] | null>(null);
+  const [placeBusy, setPlaceBusy] = useState(false);
   const [aerial, setAerial] = useState<any>(null);
   const [aerialLoading, setAerialLoading] = useState(false);
   // 測った範囲の四角。単位は画像のピクセル。
@@ -594,6 +598,22 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 倍率を変えるだけなら通信は要らないので、寄る・引くは何度やっても無料。
   const [aerialZoom, setAerialZoom] = useState(2.42);
   const [aerialGrabbing, setAerialGrabbing] = useState(false);
+  // 写真の上に置く目印（どこに何があるか）。地図アプリと同じ感覚で現場を探せるように。
+  // 出典は OpenStreetMap。写真が変わるたびに1回だけ取りに行き、失敗しても黙って出さない。
+  const [aerialMarks, setAerialMarks] = useState<{ x: number; y: number; name: string; kind: string }[]>([]);
+  // ★既定は消しておく。地図（黄色の注記）と同時に出すと文字が重なって写真が読めない。
+  //   実機で確認済み：32件のピン＋地図の注記で、屋根が見えなくなった。
+  const [showMarks, setShowMarks] = useState(false);
+  const [marksBusy, setMarksBusy] = useState(false);
+  // 写真の上に重ねる地図（地理院タイル）。駅名・施設名・道路・建物の形が入っている。
+  // 第三者のサーバーに行かないので、写真が出るなら必ず出る。
+  const [mapImage, setMapImage] = useState('');
+  const [showMap, setShowMap] = useState(true);
+  const [mapBusy, setMapBusy] = useState(false);
+  const mapCache = useRef<Record<string, string>>({});
+  // 一度取った場所は覚えておく。写真を出し直すたびに20秒待たされるのを避ける。
+  // 目印の座標は「その写真の中の位置」なので、中心・ズーム・大きさが同じなら使い回せる。
+  const marksCache = useRef<Record<string, { x: number; y: number; name: string; kind: string }[]>>({});
   const aerialPanRef = useRef<any>(null);
   const aerialViewRef = useRef<HTMLDivElement | null>(null);
   const AERIAL_VIEW = 620;   // 見せる窓の大きさ（CSS px）
@@ -612,7 +632,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 倍率を変える。窓の中心（または指した点）がずれないように表示位置も直す
   const zoomAerialTo = (z: number, atX?: number, atY?: number) => {
     if (!aerial) return;
-    const nz = Math.max(0.5, Math.min(6, z));
+    // 上限・下限は「操作が破綻しない範囲」だけ。通信も課金もしないので広く開けておく。
+    const nz = Math.max(0.15, Math.min(40, z));
     const ax = atX ?? AERIAL_VIEW / 2, ay = atY ?? AERIAL_VIEW / 2;
     const ix = (ax - aerialOff.x) / aerialZoom, iy = (ay - aerialOff.y) / aerialZoom;
     setAerialZoom(nz);
@@ -704,6 +725,58 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     const world = aerial.sizePx * aerialZoom;
     setAerialOff(clampOff({ x: (AERIAL_VIEW - world) / 2, y: (AERIAL_VIEW - world) / 2 }, world));
   }, [aerial]);
+
+  // 写真が変わったら目印を取り直す。
+  // ★中心と大きさが変わると、前の写真で拾った座標はもう合わない。必ず空にしてから取る。
+  // ★「その写真がどこを写しているか」だけを鍵にする。
+  //   aerial のオブジェクトそのものを見張ると、中身が同じでも作り直されるたびに
+  //   目印が消えて取り直しになる（出た直後に消える原因になっていた）。
+  const marksKey = aerial?.sizePx
+    ? `${aerial.viewLat ?? aerial.lat},${aerial.viewLon ?? aerial.lon},${aerial.zoom},${aerial.sizePx}`
+    : '';
+  const tooWide = Number(aerial?.viewWidthM) > 2500;
+
+  useEffect(() => {
+    if (!marksKey || !showMarks || tooWide) { setAerialMarks([]); return; }
+    const cached = marksCache.current[marksKey];
+    if (cached) { setAerialMarks(cached); return; }   // 取り直さない
+    const [lat, lon] = marksKey.split(',').map(Number);
+    if (!isFinite(lat) || !isFinite(lon)) return;
+    let alive = true;
+    setAerialMarks([]);
+    setMarksBusy(true);
+    (window as any).api.aerialLandmarks({ lat, lon, z: aerial.zoom, sizePx: aerial.sizePx })
+      .then((r: any) => {
+        if (!alive) return;
+        const marks = Array.isArray(r?.marks) ? r.marks : [];
+        marksCache.current[marksKey] = marks;
+        setAerialMarks(marks);
+      })
+      .catch(() => { /* 目印が無くても測定はできる */ })
+      .finally(() => { if (alive) setMarksBusy(false); });
+    return () => { alive = false; };
+  }, [marksKey, showMarks, tooWide]);
+
+  // 重ねる地図。写真と同じ中心・ズーム・枚数で取るので、そのまま重なる。
+  useEffect(() => {
+    if (!marksKey || !showMap) { setMapImage(''); return; }
+    const cached = mapCache.current[marksKey];
+    if (cached) { setMapImage(cached); return; }
+    const [lat, lon] = marksKey.split(',').map(Number);
+    if (!isFinite(lat) || !isFinite(lon)) return;
+    let alive = true;
+    setMapImage('');
+    setMapBusy(true);
+    (window as any).api.aerialMapOverlay({ lat, lon, z: aerial.zoom, grid: aerial.grid })
+      .then((r: any) => {
+        if (!alive) return;
+        const img = String(r?.mapImage || '');
+        if (img) { mapCache.current[marksKey] = img; setMapImage(img); }
+      })
+      .catch(() => { /* 重ならなくても測定はできる */ })
+      .finally(() => { if (alive) setMapBusy(false); });
+    return () => { alive = false; };
+  }, [marksKey, showMap]);
 
   // ホイールで寄る・引く。ブラウザ既定の拡大とぶつからないよう passive:false で自前で受ける
   useEffect(() => {
@@ -872,14 +945,43 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   //    住所は号まで入れても街区の代表点が返ることが多く、建物の上に落ちない
   //    （実測: 都島本通五丁目８番１８号 の解決点は道路上だった）。
   //    だから建物の特定は住所に任せず、利用者に選んでもらう。
-  const runAerial = async () => {
+  // 探す（無料・AIを使わない）。1件だけならそのまま写真へ、複数なら選んでもらう。
+  const searchPlace = async () => {
+    const q = siteAddress.trim();
+    if (!q || placeBusy || aerialLoading) return;
+    setError(''); setPlaces(null); setPlaceBusy(true);
+    try {
+      const res = await (window as any).api.searchPlace({ query: q });
+      const list: any[] = Array.isArray(res?.places) ? res.places : [];
+      if (list.length === 0) {
+        setError('その場所が見つかりませんでした。番地まで入れるか、建物の名前でもお試しください。');
+      } else if (list.length === 1) {
+        await runAerial(list[0]);
+      } else {
+        setPlaces(list);
+      }
+    } catch (e: any) {
+      setError(cleanErr(e, '検索に失敗しました'));
+    }
+    setPlaceBusy(false);
+  };
+
+  const runAerial = async (place?: any) => {
     const addr = siteAddress.trim();
-    if (!addr) { setError('住所を入力してください'); return; }
+    if (!addr) { setError('住所または建物名を入力してください'); return; }
+    setPlaces(null);
     setAerialLoading(true);
     setError('');
     startBusy({ key: 'aerial', title: '航空写真を取得しています', etaSec: 8, sub: '住所を検索し、真上からの写真を取得中' });
     try {
-      const res = await (window as any).api.areaFromAddress({ address: addr, comment, fetchOnly: true });
+      const res = await (window as any).api.areaFromAddress({
+        address: addr, comment, fetchOnly: true,
+        // 候補から選ばれていれば、その点をそのまま使う（名前で引き直すと別の場所に飛ぶ）
+        place: place ? {
+          lat: place.lat, lon: place.lon, title: place.title,
+          level: place.level, precise: place.precise, unmatched: place.unmatched,
+        } : undefined,
+      });
       endBusy();
       setAerial(res);
       // 写真と一緒に枠も出す。あとは利用者が建物へ合わせるだけ。
@@ -899,7 +1001,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
 
   // 写す範囲を切り替えて取り直す。AIは呼ばないので費用はかからない。
   // 目的の建物が枠の外にいると選びようがないので、広げられるようにしておく。
-  const refetchAerial = async (grid: number) => {
+  const refetchAerial = async (grid: number, z?: number) => {
     const addr = siteAddress.trim();
     if (!addr || aerialLoading) return;
     const prevRect = aerialRectMeta();
@@ -913,6 +1015,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       const res = await (window as any).api.areaFromAddress({
         address: addr, comment, fetchOnly: true, grid,
         viewLat: aerial?.viewLat, viewLon: aerial?.viewLon,
+        z: z ?? aerial?.zoom,
       });
       setAerial(res);
       setAerialRect(makeAerialRect(res, prevRect));
@@ -1159,7 +1262,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     try {
       const res = await (window as any).api.areaFromAddress({
         address: siteAddress.trim(), comment, fetchOnly: true,
-        grid: 1,   // 測るときは寄る
+        grid: 1, z: 18,   // 測るときは寄る（引いたままだと1pxの実寸が粗くなる）
         viewLat: aerial.viewLat, viewLon: aerial.viewLon, panTo: { x, y },
       });
       setAerial({ ...res, slopeFactor: aerial.slopeFactor || 1 });
@@ -2608,22 +2711,54 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <>
                     <div style={{ fontSize: 11, color: '#15803d', marginBottom: 6 }}>
                       国土地理院の航空写真は縮尺が確定しているので、AIがスケールを推測する必要がありません。<br />
-                      <strong>何丁目何番何号まで入れてください。</strong>丁目までだと数百m四方の中心が返るので、別の建物を測ってしまいます。
+                      <strong>住所は何丁目何番何号まで</strong>入れてください（丁目までだと数百m四方の中心が返り、別の建物を測ってしまいます）。
+                      <strong>建物の名前でも探せます</strong>（例: 大阪市立都島小学校）。
                     </div>
                     <div style={{ display: 'flex', gap: 8 }}>
                       <input
                         type="text"
                         value={siteAddress}
                         onChange={(e) => setSiteAddress(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter' && siteAddress.trim() && !aerialLoading) runAerial(); }}
-                        placeholder="例: 大阪府大阪市都島区中野町1-2-3"
+                        onKeyDown={(e) => { if (e.key === 'Enter' && siteAddress.trim() && !aerialLoading) searchPlace(); }}
+                        placeholder="例: 大阪府大阪市都島区中野町1-2-3 ／ 大阪市立都島小学校"
                         style={{ flex: 1, padding: '8px 10px', fontSize: 13, border: '1px solid #86efac', borderRadius: 4 }}
                       />
-                      <button className="btn" onClick={runAerial} disabled={aerialLoading || !siteAddress.trim()}
+                      <button className="btn" onClick={() => searchPlace()} disabled={aerialLoading || placeBusy || !siteAddress.trim()}
                         style={{ fontSize: 13, padding: '8px 16px', whiteSpace: 'nowrap' }}>
-                        {aerialLoading ? '取得中...' : '航空写真で測る'}
+                        {aerialLoading ? '取得中...' : placeBusy ? '検索中...' : '航空写真で測る'}
                       </button>
                     </div>
+                    {/* ★候補は人に選んでもらう。同じ名前の学校・店は各地にあるので、
+                        こちらで1つに決めると、まったく別の場所を測ってしまう。 */}
+                    {places && places.length > 1 && (
+                      <div style={{ marginTop: 8, border: '1px solid #86efac', borderRadius: 6, background: '#fff', overflow: 'hidden' }}>
+                        <div style={{ fontSize: 11, color: '#166534', background: '#f0fdf4', padding: '6px 10px', borderBottom: '1px solid #dcfce7' }}>
+                          {places.length}件見つかりました。<strong>測りたい場所を選んでください</strong>（選ぶまで単位は使いません）
+                        </div>
+                        {places.map((pl: any, i: number) => (
+                          <div key={i} onClick={() => runAerial(pl)}
+                            style={{
+                              padding: '8px 10px', cursor: 'pointer', fontSize: 12, lineHeight: 1.6,
+                              borderTop: i === 0 ? 'none' : '1px solid #f1f5f9',
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.background = '#f0fdf4')}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = '#fff')}>
+                            <div style={{ fontWeight: 'bold', color: '#0f172a' }}>
+                              {pl.title}
+                              <span style={{
+                                fontSize: 10, fontWeight: 'normal', marginLeft: 6, padding: '1px 5px', borderRadius: 3,
+                                background: pl.source === 'gsi' ? '#dbeafe' : '#fef3c7',
+                                color: pl.source === 'gsi' ? '#1e40af' : '#92400e',
+                              }}>{pl.source === 'gsi' ? '住所' : '施設名'}</span>
+                            </div>
+                            <div style={{ color: '#64748b' }}>{pl.detail}</div>
+                          </div>
+                        ))}
+                        <div style={{ padding: '6px 10px', fontSize: 10, color: '#94a3b8', borderTop: '1px solid #f1f5f9' }}>
+                          施設名の検索: © OpenStreetMap contributors
+                        </div>
+                      </div>
+                    )}
                   </>
                 ) : (
                   /* 使えないお客様にも「何ができる機能なのか」は見せる。
@@ -2690,6 +2825,24 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   {/* 広さの切り替え。1タイル=124m四方 */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5, fontSize: 11, color: '#1e3a8a' }}>
                     <span>写す範囲:</span>
+                    {/* ★z を1段下げるごとに写る範囲が2倍。タイルを増やすより軽いので、
+                        「もっと広く」はこちらで伸ばす（z10 なら約95km四方まで引ける）。 */}
+                    <button onClick={() => refetchAerial(aerial.grid, Math.max(10, (aerial.zoom || 18) - 1))}
+                      disabled={aerialLoading || (aerial.zoom || 18) <= 10}
+                      title="もっと広い範囲を写します（1押しで2倍）"
+                      style={{
+                        padding: '3px 9px', fontSize: 11, borderRadius: 4,
+                        cursor: aerialLoading ? 'wait' : 'pointer',
+                        border: '1px solid #cbd5e1', background: '#fff', fontWeight: 'bold',
+                      }}>− もっと広く</button>
+                    <button onClick={() => refetchAerial(aerial.grid, Math.min(18, (aerial.zoom || 18) + 1))}
+                      disabled={aerialLoading || (aerial.zoom || 18) >= 18}
+                      title="もっと寄ります（1押しで1/2）"
+                      style={{
+                        padding: '3px 9px', fontSize: 11, borderRadius: 4,
+                        cursor: aerialLoading ? 'wait' : 'pointer',
+                        border: '1px solid #cbd5e1', background: '#fff', fontWeight: 'bold',
+                      }}>＋ もっと寄る</button>
                     {[1, 3, 5, 7].map(g => (
                       <button key={g} onClick={() => refetchAerial(g)} disabled={aerialLoading}
                         style={{
@@ -2701,7 +2854,16 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         {Math.round(124 * g)}m
                       </button>
                     ))}
-                    <span style={{ color: '#64748b' }}>四方</span>
+                    <span style={{ color: '#64748b' }}>
+                      四方
+                      {Number(aerial.viewWidthM) > 0 && (
+                        <strong style={{ marginLeft: 6, color: '#1e3a8a' }}>
+                          （いま {aerial.viewWidthM >= 1000
+                            ? `${(aerial.viewWidthM / 1000).toFixed(1)}km`
+                            : `${Math.round(aerial.viewWidthM)}m`}四方・1px {aerial.mPerPx}m）
+                        </strong>
+                      )}
+                    </span>
                     {/* 倍率は読み込み済みの画像を拡大縮小するだけ。通信しないので何度でも押せる */}
                     <span style={{ marginLeft: 10, color: '#64748b' }}>表示:</span>
                     {[['－', 1 / 1.4], ['＋', 1.4]].map(([label, f]) => (
@@ -2711,6 +2873,28 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                           border: '1px solid #cbd5e1', background: '#fff', fontWeight: 'bold',
                         }}>{label as string}</button>
                     ))}
+                    {/* 地図を重ねる／外す。細かく測るときは外せるようにする */}
+                    <button onClick={() => setShowMap(v => !v)}
+                      title="地理院地図（駅名・施設名・道路・建物の形）を写真の上に重ねます"
+                      style={{
+                        padding: '3px 9px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
+                        border: showMap ? '1.5px solid #2563eb' : '1px solid #cbd5e1',
+                        background: showMap ? '#dbeafe' : '#fff',
+                        fontWeight: showMap ? 'bold' : 'normal', marginLeft: 6,
+                      }}>
+                      🗺 地図{showMap ? (mapBusy ? '（重ねています…）' : '') : ''}
+                    </button>
+                    {/* 目印の表示切り替え。細かく測るときは邪魔になるので消せるようにする */}
+                    <button onClick={() => setShowMarks(v => !v)}
+                      title="まわりの建物・施設の名前を写真の上に出します（OpenStreetMap）"
+                      style={{
+                        padding: '3px 9px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
+                        border: showMarks ? '1.5px solid #2563eb' : '1px solid #cbd5e1',
+                        background: showMarks ? '#dbeafe' : '#fff',
+                        fontWeight: showMarks ? 'bold' : 'normal', marginLeft: 6,
+                      }}>
+                      🏷 地名{showMarks ? (marksBusy ? '（探しています…）' : `（${aerialMarks.length}）`) : ''}
+                    </button>
                     <button onClick={() => zoomAerialTo(AERIAL_VIEW / (aerial.sizePx || 256))}
                       style={{
                         padding: '3px 9px', fontSize: 11, borderRadius: 4, cursor: 'pointer',
@@ -2747,20 +2931,76 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         width: '100%', height: '100%', display: 'block',
                         userSelect: 'none', pointerEvents: 'auto',
                       }} />
+                    {/* ★重ねる地図を「黄色い線と文字」にして写真の上に乗せる。
+                        白地の地図を反転すると、白い背景が黒・文字と線が白になる。
+                        それを screen で重ねると黒い部分が消え、線と文字だけが残る。
+                        sepia＋saturate で黄色に寄せると、航空写真の上でいちばん読める
+                        （黒い文字のままだと、屋根や影に沈んで見えなかった）。
+                        掴む操作の邪魔をしないよう、クリックは一切拾わない。 */}
+                    {showMap && !!mapImage && (
+                      <img src={mapImage} alt="地図"
+                        style={{
+                          position: 'absolute', left: 0, top: 0, width: '100%', height: '100%',
+                          mixBlendMode: 'screen', opacity: 0.8,
+                          filter: 'invert(1) sepia(1) saturate(8) hue-rotate(5deg) brightness(1.15)',
+                          pointerEvents: 'none', userSelect: 'none', zIndex: 1,
+                        }} />
+                    )}
+                    {/* ★目印。赤枠より下の層に置き、掴む操作の邪魔をしないよう pointerEvents は切る。
+                        点だけ・名前だけでは足りない。点で位置を、名前で何かを示す。 */}
+                    {showMarks && aerialMarks.map((m, i) => {
+                      const pc = (v: number) => `${v / aerial.sizePx * 100}%`;
+                      return (
+                        <div key={`mk${i}`} style={{
+                          position: 'absolute', left: pc(m.x), top: pc(m.y), zIndex: 1,
+                          transform: 'translate(-50%, -100%)', pointerEvents: 'none',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center',
+                        }}>
+                          <span style={{
+                            maxWidth: 190, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                            fontSize: 12, fontWeight: 'bold', lineHeight: 1.5, padding: '1px 6px', borderRadius: 3,
+                            background: 'rgba(15,23,42,.72)', color: '#ffd400',
+                            textShadow: '0 1px 2px rgba(0,0,0,.9)',
+                            boxShadow: '0 1px 3px rgba(0,0,0,.5)',
+                          }}>{m.name}</span>
+                          <span style={{
+                            width: 7, height: 7, borderRadius: '50%', marginTop: 2,
+                            background: '#ffd400', border: '2px solid rgba(15,23,42,.85)',
+                            boxShadow: '0 0 3px rgba(0,0,0,.7)',
+                          }} />
+                        </div>
+                      );
+                    })}
                     {/* 住所の解決点＝青い十字。太く、白フチ付きで航空写真の上でも見えるように。
                         ★寄ったあと（step='result'）は出さない。寄った写真は選ばれた建物が中心なので、
                           青い十字と赤丸が同じ位置に重なって、どちらも見分けられなくなる。
                           「住所の位置」は建物を探す段階でしか意味がない。 */}
                     {aerial.step === 'pick' && !!aerial.centerPx && (() => {
                       const p = `${aerial.centerPx / aerial.sizePx * 100}%`;
+                      // ★黄色い地図を重ねたので、青や黒の印は線と見分けが付かない。
+                      //   地図にも写真にも出てこない色（濃いピンク）にして、必ず目立たせる。
                       const line = (horiz: boolean) => ({
                         position: 'absolute' as const, left: p, top: p, pointerEvents: 'none' as const,
-                        width: horiz ? 46 : 6, height: horiz ? 6 : 46,
-                        marginLeft: horiz ? -23 : -3, marginTop: horiz ? -3 : -23,
-                        background: '#2563eb', border: '1.5px solid #fff', borderRadius: 2,
-                        boxShadow: '0 0 4px rgba(0,0,0,.5)',
+                        zIndex: 2,
+                        width: horiz ? 52 : 6, height: horiz ? 6 : 52,
+                        marginLeft: horiz ? -26 : -3, marginTop: horiz ? -3 : -26,
+                        background: '#ff2d95', border: '1.5px solid #fff', borderRadius: 2,
+                        boxShadow: '0 0 5px rgba(0,0,0,.7)',
                       });
-                      return <><div style={line(true)} /><div style={line(false)} /></>;
+                      return (
+                        <>
+                          <div style={line(true)} />
+                          <div style={line(false)} />
+                          <span style={{
+                            position: 'absolute', left: p, top: p, zIndex: 2, pointerEvents: 'none',
+                            transform: 'translate(-50%, 14px)', whiteSpace: 'nowrap',
+                            fontSize: 11, fontWeight: 'bold', padding: '1px 6px', borderRadius: 3,
+                            background: '#ff2d95', color: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,.6)',
+                          }}>
+                            {aerial.addressPrecise ? 'この住所の位置' : '住所の位置（粗い）'}
+                          </span>
+                        </>
+                      );
                     })()}
                     {/* ★測った範囲そのものを四角で重ねる。
                         点の印だけだと「どの建物を、どこまで測ったのか」が分からない。
@@ -2906,6 +3146,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         <span style={{ display: 'inline-block', width: 14, height: 4, background: '#2563eb', border: '1px solid #fff', boxShadow: '0 0 2px rgba(0,0,0,.4)' }} />
                         住所の位置（ずれていて構いません）
                       </span>
+                    )}
+                    {/* 目印の名前は OpenStreetMap のデータ。ODbL なので出典を必ず出す */}
+                    {showMarks && aerialMarks.length > 0 && (
+                      <span style={{ color: '#94a3b8' }}>地名 © OpenStreetMap contributors</span>
                     )}
                     {aerial.step === 'result' && (
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
