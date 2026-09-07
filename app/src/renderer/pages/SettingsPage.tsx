@@ -576,6 +576,9 @@ function PlanManagement() {
   const [showLog, setShowLog] = useState(false);
   const [showCosts, setShowCosts] = useState(false);
   const [requesting, setRequesting] = useState(false);
+  // 導入費用の支払い画面を開いたか。入金の自動確認はできない（Webhookを繋いでいない）ので、
+  // 「開いた＝支払いに進んだ」を目印にして、月額の申し込みを②として続けさせる。
+  const [setupFeeOpened, setSetupFeeOpened] = useState(false);
 
   useEffect(() => { load(); }, []);
 
@@ -607,6 +610,22 @@ function PlanManagement() {
     standard: 'https://buy.stripe.com/bJecN61Hd191g6t9MO24006',   // 月30,000円（総額）
     better:   'https://buy.stripe.com/dRm00k0D9g3V4nLgbc24007',   // 月70,000円（総額）
     pro:      'https://buy.stripe.com/7sYcN60D9cRJdYl3oq24008',   // 月100,000円（総額）
+  };
+
+  // 導入費用（初回のご契約のみ・総額）。月額とは別に、最初に一度だけいただく。
+  // ★Stripeで「200,000円・一回払い」の決済リンクを作り、ここに貼ること。
+  //   空のままだと関門が出ず、月額のリンクだけが開く＝20万を取りっぱぐれる。
+  //   すでにお使いのお客様（有料プランの方）はプランを変えても対象外。
+  const SETUP_FEE = 200000;
+  const SETUP_FEE_LINK = 'https://buy.stripe.com/fZueVe85B9Fx07v7EG24009';   // 200,000円・一回払い（継続ではない）
+
+  const PAID_PLANS = ['standard', 'better', 'pro', 'enterprise'];
+  // 初回のご契約か（デモ・トライアルから有料へ上がる場合）。有料同士のプラン変更は無料。
+  const needsSetupFee = !!SETUP_FEE_LINK && !PAID_PLANS.includes(planInfo?.plan);
+
+  const openSetupFee = () => {
+    window.open(SETUP_FEE_LINK, '_blank');
+    setSetupFeeOpened(true);
   };
 
   const requestPlan = async (planKey: string) => {
@@ -712,6 +731,35 @@ function PlanManagement() {
       {/* プラン一覧 */}
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 13, fontWeight: 'bold', marginBottom: 8 }}>料金プラン</div>
+
+        {/* 初回のご契約は、月額の前に導入費用をお支払いいただく */}
+        {needsSetupFee && (
+          <div style={{
+            border: '2px solid #e67e22', background: '#fff8f0', borderRadius: 8,
+            padding: 14, marginBottom: 12,
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 'bold', color: '#c05621', marginBottom: 4 }}>
+              初回のご契約には導入費用 ¥{SETUP_FEE.toLocaleString()}（初回のみ・総額）がかかります
+            </div>
+            <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
+              ① 導入費用のお支払い → ② 月額プランのお申し込み、の順にお進みください。
+              初期設定・データ移行・操作レクチャーが含まれます。プラン変更のときは、これはかかりません。
+            </div>
+            <button
+              className="btn btn-sm"
+              style={{ background: '#e67e22', color: '#fff', border: 'none' }}
+              onClick={openSetupFee}
+            >
+              ① 導入費用 ¥{SETUP_FEE.toLocaleString()} を支払う
+            </button>
+            {setupFeeOpened && (
+              <div style={{ fontSize: 12, color: '#27ae60', marginTop: 8, fontWeight: 'bold' }}>
+                お支払いが済みましたら、下のプランから「申し込む」を押してください。
+              </div>
+            )}
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           {Object.entries(plans).map(([key, p]: [string, any]) => {
             const isCurrent = key === planInfo.plan;
@@ -750,10 +798,11 @@ function PlanManagement() {
                   <button
                     className={`btn btn-sm ${isUpgrade ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => requestPlan(key)}
-                    disabled={requesting}
+                    disabled={requesting || (needsSetupFee && !setupFeeOpened)}
                     style={{ width: '100%' }}
+                    title={needsSetupFee && !setupFeeOpened ? '先に導入費用のお支払いへお進みください' : ''}
                   >
-                    {isUpgrade ? '申し込む' : 'プラン変更'}
+                    {needsSetupFee && !setupFeeOpened ? '② 月額プランに申し込む' : (isUpgrade ? '申し込む' : 'プラン変更')}
                   </button>
                 )}
                 {key === 'enterprise' && !isCurrent && (
@@ -970,10 +1019,13 @@ function UserManagement() {
   const [tenantMsg, setTenantMsg] = useState('');
   const [tenantLoading, setTenantLoading] = useState(false);
 
+  // 2026-09-02の月額改定に合わせた単位数。ここが旧いままだと、テナントを手で作ったときに
+  // 契約と違う単位数で発行してしまう（database.ts の PLANS が正）。
   const plans: Record<string, { name: string; credits: number }> = {
-    demo: { name: 'デモ', credits: 30 },
-    standard: { name: 'スタンダード', credits: 100 },
-    pro: { name: 'プロ', credits: 500 },
+    demo: { name: 'デモ', credits: 10 },
+    standard: { name: 'スタンダード', credits: 20 },
+    better: { name: 'ベター', credits: 50 },
+    pro: { name: 'プロ', credits: 100 },
     enterprise: { name: '法人カスタム', credits: 9999 },
   };
 

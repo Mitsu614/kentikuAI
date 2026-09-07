@@ -244,7 +244,7 @@ img{max-width:100%;display:block}
       </div>
       <div class="hero-trust">
         <div><strong>特許出願済</strong></div>
-        <div><strong>導入費用0円</strong></div>
+        <div><strong>最低利用3ヶ月</strong></div>
         <div><strong>即日導入可</strong></div>
       </div>
     </div>
@@ -468,7 +468,20 @@ img{max-width:100%;display:block}
     <div class="sec-header">
       <div class="sec-tag">Pricing</div>
       <h2>料金プラン</h2>
-      <p style="font-size:15px;margin-bottom:8px;">月額のみ。導入費用はいただきません。規模に合わせて選べるプラン。</p>
+      <p style="font-size:15px;margin-bottom:8px;">月額制。規模に合わせて選べるプラン。初回のご契約時のみ導入費用200,000円（総額）を申し受けます。</p>
+    </div>
+    <div style="border:2px solid #e67e22;background:#fff8f0;border-radius:10px;padding:16px 18px;margin-bottom:18px;text-align:center">
+      <div style="font-size:15px;font-weight:700;color:#c05621;margin-bottom:4px">
+        初回のご契約には導入費用 200,000円（初回のみ・総額）がかかります
+      </div>
+      <div style="font-size:13px;color:#666;margin-bottom:10px">
+        ① 導入費用のお支払い → ② 月額プランのお申し込み、の順にお進みください。<br>
+        初期設定・データ移行・操作レクチャーが含まれます。契約中のプラン変更ではかかりません。
+      </div>
+      <a href="https://buy.stripe.com/fZueVe85B9Fx07v7EG24009" target="_blank" rel="noopener"
+         style="display:inline-block;background:#e67e22;color:#fff;font-weight:700;padding:10px 22px;border-radius:6px;text-decoration:none">
+        ① 導入費用 200,000円 を支払う
+      </a>
     </div>
     <div class="price-row">
       <!-- ★既定では隠してある。価格を渋られたときだけ右下の「i」で出す（後出しの切り札） -->
@@ -539,7 +552,7 @@ img{max-width:100%;display:block}
         <a href="#demo-booking" class="price-btn pb-outline">お問い合わせ</a>
       </div>
     </div>
-    <p class="price-note">※ 上記は総額です。別途申し受ける金額はありません ｜ 導入費用はいただきません ｜ 最低利用期間3ヶ月 ｜ 未使用ストックは翌月繰越可（最大3ヶ月）</p>
+    <p class="price-note">※ 上記は総額です。別途申し受ける金額はありません ｜ 初回のご契約時のみ導入費用200,000円（初期設定・データ移行・操作レクチャー込み） ｜ 最低利用期間3ヶ月 ｜ 未使用ストックは翌月繰越可（最大3ヶ月）</p>
     <p class="price-note">※ 住所からの航空写真による面積測定はプロプラン以上。新しい住所で写真を出すときに1回3単位を使います（写真を動かす・拡大縮小する・測る建物を選び直すのは無料）。</p>
   </div>
 </section>
@@ -671,5 +684,30 @@ img{max-width:100%;display:block}
   <p>&copy; 2026 有限会社中野工務店 ｜ 建築ブースト 特許出願済（特願2026-100479）</p>
 </footer>
 
+
+<script>
+// 月額プランの申し込みボタンは、初回のお客様が導入費用（20万・初回のみ）を
+// 飛ばしてしまわないように、一度だけ確認を挟む。すでに契約中の方は「はい」で素通り。
+(function () {
+  var SETUP_FEE_LINK = 'https://buy.stripe.com/fZueVe85B9Fx07v7EG24009';
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest ? e.target.closest('a[href*="buy.stripe.com"]') : null;
+    if (!a) return;
+    if (a.href.indexOf(SETUP_FEE_LINK) === 0) return;         // 導入費用のリンク自体は素通り
+    var ok = window.confirm(
+      '導入費用 200,000円（初回のご契約時のみ）のお支払いはお済みですか？
+
+' +
+      '「OK」＝お済み・すでに契約中の方 → 月額プランのお申し込みへ進みます
+' +
+      '「キャンセル」＝まだ → 導入費用のお支払い画面を開きます'
+    );
+    if (!ok) {
+      e.preventDefault();
+      window.open(SETUP_FEE_LINK, '_blank');
+    }
+  });
+})();
+</script>
 </body>
 </html>

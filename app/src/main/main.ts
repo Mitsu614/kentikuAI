@@ -3496,6 +3496,134 @@ app.whenReady().then(async () => {
     }
   });
 
+  // ── 領収書PDF生成 ──
+  // 入金いただいたあと「領収書をください」と必ず言われる。請求書とは別の紙で、
+  // 要るのは「誰に・いくら・何の代金として・いつ受け取ったか」の4つ。
+  // 印紙は電子交付（PDFのまま渡す）なら不要。紙に印刷して渡すときだけ要る。
+  const generateReceiptPdfBuffer = async (data: any): Promise<Buffer> => {
+    const { invoice, subject, receiptDate } = data;
+    const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
+    const cfg = loadApiConfig();
+
+    const taxExcluded = invoice.amount || 0;
+    const taxRate = invoice.tax_rate || 0.1;
+    const taxAmount = Math.round(taxExcluded * taxRate);
+    const totalWithTax = taxExcluded + taxAmount;
+    const taxLabel = taxRate === 0.08 ? '8%（軽減税率）' : `${Math.round(taxRate * 100)}%`;
+
+    const issued = receiptDate || new Date().toISOString().split('T')[0];
+    const title = escapeHtml(
+      subject || invoice.construction_title || invoice.property_name || '工事代金',
+    );
+    const companyName = escapeHtml(cfg.companyName || '');
+    const companyAddress = escapeHtml(cfg.companyAddress || '');
+    const companyTel = escapeHtml(cfg.companyTel || '');
+    const companySeal = cfg.companySeal || '';
+    const companyLogo = cfg.companyLogo || '';
+    const invoiceRegNum = escapeHtml(cfg.invoiceNumber || '');
+
+    // 印紙は「紙で渡す」場合だけ。5万円未満は非課税。
+    const needsStamp = totalWithTax >= 50000;
+
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: 'Yu Gothic', 'Meiryo', 'MS PGothic', sans-serif; padding: 46px 40px; color:#333; font-size:11px; }
+  h1 { text-align:center; font-size:28px; letter-spacing:14px; margin-bottom:8px; }
+  .no { text-align:right; font-size:10px; color:#666; }
+  .head { display:flex; justify-content:space-between; align-items:flex-start; margin-top:18px; }
+  .client { font-size:17px; font-weight:bold; border-bottom:2px solid #333; padding-bottom:5px; min-width:280px; }
+  .issuer { text-align:left; font-size:10px; line-height:1.8; max-width:300px; }
+  .amount-box { border:2px solid #333; border-radius:4px; margin:26px 0 8px; padding:16px 22px; display:flex; justify-content:space-between; align-items:center; }
+  .amount-box .label { font-size:13px; letter-spacing:4px; }
+  .amount-box .value { font-size:28px; font-weight:bold; letter-spacing:1px; }
+  .note-for { margin:14px 0 6px; font-size:12px; }
+  .said { margin-top:10px; font-size:12px; }
+  .breakdown { margin-top:18px; width:280px; }
+  .breakdown div { display:flex; justify-content:space-between; padding:3px 8px; font-size:11px; border-bottom:1px solid #eee; }
+  .stamp-box { float:right; width:110px; height:110px; border:1px solid #999; display:flex; align-items:center; justify-content:center; text-align:center; font-size:9px; color:#999; line-height:1.5; margin-top:12px; }
+  .foot { margin-top:34px; font-size:9px; color:#888; line-height:1.7; clear:both; }
+</style>
+</head><body>
+  <h1>領 収 書</h1>
+  <div class="no">No. RCP-${String(invoice.id).padStart(4, '0')}　／　発行日: ${escapeHtml(issued)}</div>
+
+  <div class="head">
+    <div>
+      <div class="client">${escapeHtml(invoice.client_name || '')} 御中</div>
+      ${invoice.client_address ? `<div style="margin-top:4px;font-size:10px">${escapeHtml(invoice.client_address)}</div>` : ''}
+    </div>
+    ${companyName ? `<div class="issuer">
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <div>
+          ${companyLogo ? `<img src="${companyLogo}" style="max-width:80px;max-height:30px;margin-bottom:4px" />` : ''}
+          <strong style="font-size:12px">${companyName}</strong><br>
+          ${companyAddress ? companyAddress + '<br>' : ''}
+          ${companyTel ? 'TEL: ' + companyTel + '<br>' : ''}
+          ${invoiceRegNum ? '登録番号: ' + invoiceRegNum : ''}
+        </div>
+        ${companySeal ? `<img src="${companySeal}" style="width:62px;height:62px;object-fit:contain;opacity:0.85" />` : ''}
+      </div>
+    </div>` : ''}
+  </div>
+
+  <div class="amount-box">
+    <span class="label">金 額</span>
+    <span class="value">${fmt(totalWithTax)}<span style="font-size:12px;font-weight:normal">（税込）</span></span>
+  </div>
+
+  <div class="note-for">但し　<u>&nbsp;${title}&nbsp;</u>　代金として</div>
+  <div class="said">上記の金額、正に領収いたしました。</div>
+
+  ${needsStamp ? `<div class="stamp-box">収入印紙<br>（紙でお渡しする<br>場合のみ）</div>` : ''}
+
+  <div class="breakdown">
+    <div><span>税抜金額</span><span>${fmt(taxExcluded)}</span></div>
+    <div><span>消費税（${taxLabel}）</span><span>${fmt(taxAmount)}</span></div>
+    <div style="font-weight:bold;border-bottom:2px solid #333"><span>合計（税込）</span><span>${fmt(totalWithTax)}</span></div>
+  </div>
+
+  <div class="foot">
+    ${invoiceRegNum ? `適格請求書発行事業者登録番号: ${invoiceRegNum}<br>` : ''}
+    電子データ（PDF）のままお渡しする場合、印紙税はかかりません。紙に印刷してお渡しする場合は、税込5万円以上で収入印紙が必要です。
+  </div>
+</body></html>`;
+
+    const tmpDir = app.getPath('temp');
+    const tmpHtml = path.join(tmpDir, `receipt_${Date.now()}.html`);
+    const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+    fs.writeFileSync(tmpHtml, Buffer.concat([bom, Buffer.from(html, 'utf-8')]));
+
+    const pdfWindow = new BrowserWindow({
+      show: false, width: 794, height: 1123,
+      webPreferences: { defaultEncoding: 'utf-8' },
+    });
+    await pdfWindow.loadURL(`file:///${tmpHtml.replace(/\\/g, '/')}`);
+    await new Promise<void>(resolve => setTimeout(resolve, 1000));
+    const pdfData = await pdfWindow.webContents.printToPDF({
+      printBackground: true,
+      margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 },
+    });
+    pdfWindow.close();
+    try { fs.unlinkSync(tmpHtml); } catch (_) {}
+    return pdfData;
+  };
+
+  ipcMain.handle('invoices:generateReceiptPDF', async (_e, data: any) => {
+    const { invoice } = data;
+    const pdfData = await generateReceiptPdfBuffer(data);
+    const fileName = `領収書_${invoice.client_name}_${data.receiptDate || new Date().toISOString().split('T')[0]}.pdf`;
+    const savePath = await dialog.showSaveDialog({
+      defaultPath: fileName,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (!savePath.canceled && savePath.filePath) {
+      fs.writeFileSync(savePath.filePath, pdfData);
+      shell.openPath(savePath.filePath);
+    }
+  });
+
   // 請求書PDF一括出力：フォルダを選んで、全請求書を1件ずつPDF保存
   ipcMain.handle('invoices:batchPDF', async () => {
     const tid = getCurrentTenant();

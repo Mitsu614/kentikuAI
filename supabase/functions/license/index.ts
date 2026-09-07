@@ -653,9 +653,16 @@ try {
     // list: 全登録の一覧（company指定不要）。管理ダッシュボード/承認画面用。
     // license_token は返さない（オーナー画面にも不要・漏洩面を最小化）。
     if (sub === "list") {
-      const rows = await sbGet(
-        `remote_licenses?select=id,company_name,plan,active,credits,max_credits,blocked_message,max_seats,join_code,claimed_at,created_at,updated_at,contact_email,contact_tel,email_domain,expires_at,verified_at,device_hash&order=created_at.desc`,
-      );
+      const COLS = "id,company_name,plan,active,credits,max_credits,blocked_message,max_seats,join_code,claimed_at,created_at,updated_at,contact_email,contact_tel,email_domain,expires_at,verified_at,device_hash";
+      // setup_fee_paid_at（導入費用の入金日時）は後から足した列。まだ ALTER TABLE を
+      // 流していない環境では、これを select に含めるとPostgRESTが400を返し、
+      // 管理画面のライセンス一覧が丸ごと出なくなる。無ければ列なしで引き直す。
+      let rows: any[];
+      try {
+        rows = await sbGet(`remote_licenses?select=${COLS},setup_fee_paid_at&order=created_at.desc`);
+      } catch (_) {
+        rows = await sbGet(`remote_licenses?select=${COLS}&order=created_at.desc`);
+      }
       return json({ ok: true, rows });
     }
     const company = String(body.company_name || "").trim();

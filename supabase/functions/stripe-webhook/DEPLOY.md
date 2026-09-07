@@ -15,7 +15,11 @@ Supabase の SQL Editor で1行流します。
 ALTER TABLE remote_licenses ADD COLUMN IF NOT EXISTS stripe_customer_id text;
 CREATE INDEX IF NOT EXISTS remote_licenses_stripe_customer_id_idx
   ON remote_licenses (stripe_customer_id);
+ALTER TABLE remote_licenses ADD COLUMN IF NOT EXISTS setup_fee_paid_at timestamptz;
 ```
+
+`setup_fee_paid_at` は**導入費用20万の入金日時**です。月額とは別のリンクなので、
+どちらが先に払われても拾えるように、入金の記録だけを持ちます。
 
 **なぜ要るか。** 会社名を聞けるのは決済画面の1回だけで、毎月の請求や解約の通知には
 会社名が入っていません。そこで初回に「Stripeの顧客ID ↔ 会社」を控えておき、
@@ -48,7 +52,7 @@ https://slhgkedzlormaovwpadi.supabase.co/functions/v1/stripe-webhook
 
 | イベント | 起きること |
 |---|---|
-| `checkout.session.completed` | 初回の入金。プランを設定して**有効化**。行が無ければ作る |
+| `checkout.session.completed` | 初回の入金。**月額**（継続課金）ならプランを設定して**有効化**、行が無ければ作る。**導入費用20万**（一回払い）なら入金日時を記録するだけで、プランは開けない |
 | `invoice.paid` | 毎月の請求が通った。**単位を上限まで戻す**（月次リセット） |
 | `invoice.payment_failed` | 支払い失敗。**止めずに**画面へ注意書きを出すだけ |
 | `customer.subscription.deleted` | 解約。**停止**する |
@@ -97,6 +101,10 @@ Stripeのエンドポイント画面から `checkout.session.completed` をテ�
 | 70,000 / 77,000 | ベター | 50 |
 | 100,000 / 110,000 | プロ | 100 |
 
+導入費用は `SETUP_FEE_AMOUNTS`（200,000 / 220,000）で見ています。**一回払いでこの金額のときだけ**
+`setup_fee_paid_at` を記録します。継続課金の10万（プロ）と取り違えないよう、
+判定は金額ではなく `mode`（payment か subscription か）が先です。
+
 **★値段を変えたら、ここと `app/src/database/database.ts` の `PLANS`、
 `SettingsPage.tsx` の `STRIPE_LINKS`、Stripeの決済リンクを、すべて揃えてください。**
 表に無い金額が来たときは**何もしません**。近いプランへ寄せると、
@@ -111,3 +119,14 @@ Stripeの画面で入金を確認して手動で承認してください。
 - **同じ会社名が複数ある** … **何もしません**。取り違えると別の会社のライセンスを
   書き換えてしまうためです。ログに残るので手動で承認してください
 - **会社名が空** … 何もしません。決済リンクの会社名欄が「必須」になっているか確認してください
+
+## 導入費用の取りこぼしを見る
+
+お客様は**20万（一回払い）→ 月額（継続）**の2本のリンクを通ります。片方で止まることがあるので、
+ログの `setup_fee` を見てください。
+
+- `{"action":"activated", ..., "setup_fee":"未入金★要確認"}` … 月額だけ払われた。**20万が未回収**
+- `{"action":"setup_fee_recorded_new", ...}` … 20万だけ払われた。月額の申し込み待ち。
+  この行は `plan=pending`・`active=false` で作られるので、管理画面に「承認待ち」として出ます
+
+アプリの管理画面（ライセンス一覧）にも「導入費用 未入金」と赤字で出ます。

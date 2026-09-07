@@ -638,6 +638,11 @@ export default function AdminPage() {
                                 {!r.verified_at && r.plan === 'demo' && (
                                   <div style={{ fontSize: 11, color: '#c62828', marginTop: 3 }}>メール未確認</div>
                                 )}
+                                {/* 導入費用20万は月額とは別のリンク。片方で止まると取りこぼすので、
+                                    有料プランなのに未入金の行はここで赤く出す。 */}
+                                {['standard', 'better', 'pro'].includes(r.plan) && !r.setup_fee_paid_at && (
+                                  <div style={{ fontSize: 11, color: '#c62828', marginTop: 3 }}>導入費用 未入金</div>
+                                )}
                               </>
                             );
                           })()}

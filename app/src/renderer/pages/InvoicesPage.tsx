@@ -111,6 +111,21 @@ export default function InvoicesPage({ highlightConstructionId, onHighlightClear
     } catch (e: any) { alert('PDF生成に失敗: ' + (e.message || e)); }
   };
 
+  // 領収書は「いつ受け取ったか」と「何の代金か」が要る。日付は入金日を入れてもらい、
+  // 但し書きは件名から埋めておいて、違うときだけ直せるようにする。
+  const exportReceiptPDF = async (inv: any) => {
+    if (inv.status !== 'paid' && !confirm('この請求書はまだ「入金済」になっていません。領収書を発行しますか？')) return;
+    const today = new Date().toISOString().split('T')[0];
+    const receiptDate = prompt('領収日（入金いただいた日）', today);
+    if (!receiptDate) return;
+    const defaultSubject = inv.construction_title || inv.property_name || '工事';
+    const subject = prompt('但し書き（「〜代金として」の〜の部分）', defaultSubject);
+    if (subject === null) return;
+    try {
+      await (window as any).api.generateReceiptPDF({ invoice: inv, subject, receiptDate });
+    } catch (e: any) { alert('領収書の作成に失敗: ' + (e.message || e)); }
+  };
+
   const openDetail = async (inv: any) => {
     setDetail(inv);
     if (inv.construction_id) {
@@ -331,6 +346,7 @@ export default function InvoicesPage({ highlightConstructionId, onHighlightClear
               <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
                 <button className="btn btn-success" onClick={() => exportPDF(detail.id)} style={{ flex: 1 }}>📄 請求書PDF出力</button>
                 <button className="btn btn-secondary" onClick={async () => { const d = await window.api.getInvoiceDetail(detail.id); await (window as any).api.generateEstimatePDF(d); }} style={{ flex: 1 }}>📋 見積書PDF出力</button>
+                <button className="btn btn-secondary" onClick={() => exportReceiptPDF(detail)} style={{ flex: 1 }}>🧾 領収書PDF出力</button>
               </div>
 
               {/* 入金済→実績記憶ガイド */}

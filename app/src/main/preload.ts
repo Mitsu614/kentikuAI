@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('api', {
   getInvoiceDetail: (id: number) => ipcRenderer.invoke('invoices:getDetail', id),
   getInvoiceByConstruction: (cid: number) => ipcRenderer.invoke('invoices:getByConstruction', cid),
   generatePDF: (data: any) => ipcRenderer.invoke('invoices:generatePDF', data),
+  generateReceiptPDF: (data: any) => ipcRenderer.invoke('invoices:generateReceiptPDF', data),
 
   // ダッシュボード
   getDashboardSummary: () => ipcRenderer.invoke('dashboard:summary'),

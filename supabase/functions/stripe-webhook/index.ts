@@ -42,6 +42,11 @@ const PLAN_BY_AMOUNT: Record<string, { plan: string; credits: number }> = {
   "110000": { plan: "pro", credits: 100 },
 };
 
+// 導入費用（初回のご契約時のみ・一回払い）。継続課金ではないので、
+// この入金ではプランを開けない。「払われた」という記録だけを残す。
+// ★金額を変えたら、Stripeの決済リンクと SettingsPage.tsx の SETUP_FEE も揃えること。
+const SETUP_FEE_AMOUNTS = new Set(["200000", "220000"]);
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -139,7 +144,7 @@ function companyFromSession(s: any): string {
 async function findByCustomer(customerId: string): Promise<any | null> {
   if (!customerId) return null;
   const rows = await sbGet(
-    `remote_licenses?stripe_customer_id=eq.${encodeURIComponent(customerId)}&select=id,company_name,plan,credits,max_credits,active,license_token`,
+    `remote_licenses?stripe_customer_id=eq.${encodeURIComponent(customerId)}&select=id,company_name,plan,credits,max_credits,active,license_token,setup_fee_paid_at`,
   );
   return rows[0] || null;
 }
@@ -147,15 +152,61 @@ async function findByCustomer(customerId: string): Promise<any | null> {
 async function findByCompany(company: string): Promise<{ row: any | null; ambiguous: boolean }> {
   if (!company) return { row: null, ambiguous: false };
   const rows = await sbGet(
-    `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=id,company_name,plan,credits,max_credits,active,license_token`,
+    `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=id,company_name,plan,credits,max_credits,active,license_token,setup_fee_paid_at`,
   );
   // 同名が複数あるときは選ばない。取り違えると別の会社のライセンスを書き換えてしまう。
   if (rows.length > 1) return { row: null, ambiguous: true };
   return { row: rows[0] || null, ambiguous: false };
 }
 
+// ── 導入費用（一回払い）: 入金を記録するだけ。プランは開けない ──
+//    月額より先に20万だけ払われることがある（案内の順番どおり）。
+//    行が無ければ「導入費用は済み・月額はこれから」の状態で作っておく。
+//    そうしないと、払った人がどこにも出てこず、取りこぼしになる。
+async function onSetupFeePaid(s: any) {
+  const yen = Number(s?.amount_total ?? 0);
+  if (!SETUP_FEE_AMOUNTS.has(String(yen))) {
+    return { skipped: `一回払い ${yen} 円は導入費用の金額ではない` };
+  }
+  const customerId = String(s?.customer || "");
+  const company = companyFromSession(s);
+
+  let row = await findByCustomer(customerId);
+  let ambiguous = false;
+  if (!row) ({ row, ambiguous } = await findByCompany(company));
+  if (ambiguous) return { skipped: `会社名「${company}」が複数あり特定できない`, company };
+
+  const patch: any = {
+    setup_fee_paid_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  if (customerId) patch.stripe_customer_id = customerId;
+
+  if (row) {
+    await sbPatch(`remote_licenses?id=eq.${encodeURIComponent(row.id)}`, patch);
+    return { action: "setup_fee_recorded", company: row.company_name, yen };
+  }
+
+  if (!company) return { skipped: "会社名が取れず、既存の行も無い" };
+  await sbInsert({
+    id: "stp_" + newToken().slice(0, 12),
+    company_name: company,
+    plan: "pending",
+    credits: 0,
+    max_credits: 0,
+    active: false,
+    blocked_message: "導入費用のご入金を確認しました。月額プランのお申し込み後にご利用いただけます。",
+    license_token: newToken(),
+    created_at: new Date().toISOString(),
+    ...patch,
+  });
+  return { action: "setup_fee_recorded_new", company, yen };
+}
+
 // ── 入金（初回）: 有効化する ──
 async function onCheckoutCompleted(s: any) {
+  // 導入費用は一回払い（mode=payment）で来る
+  if (s?.mode === "payment") return await onSetupFeePaid(s);
   if (s?.mode && s.mode !== "subscription") {
     return { skipped: `mode=${s.mode}（継続課金でない）` };
   }
@@ -188,7 +239,10 @@ async function onCheckoutCompleted(s: any) {
       patch.claimed_at = null;
     }
     await sbPatch(`remote_licenses?id=eq.${encodeURIComponent(row.id)}`, patch);
-    return { action: "activated", company: row.company_name, plan: mapped.plan, credits: mapped.credits };
+    // 導入費用を通さずに月額だけ申し込まれた場合。使えなくはしない（月額は入っている）が、
+    // 見落とすと20万を取りこぼすので、ログと戻り値に必ず出す。
+    const setupFee = row.setup_fee_paid_at ? "入金済み" : "未入金★要確認";
+    return { action: "activated", company: row.company_name, plan: mapped.plan, credits: mapped.credits, setup_fee: setupFee };
   }
 
   // アプリに登録する前に決済されることがある（LPから直接申し込むと起こる）。
@@ -201,7 +255,7 @@ async function onCheckoutCompleted(s: any) {
     created_at: new Date().toISOString(),
     ...patch,
   });
-  return { action: "created", company, plan: mapped.plan, credits: mapped.credits };
+  return { action: "created", company, plan: mapped.plan, credits: mapped.credits, setup_fee: "未入金★要確認" };
 }
 
 // ── 毎月の請求が通った: 単位を戻す ──
