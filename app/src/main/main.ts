@@ -6,7 +6,7 @@ import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, 
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION, fetchLandmarks, OSM_ATTRIBUTION, searchPlaces, MIN_ZOOM, MAX_ZOOM, AddressLevel, isPlaceName } from './aerial';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge, sendTakeoffFeedback, fetchTakeoffKnowledge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 
@@ -1638,6 +1638,40 @@ ${lines}${unreadable}${warn}
 - 拾い出しに無い工種（仮設・運搬・諸経費・管理費など）は通常どおり積算してよい。その行の takeoffRef は null にしろ。
 - 拾い出し数量と矛盾する金額を出すな（例: 屋根452㎡と拾えているのに、材料費が100㎡相当しか無い、等）。
 `;
+}
+
+// ── 図面拾い出しの学習ループ（全社共有）──────────────────────────
+// 人が直した数量を全社で持ち寄って、「この部位はAIが少なく拾う」を全員で共有する。
+// 金額は含めない（各社の商売なので）。数量の拾い方は業界共通の技術なので共有する。
+let takeoffKnowledgeCache: { at: number; text: string } = { at: 0, text: '' };
+const TAKEOFF_KNOWLEDGE_TTL = 6 * 60 * 60 * 1000;   // 6時間
+
+async function takeoffKnowledgeText(): Promise<string> {
+  const now = Date.now();
+  if (takeoffKnowledgeCache.text && now - takeoffKnowledgeCache.at < TAKEOFF_KNOWLEDGE_TTL) {
+    return takeoffKnowledgeCache.text;
+  }
+  try {
+    const rows = await fetchTakeoffKnowledge();
+    if (!rows || rows.length === 0) {
+      takeoffKnowledgeCache = { at: now, text: '' };
+      return '';
+    }
+    const lines = rows.map(r => {
+      const pctOff = Math.round((r.ratio - 1) * 100);
+      const dir = pctOff > 0 ? `${pctOff}%少なく拾いがち（実際はもっと多い）` : `${Math.abs(pctOff)}%多く拾いがち（実際はもっと少ない）`;
+      return `- ${r.item_key}${r.unit ? '（' + r.unit + '）' : ''}: ${dir}　※実績${r.count}件の平均`;
+    });
+    const text = `\n## ★★他社を含む全社の拾い出し実績（人が直した数量から集計）★★\n`
+      + `同じ部位で、AIの拾いと実際の数量がどれだけずれていたかの平均です。\n`
+      + `**該当する部位を拾うときは、この傾向を踏まえて拾い直し、拾い落としが無いか確認すること。**\n`
+      + `ただし図面に書いてある数字が最優先。この傾向で図面の数字を書き換えてはいけない。\n`
+      + lines.join('\n') + '\n';
+    takeoffKnowledgeCache = { at: now, text };
+    return text;
+  } catch (_) {
+    return '';
+  }
 }
 
 // ── 図面拾い出し（takeoff）のログ表。旧バージョンから上げた端末にも必ず作る ──
@@ -4659,6 +4693,32 @@ app.whenReady().then(async () => {
 
   // ── 数量拾い出し明細書のPDF（見積書の別紙）──
   // 「その数量はどこから出たのか」を、お客様・元請にそのまま出せる形にする。
+  // ── 拾い出しの学習ループ（全社共有）──
+  // 画面で数量を直したとき、AIが拾った数量と直した数量の対をここへ送る。
+  // 送るのは部位名・単位・数量だけ。金額・会社名・図面は送らない。
+  ipcMain.handle('takeoff:feedback', async (_e, rows: any[]) => {
+    try {
+      if (!Array.isArray(rows) || rows.length === 0) return { ok: true, sent: 0 };
+      const cfg = loadApiConfig();
+      const industry = getTenantProfile(getCurrentTenant()).industryType || cfg.industryType || 'general';
+      const sent = await sendTakeoffFeedback(rows.map((r: any) => ({
+        industry_type: industry,
+        drawing_type: r?.drawingType || null,
+        scale: r?.scale || null,
+        item_key: String(r?.itemKey || '').trim(),
+        unit: r?.unit || null,
+        ai_quantity: Number(r?.aiQuantity) || 0,
+        actual_quantity: Number(r?.actualQuantity) || 0,
+        ratio: 0,
+        note: r?.note || null,
+      })));
+      return { ok: true, sent };
+    } catch (e: any) {
+      console.error('拾い出し学習の送信に失敗:', e?.message || e);
+      return { ok: false, sent: 0 };
+    }
+  });
+
   ipcMain.handle('takeoff:generatePDF', async (_e, data: any) => {
     const takeoff = data?.takeoff || {};
     const items: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
@@ -7432,6 +7492,8 @@ manDaysBreakdownの書き方例:
 
     // 依頼文に「床面積1,209.35㎡」等が書かれていれば、それを統制総計として渡す。
     // これが無いと、部屋を1つずつ挙げる途中で取りこぼしても気づけない（実測で床が正解の62%だった）。
+    // 全社で共有している拾い出しの傾向（人が直した数量の集まり）。取れなければ空文字。
+    const takeoffShared = await takeoffKnowledgeText();
     const takeoffAreaSection = formatCommentAreasForPrompt([data?.comment, data?.targets].filter(Boolean).join(' '));
     content.push({ type: 'text', text: `あなたは建築の積算士（拾い出し20年）です。上の資料から**材料・工種ごとの数量**を拾い出してください。
 資料は**図面**の場合と、**すでに数量が書かれた表**（材料一覧表・数量拾い表・内訳書・Excelの画面を写したもの等）の場合があります。
@@ -7499,7 +7561,7 @@ manDaysBreakdownの書き方例:
 - 金物（ホールダウン・筋かいプレート・羽子板ボルト）は箇所数で拾う。
 
 ★どの構造材も、**図面に無い部材を推測で足すな**。読めない部分は unreadable に回せ。
-${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
+${takeoffShared}${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
 ## 拾い出しの鉄則（違反したら拾い出しとして失格）
 1. **寸法数値が最優先**。図面に寸法線の数値（例 8,190）があれば必ずそれを使え。縮尺からの目測は、寸法数値が無い部位でだけ使い、その行の confidence を「低」にしろ。
    ★**室名の横に「厨房 A：4.50×3.425＝15.41m²」のように面積が直接書かれていることが多い。**

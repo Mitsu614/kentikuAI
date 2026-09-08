@@ -240,6 +240,92 @@ export function normalizeWorkType(raw?: string): string {
   return 'その他工事';
 }
 
+// ── 図面からの数量拾い（takeoff）の学習ループ ─────────────────────────
+// 金額の学習（estimate_feedback）と違い、こちらは**全社で共有する**。
+// 送るのは「部位の名前・単位・AIが拾った数量・人が直した数量」だけで、
+// 金額・単価・会社名・現場名・図面そのものは一切入れない。
+// 数量の拾い方は業界で共通の技術なので、隔離テナントの分も含めて全社で持ち寄ったほうが
+// 全員の精度が上がる（価格は各社の商売なので共有しない、という線引き）。
+export interface TakeoffFeedback {
+  industry_type?: string | null;
+  drawing_type?: string | null;
+  scale?: string | null;
+  item_key: string;
+  unit?: string | null;
+  ai_quantity: number;
+  actual_quantity: number;
+  ratio: number;
+  note?: string | null;
+}
+
+// 明らかにおかしい対は送らない（桁間違いの入力・0・極端な比）
+function isReasonableTakeoff(t: TakeoffFeedback): boolean {
+  const ai = Number(t.ai_quantity), ac = Number(t.actual_quantity);
+  if (!(ai > 0) || !(ac > 0)) return false;
+  const r = ac / ai;
+  if (!(r >= 0.05 && r <= 20)) return false;      // 20倍以上ずれる対は入力ミスとみなす
+  if (!String(t.item_key || '').trim()) return false;
+  return true;
+}
+
+export async function sendTakeoffFeedback(rows: TakeoffFeedback[]): Promise<number> {
+  if (!rows || rows.length === 0) return 0;
+  const valid = rows.filter(isReasonableTakeoff);
+  if (valid.length === 0) return 0;
+  let sent = 0;
+  for (const t of valid) {
+    try {
+      await supabaseRequest('takeoff_feedback', 'POST', {
+        industry_type: t.industry_type || null,
+        drawing_type: t.drawing_type || null,
+        scale: t.scale || null,
+        item_key: String(t.item_key).trim().slice(0, 80),
+        unit: t.unit || null,
+        ai_quantity: Number(t.ai_quantity),
+        actual_quantity: Number(t.actual_quantity),
+        ratio: Number((Number(t.actual_quantity) / Number(t.ai_quantity)).toFixed(4)),
+        note: t.note ? String(t.note).slice(0, 200) : null,
+      });
+      sent++;
+    } catch (e: any) {
+      // 表がまだ無い環境（マイグレーション未適用）では静かに諦める。見積の邪魔をしない。
+      console.error('拾い出し学習の送信エラー:', e?.message || e);
+      break;
+    }
+  }
+  if (sent > 0) console.log(`拾い出し学習: ${sent}件を全社の共有プールへ送信`);
+  return sent;
+}
+
+// 全社の共有プールから、拾い出しの傾向を取ってくる（部位×単位ごとの平均比と件数）
+export async function fetchTakeoffKnowledge(): Promise<{ item_key: string; unit: string; ratio: number; count: number }[]> {
+  try {
+    const rows = await supabaseRequest(
+      'takeoff_feedback', 'GET', null,
+      '?select=item_key,unit,ratio&order=created_at.desc&limit=800'
+    );
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+    const map = new Map<string, { item_key: string; unit: string; sum: number; count: number }>();
+    for (const r of rows) {
+      const key = String(r.item_key || '').trim() + '|' + String(r.unit || '');
+      if (!key.trim()) continue;
+      const hit = map.get(key) || { item_key: String(r.item_key || ''), unit: String(r.unit || ''), sum: 0, count: 0 };
+      hit.sum += Number(r.ratio) || 0;
+      hit.count += 1;
+      map.set(key, hit);
+    }
+    return Array.from(map.values())
+      .filter(v => v.count >= 3)                       // 3件以上たまった部位だけを傾向として扱う
+      .map(v => ({ item_key: v.item_key, unit: v.unit, ratio: Number((v.sum / v.count).toFixed(3)), count: v.count }))
+      .filter(v => Math.abs(v.ratio - 1) >= 0.05)      // ほぼ合っている部位は言うことがない
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 25);
+  } catch (e: any) {
+    console.error('拾い出し学習の取得エラー:', e?.message || e);
+    return [];
+  }
+}
+
 // 実績データをSupabaseに送信（匿名化 - テナントIDや案件名は含まない）
 export async function sendFeedbackToSupabase(feedbackList: FeedbackData[]): Promise<number> {
   if (!feedbackList || feedbackList.length === 0) return 0;

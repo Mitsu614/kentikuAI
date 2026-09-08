@@ -353,6 +353,26 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 費用内訳のどの行で「拾い出し根拠」を開いているか
   const [openBasis, setOpenBasis] = useState<number | null>(null);
 
+  // ── 拾い出しの学習（全社共有）──
+  // 図面から拾った数量を人が直したら、その対（AIの数量／直した数量）を貯めて送る。
+  // 送るのは部位名・単位・数量だけ。金額も会社名も図面も送らない。
+  // 数量の拾い方は業界共通の技術なので、全社で持ち寄ったほうが全員の精度が上がる。
+  const takeoffFbRef = useRef<Map<string, any>>(new Map());
+  const takeoffFbTimer = useRef<any>(null);
+  const flushTakeoffFeedback = () => {
+    const rows = Array.from(takeoffFbRef.current.values());
+    takeoffFbRef.current.clear();
+    if (rows.length === 0) return;
+    try { (window as any).api.sendTakeoffFeedback(rows); } catch (_) {}
+  };
+  const queueTakeoffFeedback = (row: any) => {
+    takeoffFbRef.current.set(row.itemKey + '|' + (row.unit || ''), row);
+    if (takeoffFbTimer.current) clearTimeout(takeoffFbTimer.current);
+    takeoffFbTimer.current = setTimeout(flushTakeoffFeedback, 4000);
+  };
+  // 画面を離れるときに、貯まっている分を出しておく
+  useEffect(() => () => { if (takeoffFbTimer.current) clearTimeout(takeoffFbTimer.current); flushTakeoffFeedback(); }, []);
+
   // ── 原価（材料費・人件費・経費）を直したら、掛率を保ったまま売価を引き直す ──
   // 「人件費を5万上げたのに請求金額が1円も変わらない」を起こさないため。
   // 掛率はAIの原案（baseline）の 売価÷原価合計 を使う＝粗利率が維持される。
@@ -510,6 +530,20 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     const qty = Number(row.quantity) || 0;
     const up = Number(row.unitPrice) || 0;
     if (field === 'quantity') {
+      // 図面から拾った行の数量を直した＝拾い出しの正解が1つ増えた。全社の学習へ回す。
+      const src = row.takeoffRef ? takeoffByName[String(row.takeoffRef).trim()] : null;
+      const aiQty = Number(src?.quantity) || 0;
+      if (src && aiQty > 0 && n > 0 && Math.abs(n - aiQty) / aiQty > 0.02) {
+        queueTakeoffFeedback({
+          itemKey: String(src.name || row.item || '').replace(/^【[^】]*】/, '').trim(),
+          unit: row.unit || src.unit || '',
+          aiQuantity: aiQty,
+          actualQuantity: n,
+          drawingType: Array.isArray(takeoffSource?.drawingTypes) ? takeoffSource.drawingTypes[0] : (takeoffSource?.drawingTypes || ''),
+          scale: takeoffSource?.scale || '',
+          note: src.formula ? String(src.formula).slice(0, 120) : '',
+        });
+      }
       row.quantity = n;
       if (up > 0) row.cost = Math.round(n * up);
       else if (n > 0) row.unitPrice = Math.round((Number(row.cost) || 0) / n);

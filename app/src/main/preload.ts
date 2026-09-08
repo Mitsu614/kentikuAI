@@ -89,6 +89,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // 見積書PDF
   generateEstimatePDF: (data: any) => ipcRenderer.invoke('estimates:generatePDF', data),
+  // 拾い出しの学習（全社共有）。人が直した数量をサーバーへ送る
+  sendTakeoffFeedback: (rows: any[]) => ipcRenderer.invoke('takeoff:feedback', rows),
 
   // 見積の原価・売価の修正（上書き保存／元に戻す）
   saveCostEdit: (data: any) => ipcRenderer.invoke('estimates:saveCostEdit', data),
