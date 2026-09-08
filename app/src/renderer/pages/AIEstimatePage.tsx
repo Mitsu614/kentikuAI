@@ -123,6 +123,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // ⚡スピード優先 — お客様向けの工事時間説明と松竹梅プランを省いて、生成する文章量を減らす。
   // 金額・内訳・人工の精度には触らない（削るのは提案の付録だけ）。
   const [fastMode, setFastMode] = useState(false);
+  // この1件だけ業種を変える（設定は書き換えない）。鉄骨だけ別業種で出したい、という使い方。
+  const [industryOverride, setIndustryOverride] = useState('');
   const [roofType, setRoofType] = useState(''); // 屋根種別（お客様確認）→ 展開係数をAIに強制する
   const [structure, setStructure] = useState(''); // 建物構造（木造/鉄骨/RC/SRC）。未選択ならAIが推察する
   const [buildingAge, setBuildingAge] = useState(''); // 築年数（年）。改修・解体時のコストに反映させる
@@ -1453,8 +1455,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       // 図面拾い出しがあれば確定数量として渡す（AIの目測推定より優先される）
       const takeoffPayload = takeoff && (takeoff.items || []).length > 0 ? takeoff : null;
       const payload = mode === 'beforeafter'
-        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode }
-        : { imageBase64: imageData || null, images: imageData ? [imageData, ...extraImages] : [], comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode };
+        ? { imageBase64: null, beforeImage, afterImage, comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode, industryOverride: industryOverride || undefined }
+        : { imageBase64: imageData || null, images: imageData ? [imageData, ...extraImages] : [], comment, location, area: areaVal, clientAttrs, roofType: roof, structure, buildingAge, siteConditions: site, desiredDeadline, takeoff: takeoffPayload, fastMode, industryOverride: industryOverride || undefined };
       if (opts?.forceFresh) (payload as any).forceFresh = true;
       const res = await (window as any).api.analyzeImage(payload);
       endBusy();
@@ -1802,7 +1804,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 <div style={{ fontSize: 20, fontWeight: 'bold', color: '#27ae60', margin: '6px 0' }}>¥{Math.round(chatEstimate.estimatedTotal || 0).toLocaleString()}</div>
                 {chatEstimate.breakdown && chatEstimate.breakdown.map((b: any, j: number) => (
                   <div key={j} style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #e0e0e0', padding: '2px 0' }}>
-                    <span>{b.item}</span>
+                    <span>{b.location && b.location !== '共通' ? `【${b.location}】` : ''}{b.item}</span>
                     <span style={{ fontWeight: 'bold' }}>¥{Math.round(b.cost || 0).toLocaleString()}</span>
                   </div>
                 ))}
@@ -1833,6 +1835,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div ref={chatEndRef} />
           </div>
           {/* 入力エリア */}
+          {(chatSourceLogId || chatConstructionId) && (
+            <div style={{ borderTop: '1px solid #e2e8f0', background: '#f0fdf4', color: '#15803d', fontSize: 12, padding: '6px 16px', flexShrink: 0 }}>
+              すでに出した見積についての相談です。<b>この相談では単位を使いません。</b>話がまとまって金額が出たら、新しい案件として保存します。
+            </div>
+          )}
           <div style={{ borderTop: '2px solid #f0f0f0', padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'flex-end', background: '#fafafa', flexShrink: 0, position: 'relative', zIndex: 10 }}>
             <button onClick={async () => {
               const img = await window.api.selectImage();
@@ -1841,9 +1848,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 setChatLoading(true);
                 setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
                 try {
-                  const res = await (window as any).api.aiChat({ messages: [...chatMessages, { role: 'user', content: 'この写真を見て見積もりしてください', image: img }], constructionId: chatConstructionId || undefined, sourceLogId: chatSourceLogId || undefined });
+                  const res = await (window as any).api.aiChat({ messages: [...chatMessages, { role: 'user', content: 'この写真を見て見積もりしてください', image: img }], constructionId: chatConstructionId || undefined, sourceLogId: chatSourceLogId || undefined, sessionId: chatSessionId || undefined });
                   setChatMessages(prev => [...prev, { role: 'assistant', content: res.text }]);
                   if (res.estimate) setChatEstimate(res.estimate);
+                  if (res.autoCreated) { setAutoCreated(res.autoCreated); setChatMessages(prev => [...prev, { role: 'assistant', content: res.autoCreated.updated ? '（この相談の見積を、先ほど作った案件に上書きしました）' : '（この相談の見積を、新しい案件として保存しました。物件・施工・請求書まで作ってあります）' }]); }
                 } catch (e: any) { setChatMessages(prev => [...prev, { role: 'assistant', content: 'エラー: ' + e.message }]); }
                 setChatLoading(false);
                 setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
@@ -1863,9 +1871,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
                   try {
                     const allMsgs = [...chatMessages, { role: 'user', content: userMsg }].filter(m => m.role !== 'system');
-                    const res = await (window as any).api.aiChat({ messages: allMsgs, constructionId: chatConstructionId || undefined, sourceLogId: chatSourceLogId || undefined });
+                    const res = await (window as any).api.aiChat({ messages: allMsgs, constructionId: chatConstructionId || undefined, sourceLogId: chatSourceLogId || undefined, sessionId: chatSessionId || undefined });
                     setChatMessages(prev => [...prev, { role: 'assistant', content: res.text }]);
                     if (res.estimate) setChatEstimate(res.estimate);
+                    if (res.autoCreated) { setAutoCreated(res.autoCreated); setChatMessages(prev => [...prev, { role: 'assistant', content: res.autoCreated.updated ? '（この相談の見積を、先ほど作った案件に上書きしました）' : '（この相談の見積を、新しい案件として保存しました。物件・施工・請求書まで作ってあります）' }]); }
                   } catch (e: any) { setChatMessages(prev => [...prev, { role: 'assistant', content: 'エラー: ' + e.message }]); }
                   setChatLoading(false);
                   setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
@@ -1886,9 +1895,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
               try {
                 const allMsgs = [...chatMessages, { role: 'user', content: userMsg }].filter(m => m.role !== 'system');
-                const res = await (window as any).api.aiChat({ messages: allMsgs });
+                const res = await (window as any).api.aiChat({ messages: allMsgs, constructionId: chatConstructionId || undefined, sourceLogId: chatSourceLogId || undefined, sessionId: chatSessionId || undefined });
                 setChatMessages(prev => [...prev, { role: 'assistant', content: res.text }]);
                 if (res.estimate) setChatEstimate(res.estimate);
+                if (res.autoCreated) { setAutoCreated(res.autoCreated); setChatMessages(prev => [...prev, { role: 'assistant', content: res.autoCreated.updated ? '（この相談の見積を、先ほど作った案件に上書きしました）' : '（この相談の見積を、新しい案件として保存しました。物件・施工・請求書まで作ってあります）' }]); }
               } catch (e: any) { setChatMessages(prev => [...prev, { role: 'assistant', content: 'エラー: ' + e.message }]); }
               setChatLoading(false);
               setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
@@ -3355,6 +3365,25 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 ⏱ {etaText('ai-estimate', fastMode ? Math.round(ESTIMATE_SEC * 0.7) : ESTIMATE_SEC)}
               </span>
             )}
+            {/* 今回だけ業種を変える。設定は触らないので、次からはいつもの業種に戻る。 */}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#475569', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 999, padding: '4px 10px', whiteSpace: 'nowrap' }}
+              title="この1件だけ業種を変えて見積もります。設定の業種は変わりません。">
+              業種
+              <select value={industryOverride} onChange={e => setIndustryOverride(e.target.value)}
+                style={{ fontSize: 12, border: 'none', background: 'transparent', color: industryOverride ? '#0b6bcb' : '#475569', fontWeight: industryOverride ? 700 : 400, cursor: 'pointer', outline: 'none' }}>
+                <option value="">いつもの設定どおり</option>
+                <option value="general">総合建設業（工務店・リフォーム）</option>
+                <option value="building">建築一式工事業</option>
+                <option value="steel">鉄骨工事業</option>
+                <option value="interior">内装仕上工事業</option>
+                <option value="painting">塗装工事業</option>
+                <option value="demolition">解体工事業</option>
+                <option value="exterior">外構・エクステリア業</option>
+                <option value="equipment">設備工事業</option>
+                <option value="plant">プラント設備工事業</option>
+                <option value="lease">仮設工事リース業</option>
+              </select>
+            </label>
             {/* ⚡スピード優先。AIに書かせる文章量を減らして待ち時間を縮める。金額の精度は変えない。 */}
             <label
               title="お客様向けの「工事の所要時間・生活への影響」と松竹梅プランを省きます。金額・内訳・人工の計算は変わりません。"
@@ -3432,6 +3461,18 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <div style={{ fontSize: 12, background: 'rgba(255,255,255,0.2)', padding: '4px 12px', borderRadius: 6, cursor: 'pointer' }}
                     onClick={() => onNavigateToConstruction && autoCreated.constructionId && onNavigateToConstruction(autoCreated.constructionId)}>
                     👉 見積詳細を見る
+                  </div>
+                  {/* お客様にお出しする見積書。請求書の画面まで行かなくても、ここから直接出せるようにする */}
+                  <div style={{ fontSize: 12, background: '#fff', color: '#1e7a4d', padding: '4px 12px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold' }}
+                    onClick={async () => {
+                      try {
+                        const inv = await (window as any).api.getInvoiceByConstruction(autoCreated.constructionId);
+                        if (!inv?.id) { alert('見積書のもとになる請求書が見つかりませんでした。'); return; }
+                        const detail = await (window as any).api.getInvoiceDetail(inv.id);
+                        await (window as any).api.generateEstimatePDF(detail);
+                      } catch (e: any) { alert('見積書の出力に失敗しました: ' + (e?.message || e)); }
+                    }}>
+                    📋 見積書をPDFで出す
                   </div>
                   <div style={{ fontSize: 12, background: 'rgba(255,255,255,0.35)', padding: '4px 12px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold' }}
                     onClick={() => {
@@ -3699,6 +3740,45 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 <h3 style={{ margin: 0 }}>費用内訳（数量・単価つき）</h3>
                 <span style={{ fontSize: 11, color: '#888' }}>数量・単価・金額はどれも直接直せます（残りが自動で引き直されます）</span>
               </div>
+              {(() => {
+                // 場所（廊下・トイレ等）で分かれている見積は、部屋ごとの小計を先に見せる。
+                // 「トイレはやめる」と言われたとき、その場で引き算できるようにするため。
+                const rows: any[] = result.breakdown.filter((b: any) => String(b?.location || '').trim());
+                if (rows.length === 0) return null;
+                const places: string[] = [];
+                const sums: Record<string, number> = {};
+                for (const r of rows) {
+                  const k = String(r.location).trim();
+                  if (!places.includes(k)) places.push(k);
+                  sums[k] = (sums[k] || 0) + (Number(r.cost) || 0);
+                }
+                const noPlace = result.breakdown
+                  .filter((b: any) => !String(b?.location || '').trim())
+                  .reduce((t: number, b: any) => t + (Number(b.cost) || 0), 0);
+                if (places.length <= 1 && noPlace === 0) return null;
+                return (
+                  <div style={{ marginBottom: 10, border: '1px solid #d7e3ef', borderRadius: 8, background: '#f7fbff', padding: '10px 12px' }}>
+                    <div style={{ fontSize: 12, fontWeight: 'bold', color: '#0b6bcb', marginBottom: 6 }}>場所ごとの小計</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {places.map((k: string) => (
+                        <div key={k} style={{ background: '#fff', border: '1px solid #dde7f1', borderRadius: 6, padding: '6px 10px', minWidth: 120 }}>
+                          <div style={{ fontSize: 11, color: '#607d8b' }}>{k}</div>
+                          <div style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2b4a' }}>{fmt(sums[k])}</div>
+                        </div>
+                      ))}
+                      {noPlace > 0 && (
+                        <div style={{ background: '#fff', border: '1px dashed #dde7f1', borderRadius: 6, padding: '6px 10px', minWidth: 120 }}>
+                          <div style={{ fontSize: 11, color: '#607d8b' }}>場所の指定なし</div>
+                          <div style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2b4a' }}>{fmt(noPlace)}</div>
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#78909c', marginTop: 6 }}>
+                      部屋を1つ外すときは、その場所の行を削って小計を引いてください。
+                    </div>
+                  </div>
+                );
+              })()}
               {Object.keys(takeoffByName).length > 0 && (
                 <div style={{ fontSize: 11, color: '#2e7d32', background: '#eaf6ee', border: '1px solid #cfe6d6', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
                   📐 のついた行は<strong>図面から拾った数量</strong>です。クリックすると計算式・寸法・出典（どの図面のどこか）が開きます。
@@ -3708,6 +3788,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 <table className="data-table">
                   <thead>
                     <tr>
+                      <th style={{ width: 84 }}>場所</th>
                       <th style={{ minWidth: 180 }}>項目</th>
                       <th style={{ width: 64 }}>区分</th>
                       <th style={{ width: 92, textAlign: 'right' }}>数量</th>
@@ -3728,6 +3809,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       return (
                         <React.Fragment key={i}>
                           <tr>
+                            <td style={{ fontSize: 11.5, color: b.location && b.location !== '共通' ? '#0b6bcb' : '#90a4ae', whiteSpace: 'nowrap' }}>
+                              {b.location || '—'}
+                            </td>
                             <td>
                               {b.item}
                               {src && (
@@ -3809,7 +3893,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                           </tr>
                           {src && openBasis === i && (
                             <tr>
-                              <td colSpan={8} style={{ background: '#f6fbf7', borderLeft: '3px solid #66bb6a' }}>
+                              <td colSpan={9} style={{ background: '#f6fbf7', borderLeft: '3px solid #66bb6a' }}>
                                 <div style={{ fontSize: 12, color: '#37474f', lineHeight: 1.9, padding: '4px 2px' }}>
                                   <div><strong>拾い出し根拠</strong>（{src.part || '—'} ／ {src.method || '—'}）</div>
                                   <div>計算式: <span style={{ fontFamily: 'monospace', color: '#2e7d32' }}>{src.formula || '—'}</span></div>
@@ -3829,7 +3913,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       );
                     })}
                     <tr style={{ background: '#f8f9fa' }}>
-                      <td style={{ fontWeight: 'bold' }} colSpan={5}>合計（内訳の総和）</td>
+                      <td style={{ fontWeight: 'bold' }} colSpan={6}>合計（内訳の総和）</td>
                       <td style={{ textAlign: 'right', fontWeight: 'bold', paddingRight: 8 }}>
                         {fmt(result.breakdown.reduce((s: number, r: any) => s + (Number(r.cost) || 0), 0))}
                       </td>

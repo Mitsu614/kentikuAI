@@ -249,6 +249,7 @@ export default function SettingsPage() {
               <option value="painting">塗装工事業</option>
               <option value="equipment">設備工事業（水道・電気・空調）</option>
               <option value="plant">プラント設備工事業（配管・機器据付・計装）</option>
+              <option value="steel">鉄骨工事業（製作・建方・溶接・本締め）</option>
               <option value="interior">内装仕上工事業（クロス・床・軽天ボード）</option>
             </select>
           </div>

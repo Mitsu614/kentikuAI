@@ -3204,8 +3204,59 @@ app.whenReady().then(async () => {
 
   // ── 請求書PDF生成（HTML→printToPDF）──
   // 単発・一括の両方から使えるよう、PDFバッファを返す関数として実装
+  // 請求書・見積書の「備考」から、AIが書いた文と社内メモを落とす。
+  // お客様にお渡しする書類に、AIへの指示文（英語の画像プロンプト等）や
+  // 「AI自動作成」「提案:」といった内部の言葉が出てしまうのを防ぐ。
+  // 人が自分で入れた文（現場・面積・工事内容）はそのまま残す。
+  // お客様にお渡しする書類（請求書・見積書）では、部屋ごとに分かれた明細を1行にまとめる。
+  //   画面の内訳は【廊下】【トイレ】と分けたほうが相談しやすいが、
+  //   書類に同じ「クロス張替」が何行も並ぶと、お客様には読みにくいだけ。
+  //   同じ品名の行を足し合わせて1行にする。部屋ごとの内訳は見積画面と施工の明細に残る。
+  const mergeRoomRows = (materials: any[]): any[] => {
+    if (!Array.isArray(materials) || materials.length === 0) return materials || [];
+    const stripPlace = (n: string) => String(n || '').replace(/^【[^】]*】/, '').trim();
+    const hasPlace = materials.some((m: any) => /^【[^】]*】/.test(String(m?.material_name || m?.name || '')));
+    if (!hasPlace) return materials;   // 場所つきの行が無ければ、そのまま
+    const out: any[] = [];
+    const index = new Map<string, any>();
+    for (const m of materials) {
+      const raw = String(m?.material_name || m?.name || '');
+      const base = stripPlace(raw);
+      const sub = (Number(m?.quantity) || 0) * (Number(m?.unit_price) || 0);
+      if (!/^【[^】]*】/.test(raw)) { out.push(m); continue; }
+      const hit = index.get(base);
+      if (hit) {
+        hit.__sum += sub;
+        hit.quantity = 1;
+        hit.unit = '式';
+        hit.unit_price = Math.round(hit.__sum);
+      } else {
+        const row = { ...m, material_name: base, name: base, quantity: 1, unit: '式', unit_price: Math.round(sub), __sum: sub };
+        index.set(base, row);
+        out.push(row);
+      }
+    }
+    return out;
+  };
+
+  const cleanDocNotes = (raw: any): string => {
+    const text = String(raw || '');
+    if (!text.trim()) return '';
+    const dropHead = /^(AI(自動作成|解析|見積)|提案[:：]|信頼度[:：]|工事種別[:：]|imagePrompt|【葺き師への施工指示】|【施工指示】)/;
+    const lines = text.split(/\r?\n/).filter((l) => {
+      const t = l.trim();
+      if (!t) return false;
+      if (dropHead.test(t)) return false;
+      // 英単語が連なるだけの行＝画像生成プロンプトなどAI向けの文。書類には出さない
+      if (/^[\x20-\x7E]+$/.test(t) && /[a-zA-Z]{8,}/.test(t)) return false;
+      return true;
+    });
+    return lines.join('\n').trim();
+  };
+
   const generateInvoicePdfBuffer = async (data: any): Promise<Buffer> => {
-    const { invoice, materials } = data;
+    const { invoice, materials: rawMaterials } = data;
+    const materials = mergeRoomRows(rawMaterials);
     const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
     const cfg_pre = loadApiConfig();
     const isLease = cfg_pre.industryType === 'lease';
@@ -3449,7 +3500,7 @@ app.whenReady().then(async () => {
   </div>
 
   ${bankFormatted ? `<div class="notes"><div class="notes-label">お振込先</div><span style="white-space:pre-wrap">${bankFormatted}</span></div>` : ''}
-  ${invoice.notes ? `<div class="notes"><div class="notes-label">備考</div>${escapeHtml(invoice.notes)}</div>` : ''}
+  ${cleanDocNotes(invoice.notes) ? `<div class="notes"><div class="notes-label">備考</div>${escapeHtml(cleanDocNotes(invoice.notes))}</div>` : ''}
   ${invoiceRegNum ? `<div style="margin-top:10px;font-size:9px;color:#888;text-align:right">適格請求書発行事業者登録番号: ${invoiceRegNum}</div>` : ''}
 </body></html>`;
 
@@ -4719,7 +4770,8 @@ ${unread}${warns}
   });
 
   ipcMain.handle('estimates:generatePDF', async (_e, data: any) => {
-    const { invoice, materials } = data;
+    const { invoice, materials: rawMaterials } = data;
+    const materials = mergeRoomRows(rawMaterials);
     const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
     const estCfg = loadApiConfig();
     const estIsLease = estCfg.industryType === 'lease';
@@ -4809,7 +4861,7 @@ ${cfg.companyName ? `<div style="margin-top:10px;border-top:1px solid #ccc;paddi
 <div class="total-box"><span style="font-size:13px">お見積金額（税込）</span><span style="font-size:22px;font-weight:bold">${fmt(totalWithTax)}</span></div>
 <table><thead><tr><th style="text-align:center;width:30px">No</th><th>項目</th><th style="text-align:center;width:50px">数量</th><th style="text-align:center;width:40px">単位</th><th style="text-align:right;width:80px">単価</th><th style="text-align:right;width:90px">金額</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="summary"><div class="summary-row sub"><span>小計（税抜）</span><span>${fmt(taxExcluded)}</span></div><div class="summary-row"><span>消費税（${Math.round(taxRate * 100)}%）</span><span>${fmt(taxAmount)}</span></div><div class="summary-row total"><span>お見積金額（税込）</span><span>${fmt(totalWithTax)}</span></div></div>
-${invoice.notes ? `<div style="margin-top:20px;padding:10px;background:#fafafa;border:1px solid #ddd;border-radius:4px;font-size:10px;white-space:pre-wrap"><strong>備考</strong><br>${escapeHtml(invoice.notes)}</div>` : ''}
+${cleanDocNotes(invoice.notes) ? `<div style="margin-top:20px;padding:10px;background:#fafafa;border:1px solid #ddd;border-radius:4px;font-size:10px;white-space:pre-wrap"><strong>備考</strong><br>${escapeHtml(cleanDocNotes(invoice.notes))}</div>` : ''}
 </body></html>`;
 
     const tmpHtml = path.join(app.getPath('temp'), `estimate_${Date.now()}.html`);
@@ -6049,7 +6101,7 @@ ${pages}</body></html>`;
   // ── AI画像解析 → 類似工事検索 → 見積もり ──
   // AI見積もりのコア処理。デスクトップ(IPC)とスマホ(内蔵Webサーバー)の両方から呼ぶ
   const analyzeImageCore = async (data: any) => {
-    let { imageBase64, images, beforeImage, afterImage, comment, location, area, clientAttrs, roofType, structure, buildingAge, siteConditions, desiredDeadline, takeoff, fastMode } = typeof data === 'string' ? { imageBase64: data, images: [], beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null, structure: '', buildingAge: '', siteConditions: null, desiredDeadline: '', takeoff: null, fastMode: false } : data;
+    let { imageBase64, images, beforeImage, afterImage, comment, location, area, clientAttrs, roofType, structure, buildingAge, siteConditions, desiredDeadline, takeoff, fastMode, industryOverride } = typeof data === 'string' ? { imageBase64: data, images: [], beforeImage: null, afterImage: null, comment: '', location: '', area: '', clientAttrs: null, roofType: null, structure: '', buildingAge: '', siteConditions: null, desiredDeadline: '', takeoff: null, fastMode: false, industryOverride: '' } : data;
     // 図面拾い出し（PDF図面から計算式つきで拾った数量）。あれば推定より必ず優先させる。
     const takeoffSection = formatTakeoffForPrompt(takeoff);
     // 依頼文に面積が書かれていれば、それを確定値として最優先で渡す（AIの目測より確か）
@@ -6073,7 +6125,10 @@ ${pages}</body></html>`;
     // 入力が1文字でも違えば別の指紋になるので、ここに来るのは「完全に同じ依頼」のときだけ。
     // 「見積もり直す」を押されたとき(forceFresh)は素通りしてAIを呼ぶ。
     const fpTenant = getCurrentTenant();
-    const fpIndustry = getTenantProfile(fpTenant).industryType || loadApiConfig().industryType || 'general';
+    // この1件だけ業種を変えたいとき（画面のプルダウン）は、設定より優先する。
+    // 設定そのものは書き換えない＝いつもの業種はそのまま残す。
+    const oneShotIndustry = String(industryOverride || '').trim();
+    const fpIndustry = oneShotIndustry || getTenantProfile(fpTenant).industryType || loadApiConfig().industryType || 'general';
     const fingerprint = estimateFingerprint({
       tenantId: fpTenant, industryType: fpIndustry, comment, location, area,
       structure, buildingAge, roofType, siteConditions, clientAttrs, takeoff,
@@ -6416,7 +6471,7 @@ ${pages}</body></html>`;
     const hasImage = imageBase64 && imageBase64.length > 0;
     const hasLocation = location && location.trim().length > 0;
     // テナント個別の業種設定を最優先（山下さん=遮熱シート専門）。無ければインストール共通設定。
-    const industryType = estProfile.industryType || config.industryType || 'general';
+    const industryType = oneShotIndustry || estProfile.industryType || config.industryType || 'general';
 
     // 地域×工事種別の市場情報（30日キャッシュ）。
     // 外に出るのは市区町村までの地域名と工事種別ラベルだけ（market-insight.ts のコメント参照）。
@@ -6669,6 +6724,34 @@ ${pages}</body></html>`;
 - 防爆エリア・酸欠・火気（溶接）・重量物・高所。**稼働中プラントの改修は「用役停止・シャットダウン工事」で工期が集中し夜間/連続作業の割増**が発生する。停止期間の制約があるかを確認事項に入れる。
 
 【金額の基準】プラントは公的な坪単価・相場が存在しない。**この会社の過去実績（実績アンカー・修正履歴・同種工事の金額帯）を最優先の基準**にする。実績がまだ無ければ上記の工種別の考え方で積算し、confidenceを下げ、recommendationsに「実績を入力いただくほど御社の単価に合った精度になります」と明記すること。\n`
+      : industryType === 'steel'
+      ? `\n## ★業種: 鉄骨工事業（製作・建方・溶接・付帯）★
+この会社は鉄骨工事業です。㎡単価ではなく**重量（トン）で積む**のが基本。以下を厳守してください:
+
+【数量の単位はトン】
+- 鉄骨本体は「t（トン）」で拾う。柱・大梁・小梁・ブレース・母屋・胴縁を種別ごとに重量で出し、合計トン数を必ず breakdown に立てる。
+- 図面が無く重量が出せないときは、延床面積からの概算原単位で仮置きし、その前提を note に明記する（例: 平屋倉庫 約60〜90kg/㎡、2〜3階事務所 約90〜130kg/㎡、重量鉄骨の工場 約100〜150kg/㎡）。仮置きしたときは confidence を「低」か「中」にする。
+
+【必ず分けて立てる項目】
+① 材料費（鋼材：H形鋼・角形鋼管・アングル・プレート。鋼材種別と規格で単価が変わる）
+② 工場製作費（けがき・切断・開先・組立・溶接・仕口・ダイアフラム。**製作費は材料費と同等かそれ以上になることが多い**）
+③ 錆止め塗装（工場塗装1回。溶融亜鉛めっきなら「めっき」で別行・kg単価）
+④ 運搬費（トレーラー台数。長尺・重量物は台数が効く）
+⑤ 建方費（レッカー・オペレーター・鳶。**レッカーは能力（25t/50t/100t等）と日数で単価が変わる**）
+⑥ 本締め（高力ボルト：本数×単価。F10T M20等の規格を書く）
+⑦ 現場溶接（柱継手・仕口。**箇所数×単価**。有資格者・検査が要る）
+⑧ 溶接検査（超音波探傷UT。抜取率・箇所数を書く）
+⑨ デッキプレート・スタッドジベル（該当時。㎡・本数）
+⑩ 耐火被覆（該当時。吹付ロックウール・耐火塗料。㎡）
+⑪ 安全・仮設（親綱・安全ネット・高所作業車）
+
+【note の書き方】
+「H形鋼 SS400 12.5t × 135,000円/t」「工場製作 12.5t × 95,000円/t（開先・仕口込み）」のように、**種別・規格・トン数・トン単価**まで割って書くこと。「鉄骨工事一式」で終わらせるのは禁止。
+
+【よくある落とし】
+- アンカーボルト・ベースプレート・柱脚（露出型/根巻き）を落とさない
+- 建方後の歪み直し・本締め・仕口の現場溶接は別途で立てる
+- 官庁・大規模はグレード（J・R・M・H・S）と鉄骨製作工場の認定が要る。該当しそうなら recommendations に書く`
       : industryType === 'interior'
       ? `\n## ★業種: 内装仕上工事業（クロス・床・軽天ボード）★
 この会社はゼネコンの下請けとして**内装仕上工事だけ**を請ける専門工事会社です。以下を厳守してください:
@@ -7158,7 +7241,7 @@ ${fastMode ? '' : `  "customerSchedule": {
     "attendance": "お客様の立ち会い・在宅が必要な場面と、その所要時間（例: '着工時のご説明10分と、完了確認15分のみ。日中の外出は問題ありません'）。終日在宅が必要ならその理由も書く",
     "unusable": ["工事中に使えなくなる場所・設備と、その時間（例: 'キッチンの水道 10:00〜15:00（約5時間）'、'トイレ 終日（1日目のみ・仮設トイレをご用意します）'、'玄関 搬入の30分だけ'）。無ければ空配列"],
     "impacts": ["その他の生活への影響を、必ず時間帯つきで具体的に（例: '騒音が大きいのは初日の解体 約2時間'、'お車を1台分、道路側へ移動していただきます'、'足場設置日は洗濯物を室内に'）。無ければ空配列"],
-    "dayPlan": [{"day": "1日目", "time": "9:00〜17:00", "hours": "約7時間", "outOfHome": "外で待つ時間があればここに（例: '10:00〜13:00の約3時間'）。不要なら null", "work": "その日にやることを、お客様に分かる言葉で1行（専門用語を避ける）"}]
+    "dayPlan": [{"day": "1日目", "time": "9:00〜17:00", "hours": "約7時間", "place": "★その作業をする場所★ 部屋・区画の名前（例: 廊下 / トイレ / 洗面所 / 洋室1 / LDK / 外部）。建物全体にかかる作業（足場・養生・搬入・片付け）は「全体」。★複数の部屋を直す工事では、同じ日でも場所ごとに行を分けること（1日に2部屋やるなら2行）。お客様が知りたいのは「うちのトイレはいつ、何時間使えないのか」なので、場所ごとに時間が立っていないと答えられない", "outOfHome": "外で待つ時間があればここに（例: '10:00〜13:00の約3時間'）。不要なら null", "work": "その日にやることを、お客様に分かる言葉で1行（専門用語を避ける）"}]
   },`}
   "scheduleProposal": "★希望納期が入力され、かつ推定工期より短い（急ぎ）ときのみ記入・それ以外は必ずnull★ 工期短縮の提案または相談。詰められるなら『増員・残業・応援で△日に短縮可能。割増費用 約◯円（内訳）』、厳しいなら『最短◯日を推奨。1日は品質・安全・段取り上おすすめしない理由』を、職人目線で具体的に3〜5行。本体金額には含めない別途提案として書く。",
   "totalManDays": 総人工数（数値。全職種の延べ人工合計。例: 設備工2人×3日+大工1人×2日=8）,
@@ -7166,7 +7249,7 @@ ${fastMode ? '' : `  "customerSchedule": {
     {"trade": "職種名", "workers": 人数, "days": 日数, "manDays": 人工数, "dailyRate": 日額単価, "basis": "★なぜこの日数・人工になるのかの根拠を必ず記入。歩掛（1人が1日にこなす標準作業量）から算出した式で書く。例: '屋根400㎡ ÷ 2人 ÷ 約66㎡/人日 ≒ 3日' / 'コンセント30箇所 ÷ @15箇所/人日 = 2人工'。数量が無い管理系（現場管理・雑工）は '工期◯日に対し常駐0.5人' のように据え置き根拠を書く"}
   ],
   "breakdown": [
-    {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "quantity": 数量（数値。式なら1）, "unit": "単位（m2/式/箇所 等）", "unitPrice": 売価の単価（数値、円。cost ÷ quantity に必ず一致させること）, "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい。**必ず quantity × unitPrice と一致させること。桁を落とすな**）, "note": "★単価の中身まで割った根拠★ ルールEの書き方に必ず従い、複合単価は構成要素ごとに「何円/㎡（規格・数量の根拠）」まで分解して改行区切りで書く。材料名を並べるだけ・数量×単価だけで終わらせるのは禁止。図面拾い出しがある行は、その計算式をそのまま引き写せ", "takeoffRef": "この行の数量の出どころ。図面拾い出しの行を使ったなら、その拾い出し行の name をそのまま入れる。拾い出しと無関係な行（仮設・運搬・諸経費など）は null"}
+    {"item": "項目名", "category": "材料/施工費/仮設/経費 のいずれか", "quantity": 数量（数値。式なら1）, "unit": "単位（m2/式/箇所 等）", "unitPrice": 売価の単価（数値、円。cost ÷ quantity に必ず一致させること）, "costBase": 原価（数値、円。粗利を含まない仕入・人工の実費）, "cost": 粗利込みの最終見積価格（数値、円。お客様に提示する金額。costBaseより必ず大きい。**必ず quantity × unitPrice と一致させること。桁を落とすな**）, "note": "★単価の中身まで割った根拠★ ルールEの書き方に必ず従い、複合単価は構成要素ごとに「何円/㎡（規格・数量の根拠）」まで分解して改行区切りで書く。材料名を並べるだけ・数量×単価だけで終わらせるのは禁止。図面拾い出しがある行は、その計算式をそのまま引き写せ", "takeoffRef": "この行の数量の出どころ。図面拾い出しの行を使ったなら、その拾い出し行の name をそのまま入れる。拾い出しと無関係な行（仮設・運搬・諸経費など）は null", "location": "★この行がどの場所の工事か★ 部屋・区画の名前をそのまま入れる（例: 廊下 / トイレ / 洗面所 / 洋室1 / LDK / 階段 / 玄関 / 外部）。建物全体にかかる仮設・養生・運搬・現場管理費・諸経費は \"共通\"。場所で分ける必要のない工事（屋根一式・外壁一式など）は null"}
   ],
   "roofAreaM2": ★遮熱シート工事で折板・波板屋根のときのみ★ 屋根面積(数値、㎡)。それ以外は null,
   "quantityM2": ★遮熱シート工事で折板・波板屋根のときのみ★ 見積数量(数値、㎡。展開係数を掛けた後)。×1.4しなかったなら roofAreaM2 と同じ値。それ以外は null,
@@ -7182,6 +7265,15 @@ ${fastMode ? '' : `  "gradeOptions": [
 }
 \`\`\`
 
+## 場所ごとに分けるルール（内装・改修で特に重要）
+図面や依頼に複数の部屋・区画（廊下・トイレ・洗面所・洋室・LDK・階段・玄関 など）が含まれるときは、
+**内訳の行を場所ごとに分けて出す**こと。同じ「クロス張替」でも、廊下とトイレは別の行にする。
+- 各行の location に場所名を入れる。数量・単価・金額も、その場所の分だけを入れる
+- 足場・養生・運搬・現場管理費・諸経費など建物全体にかかるものは location を "共通" にする
+- 場所で分ける意味がない工事（屋根の葺き替え一式・外壁塗装一式など）は location を null にしてよい
+理由: お客様は「トイレだけ今回はやめる」「廊下は次回に回す」と部屋単位で相談される。
+場所ごとに金額が立っていれば、その場で引き算して答えられる。一式でまとめると、その相談に答えられない。
+
 ## 出力例（キッチンリフォームの場合）
 breakdownの書き方例:
 - {"item": "システムキッチン本体（ペニンシュラI型W2274）", "cost": 635000, "note": "中級グレード人工大理石トップ食洗機付"}
@@ -7189,6 +7281,12 @@ breakdownの書き方例:
 - {"item": "給排水配管工事", "cost": 67000, "note": "給水13A+給湯15A+排水50A各5m切回し"}
 - {"item": "電気工事", "cost": 22000, "note": "IH用200V配線+照明移設"}
 - {"item": "床フローリング張替", "cost": 50000, "note": "7m²×7,100円/m²（材工共）"}
+
+場所を分ける例（内装改修で廊下・トイレ・洗面所を直す場合）:
+- {"item": "クロス張替", "location": "廊下", "quantity": 28, "unit": "m2", "unitPrice": 1250, "cost": 35000, "note": "量産クロス 材工共 1,250円/㎡（下地パテ処理込）"}
+- {"item": "クロス張替", "location": "トイレ", "quantity": 12, "unit": "m2", "unitPrice": 1250, "cost": 15000, "note": "量産クロス 材工共 1,250円/㎡（下地パテ処理込）"}
+- {"item": "クッションフロア張替", "location": "トイレ", "quantity": 1.6, "unit": "m2", "unitPrice": 4500, "cost": 7200, "note": "CF 材工共 4,500円/㎡"}
+- {"item": "養生・廃材処分・現場管理", "location": "共通", "quantity": 1, "unit": "式", "cost": 18000, "note": "養生12,000＋廃材処分6,000"}
 
 manDaysBreakdownの書き方例:
 - {"trade": "設備工（レベル3）", "workers": 2, "days": 3, "manDays": 6, "dailyRate": 30300}
@@ -7368,6 +7466,39 @@ manDaysBreakdownの書き方例:
 4. **表と図面で数量が食い違うときは、表を採用したうえで warnings に必ず書け。**
    例:「内訳書のクロス 3,200㎡に対し、図面から拾うと約2,900㎡。内訳書の値を採用。要確認」。
    黙ってどちらかを消すな。**食い違いに気づけるようにするのが、この工程の一番の役目だ。**
+## ★★構造材の拾い方（鉄筋・鉄骨・木造）★★
+面積だけでなく、**構造材そのものの数量**も拾え。金額の桁はここで決まる。
+
+### 鉄筋（配筋図・断面リスト・配筋要領図）
+- **呼び径ごとに分けて拾う**（D10 / D13 / D16 / D19 / D22 / D25）。混ぜて1行にするな。
+- 単位質量(kg/m): D10=0.560 / D13=0.995 / D16=1.56 / D19=2.25 / D22=3.04 / D25=3.98
+- 主筋は「本数 × 1本の長さ」。あばら筋（スターラップ）・帯筋（フープ）は**ピッチから本数を出す**
+  （本数 = 配筋区間の長さ ÷ ピッチ + 1）。@200 なら 200mm ピッチのこと。
+- **重ね継手・定着（40d が目安）を必ず足す**。足したなら formula にその分を書け。
+- スラブ配筋は「タテ・ヨコ別々に」拾う（@200 ダブルなら 4方向）。
+- 単位は **t（トン）** で出し、name に呼び径を入れる（例「異形鉄筋 D13（基礎梁 主筋）」）。
+  本数・総延長も formula に残せ。加工ロスは lossRate に入れる（通常 3〜5%）。
+
+### 鉄骨（軸組図・部材リスト・アンカープラン・伏図）
+- **部材符号ごと**（C1・G1・B1・BR1 等）に「断面 × 長さ × 本数」で拾う。
+- 単位質量は断面から出す（例 H-400×200×8×13 = 66.0kg/m、H-300×150×6.5×9 = 36.7kg/m、
+  □-200×200×9 = 53.0kg/m、L-65×65×6 = 5.91kg/m）。**部材リストに重量が書いてあれば、それをそのまま写せ。**
+- 母屋・胴縁（C形鋼）、ブレース（丸鋼・ターンバックル）、デッキプレート（㎡）、
+  スタッドジベル（本数）、高力ボルト（F10T M20 等・本数）、ベースプレート・アンカーボルト（本数）も拾う。
+- 耐火被覆は㎡（部材の表面積）。
+- 単位は **t（トン）**。総重量と、部材符号ごとの内訳の両方を残せ。
+
+### 木造（伏図・軸組図・プレカット図・矩計図）
+- 部材ごとに拾う: 土台・大引・束・柱・管柱・通し柱・間柱・胴差・梁・桁・母屋・棟木・垂木・根太・筋かい。
+- 「断面寸法 × 長さ × 本数」から **m3（立米）** に換算する。
+  体積 = 断面積(m²) × 長さ(m) × 本数。例: 105角 × 3.0m × 20本 = 0.105 × 0.105 × 3.0 × 20 = 0.661 m3
+- 面材（構造用合板・石膏ボード・野地板・フローリング）は **㎡と枚数の両方**を出す。
+  1枚 = 910 × 1820 = 1.656 ㎡（3×6板）。枚数は切り無駄を含めて切り上げろ。
+- 樹種・等級（スギ / ヒノキ / ベイマツ、無垢 / 集成材、E120-F330 等）が図面にあれば name に入れる。
+  **同じ寸法でも樹種で単価が倍違う**ので、書いてあるものを落とすな。
+- 金物（ホールダウン・筋かいプレート・羽子板ボルト）は箇所数で拾う。
+
+★どの構造材も、**図面に無い部材を推測で足すな**。読めない部分は unreadable に回せ。
 ${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
 ## 拾い出しの鉄則（違反したら拾い出しとして失格）
 1. **寸法数値が最優先**。図面に寸法線の数値（例 8,190）があれば必ずそれを使え。縮尺からの目測は、寸法数値が無い部位でだけ使い、その行の confidence を「低」にしろ。
@@ -8773,13 +8904,30 @@ ${FLOOR_SCALE_GUIDE}
   });
 
   // ── AIチャット見積（対話型）──
-  ipcMain.handle('ai:chat', async (_e, data: { messages: any[], imageBase64?: string, constructionId?: number, sourceLogId?: number }) => {
+  // 相談から作った案件を、チャット1本につき1件だけにするための控え（キー: テナント:セッション）。
+  // アプリを閉じれば消えてよい。同じチャットの中で二重に案件を作らないことだけが目的。
+  const chatAutoCreated = new Map<string, any>();
+  // このチャットではもう見積を出した、という覚え（キー: テナント:セッション）。
+  // 2通目以降の相談を無料にするために使う。アプリを閉じれば消えてよい。
+  const chatEstimated = new Set<string>();
+  ipcMain.handle('ai:chat', async (_e, data: { messages: any[], imageBase64?: string, constructionId?: number, sourceLogId?: number, sessionId?: number }) => {
     await syncRemoteLicense(false);
-    const creditResult = useCreditsSynced(1, 'チャット見積');
-    if (!creditResult.success) {
-      throw new Error('ERROR: 今月のクレジット上限に達しました。');
+    // 単位をいただくのは「新しく見積を出すとき」だけ。見積が出たあとの相談は無料にする。
+    // 相談のたびに単位が減ると、お客様への説明や「トイレを外したら？」の確認をためらうことになる。
+    // 無料になるのは次の2つ:
+    //   ① 既存の見積・案件から開いた相談（sourceLogId / constructionId がある）
+    //   ② 同じチャットの中で、すでに1回見積が出ている（2通目以降のやり取り）
+    const sessKey = data.sessionId ? `${getCurrentTenant()}:${data.sessionId}` : '';
+    const isFollowup = !!(data.sourceLogId || data.constructionId);
+    const isAfterEstimate = !!sessKey && chatEstimated.has(sessKey);
+    let autoCreated: any = null;   // 相談の結果を新規案件として保存したときの控え
+    if (!isFollowup && !isAfterEstimate) {
+      const creditResult = useCreditsSynced(1, 'チャット見積');
+      if (!creditResult.success) {
+        throw new Error('ERROR: 今月のクレジット上限に達しました。');
+      }
+      syncCreditsToRemote();
     }
-    syncCreditsToRemote();
     const config = loadApiConfig();
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。');
 
@@ -8802,7 +8950,7 @@ ${FLOOR_SCALE_GUIDE}
     const tid = getCurrentTenant();
     const learnings = queryAll('SELECT category, key, value FROM chat_learnings WHERE tenant_id = ? ORDER BY category, key', [tid]);
     const learningText = learnings.length > 0
-      ? '\n## この会社の好み・傾向（過去のチャットから学習済み）\n' + learnings.map((l: any) => `- [${l.category}] ${l.key}: ${l.value}`).join('\n') + '\n\n★上記の好みを必ず反映して見積・提案してください。\n'
+      ? '\n## この会社について学習済み（★ここに載っている項目は二度と質問しないこと）\n' + learnings.map((l: any) => `- [${l.category}] ${l.key}: ${l.value}`).join('\n') + '\n\n★上記の好みを必ず反映して見積・提案してください。\n'
       : '';
 
     const systemPrompt = `あなたは大阪の建築見積の専門家（実務経験20年以上）です。ユーザーと対話しながら建築工事の見積を作成してください。
@@ -8814,6 +8962,41 @@ ${FLOOR_SCALE_GUIDE}
 - まだ情報が足りない場合は質問を続けてください
 - 親しみやすく、分かりやすい言葉で話してください
 - 専門用語を使う場合は簡単な説明を添えてください
+
+## ★数量は、推測で置く前に聞く★
+金額が一番大きく狂うのは単価ではなく**数量**です。分からない数量があるときは、
+**勝手に仮置きして見積を出す前に、こちらから聞いてください。**
+
+- 聞き方は、相手がその場で答えられる形にする。専門用語で聞かない
+  良い例:「お部屋の広さは何帖くらいですか」「天井の高さは、普通の2m40くらいですか」
+        「クロスを張り替えるのは、何部屋ぶんでしょうか」「間口と奥行は、だいたい何mありますか」
+  悪い例:「壁面積は何㎡ですか」「展開面積を教えてください」（拾える人にしか答えられない）
+- **一度に1つだけ**聞く。次の質問はその答えが返ってから。
+- 帖数から㎡に直すのはこちらの仕事（1帖 ≒ 1.62㎡、天井高2.4mなら壁は 部屋の周長×2.4）。
+  相手に計算させない。
+- 「分からない」と言われたら食い下がらず、**目安で仮置きして、置いた数字を必ず伝える**
+  例:「6帖・天井2m40で、壁と天井あわせて約32㎡で置きました。実際と違えば教えてください」
+- 図面や写真から拾えた数量は聞き直さない。**もう分かっていることを聞くのが一番嫌われます。**
+
+## ★こちらから数字を聞きに行くルール（いちばん大事）★
+このシステムは、この会社の**本当の数字**を教えてもらうほど金額が合っていきます。
+待っているだけでは数字は集まらないので、**あなたのほうから1つだけ聞いてください。**
+
+- 見積を出したら、その返答の最後に **具体的な数字を1つだけ**質問する（2つ以上は聞かない）
+- **数量が固まっていないうちは単価を聞かない。**順番は「数量 → 見積を出す → 単価をひとつ聞く」
+- 聞くのは「この会社でしか分からない数字」。全国相場で分かることは聞かない
+  良い例: 「クロスは1本（50m巻）でだいたい何㎡貼れていますか」「量産クロスの仕入れは今おいくらですか」
+          「職人さん1人で1日に貼れるのは何㎡くらいですか」「軽天の㎡単価、御社だといくらで見ていますか」
+  悪い例: 「ご予算はいくらですか」「他社さんはいくらでしたか」（金額の探り＝相手が身構える）
+- 使った数字の根拠を先に言ってから聞く。例:
+  「今回クロスは1,250円/㎡（材工共）で見ています。**御社の実際の仕入れだと、いくらで入っていますか？**」
+- すでに下の「学習済み」に入っている項目は**二度と聞かない**
+- 教えてもらったら、必ずお礼を言って、次回から使うと伝える（例:「ありがとうございます。次からその単価で計算します」）
+- 相手が「分からない」「今はいい」と言ったら、それ以上は食い下がらない
+
+## 教えてもらった数字の残し方
+教えてもらった数字は、必ず learning メモに残すこと（下の「学習メモ形式」）。
+数量・単価・歩掛は value に**単位まで**入れる（例: value: "1本50m巻で約28㎡"、"量産クロス 仕入 480円/㎡"）。
 - ユーザーが好みや修正を伝えた場合、会話の最後に学習メモJSON（\`\`\`learning ... \`\`\`）を出力してください
 
 ## 見積JSON形式（十分な情報が集まった場合のみ出力）
@@ -8826,12 +9009,18 @@ ${FLOOR_SCALE_GUIDE}
   "estimatedLaborCost": 人件費,
   "estimatedTotal": 売価（粗利込み）,
   "confidence": "高/中/低",
-  "breakdown": [{"item": "項目名", "cost": 金額, "note": "根拠"}],
+  "breakdown": [{"item": "項目名", "location": "場所（廊下/トイレ/洋室1 など。全体共通は\"共通\"、分ける必要がなければ null）", "cost": 金額, "note": "根拠"}],
   "manDaysBreakdown": [{"trade": "職種", "workers": 人数, "days": 日数, "manDays": 人工, "dailyRate": 日額}],
   "recommendations": "提案・注意点",
   "imagePrompt": "完成イメージ用英語プロンプト"
 }
 \`\`\`
+
+## 場所ごとに分けるルール
+廊下・トイレ・洗面所・洋室・階段など、複数の部屋の話が出たときは、内訳の行を場所ごとに分け、
+各行の location にその場所名を入れる。同じクロス張替でも廊下とトイレは別行にする。
+養生・運搬・現場管理費など全体にかかるものは location を "共通" に。
+理由: 「トイレはやめる」と言われたときに、その場で引き算して答えられるようにするため。
 
 ## 粗利率ルール
 - 原価500万未満: 粗利30%（掛率1.43）
@@ -8903,6 +9092,8 @@ ${pastWork || 'まだ実績なし'}`;
     //   どの案件について相談したかは source_log_id（元見積ログID）で辿れる。
     //   登録したいときは一括登録で独立した新規案件として作成される。
     if (estimate) {
+      // このチャットではもう見積が出た＝ここから先の相談は無料にする
+      if (sessKey) chatEstimated.add(sessKey);
       try {
         const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
         const followup = data.sourceLogId ? 'chat_followup' : 'chat';
@@ -8928,10 +9119,34 @@ ${pastWork || 'まだ実績なし'}`;
       } catch (e) { console.error('チャット見積ログ記録失敗:', e); }
     }
 
+    // 相談の結果まとまった見積は、そのまま新しい案件として保存する。
+    // ★元の案件にはぶら下げない（金額がごっちゃになるため）。独立した新規案件にする。
+    // ★1回の相談で何度か見積が出ることがあるので、同じチャットでは1件しか作らない。
+    //   2回目以降は、最初に作った案件の金額を最新の見積で上書きする。
+    if (estimate && isFollowup) {
+      try {
+        const key = `${tid}:${data.sessionId || 'log' + (data.sourceLogId || 0)}`;
+        const chatImage = data.imageBase64 || null;
+        const already = chatAutoCreated.get(key);
+        if (already) {
+          const total = Number(estimate.estimatedTotal) || 0;
+          runSql('UPDATE constructions SET fixed_selling_price = ? WHERE id = ? AND tenant_id = ?', [total, already.constructionId, tid]);
+          runSql('UPDATE invoices SET amount = ? WHERE construction_id = ?', [total, already.constructionId]);
+          autoCreated = { ...already, updated: true };
+          console.log(`チャット相談の見積を更新: 案件#${already.constructionId} ¥${total}`);
+        } else {
+          const created = autoCreateFromEstimateCore({ result: estimate, imageBase64: chatImage });
+          chatAutoCreated.set(key, created);
+          autoCreated = { ...created, updated: false };
+          console.log(`チャット相談から新規案件を作成: 案件#${created.constructionId} ${estimate.workType}`);
+        }
+      } catch (e) { console.error('チャット相談からの新規保存に失敗:', e); }
+    }
+
     // 学習メモ部分はユーザーに見せない
     const cleanText = text.replace(/```learning[\s\S]*?```/g, '').trim();
 
-    return { text: cleanText, estimate };
+    return { text: cleanText, estimate, autoCreated, freeConsult: isFollowup || isAfterEstimate };
   });
 
   // ── AI画像生成（完成イメージ — 元画像ベース編集）──
@@ -9080,9 +9295,14 @@ ${pastWork || 'まだ実績なし'}`;
     if (result.breakdown && result.breakdown.length > 0) {
       for (const item of result.breakdown) {
         const cost = item.cost || 0;
+        // 場所（廊下・トイレ等）が付いている行は、名前の頭に【場所】を付けて残す。
+        // 見積書・請求書は construction_materials の名前を並べるだけなので、
+        // ここで付けておかないと「どの部屋の分か」が書類から消える。
+        const place = String(item.location || '').trim();
+        const itemName = place && place !== '共通' ? `【${place}】${item.item}` : item.item;
         const matId = runSql(
           'INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?, ?, ?, ?, ?, ?)',
-          [item.item, 'AI見積', '式', cost, item.note || 'AI自動見積もり', tid]
+          [itemName, 'AI見積', '式', cost, item.note || 'AI自動見積もり', tid]
         );
         runSql(
           'INSERT INTO construction_materials (construction_id, material_id, quantity, unit_price) VALUES (?, ?, ?, ?)',
@@ -9090,6 +9310,109 @@ ${pastWork || 'まだ実績なし'}`;
         );
       }
     }
+
+    // 3-2. 工程表（ガント）＝【施工する人の予定】を作る。
+    //   誰が（どの職種が）何人で、何日入るのか。現場を回すための表なので、主役は職人の予定。
+    //   AIが出した職種別の人工（manDaysBreakdown）を工程順に並べて置く。
+    //   お客様への説明用の時間は、この表の上に1行（全体の所要時間）と、
+    //   「使えません：トイレ …」の行だけ添える。説明のときはこの2つを見れば足りる。
+    //   ★着工日は見積時点では決まっていないので、施工日を起点に仮置きする。画面で動かせる。
+    try {
+      const sched = result.customerSchedule || null;
+      const trades: any[] = Array.isArray(result.manDaysBreakdown) ? result.manDaysBreakdown : [];
+      const dayPlan: any[] = Array.isArray(sched?.dayPlan) ? sched.dayPlan : [];
+      const unusable: any[] = Array.isArray(sched?.unusable) ? sched.unusable : [];
+      const addDays = (base: string, n: number) => {
+        const d = new Date(base + 'T00:00:00');
+        d.setDate(d.getDate() + n);
+        return d.toISOString().split('T')[0];
+      };
+      const colorOf = (name: string) => {
+        const t = String(name || '');
+        if (/足場|仮設|鳶/.test(t)) return '#7e57c2';
+        if (/解体|撤去|斫/.test(t)) return '#e15554';
+        if (/塗装|吹付/.test(t)) return '#2e7d32';
+        if (/電気|配線/.test(t)) return '#f4a261';
+        if (/設備|配管|給排水|空調|水道/.test(t)) return '#0b6bcb';
+        if (/清掃|片付|完了|引渡/.test(t)) return '#607d8b';
+        if (/大工|内装|クロス|左官|建具/.test(t)) return '#00897b';
+        return '#3498db';
+      };
+      // 現場の順番に並べ替える（AIの出力は順不同のことがある）
+      const phaseOrder = (name: string) => {
+        const t = String(name || '');
+        if (/足場|仮設|鳶/.test(t)) return 1;
+        if (/解体|撤去|斫/.test(t)) return 2;
+        if (/土工|基礎|鉄筋|型枠|コンクリート|鉄骨/.test(t)) return 3;
+        if (/大工|木工|軽天|ボード/.test(t)) return 4;
+        if (/設備|配管|給排水|空調|水道|電気/.test(t)) return 5;
+        if (/左官|防水|タイル|板金|屋根|外壁/.test(t)) return 6;
+        if (/内装|クロス|床|建具/.test(t)) return 7;
+        if (/塗装|吹付/.test(t)) return 8;
+        if (/清掃|片付|完了|引渡/.test(t)) return 9;
+        return 5;
+      };
+      const rows: { name: string; who: string; start: string; end: string; color: string }[] = [];
+      if (trades.length > 0) {
+        const sorted = [...trades].sort((a, b) => phaseOrder(a?.trade) - phaseOrder(b?.trade));
+        let cursor = 0;
+        for (const t of sorted) {
+          const trade = String(t?.trade || '').trim();
+          if (!trade) continue;
+          const days = Math.max(1, Math.ceil(Number(t?.days) || 1));
+          const workers = Math.max(1, Math.round(Number(t?.workers) || 1));
+          const start = addDays(today, cursor);
+          const end = addDays(today, cursor + days - 1);
+          rows.push({
+            name: trade + '（' + workers + '人 × ' + days + '日）',
+            who: workers + '人',
+            start, end, color: colorOf(trade),
+          });
+          cursor += days;   // 直列に積む。実際に重ねられる工程は画面で動かす
+        }
+      } else if (dayPlan.length > 0) {
+        // 人工の内訳が無い見積（スピード優先など）は、1日ごとの予定から置く
+        dayPlan.forEach((d: any, idx: number) => {
+          const work = String(d?.work || d?.day || '').trim();
+          if (!work) return;
+          const place = String(d?.place || '').trim();
+          const m = String(d?.day || '').match(/(\d+)/);
+          const off = m && Number(m[1]) > 0 ? Number(m[1]) - 1 : idx;
+          const day = addDays(today, off);
+          rows.push({
+            name: place && place !== '全体' ? '【' + place + '】' + work : work,
+            who: '', start: day, end: day, color: colorOf(place + work),
+          });
+        });
+      }
+      if (rows.length > 0) {
+        const firstStart = rows.reduce((a, b) => (a.start <= b.start ? a : b)).start;
+        const lastEnd = rows.reduce((a, b) => (a.end >= b.end ? a : b)).end;
+        rows.forEach((r, idx) => {
+          runSql(
+            'INSERT INTO gantt_tasks (tenant_id, construction_id, task_name, assignee, start_date, end_date, progress, color, dependencies, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [tid, constructionId, r.name, r.who, r.start, r.end, 0, r.color, '', idx]
+          );
+        });
+        // お客様への説明用（工程表の一番上と一番下に添える）
+        const totalLabel = String(sched?.totalLabel || '').trim();
+        if (totalLabel) {
+          runSql(
+            'INSERT INTO gantt_tasks (tenant_id, construction_id, task_name, assignee, start_date, end_date, progress, color, dependencies, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [tid, constructionId, 'お客様へのご説明：' + totalLabel, 'お客様', firstStart, lastEnd, 0, '#1a2b4a', '', -1]
+          );
+        }
+        // 「トイレが使えない」「キッチンの水道が止まる」。説明で一番聞かれるので表に残す
+        unusable.forEach((u: any, idx: number) => {
+          const label = String(u || '').trim();
+          if (!label) return;
+          runSql(
+            'INSERT INTO gantt_tasks (tenant_id, construction_id, task_name, assignee, start_date, end_date, progress, color, dependencies, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [tid, constructionId, '使えません：' + label, 'お客様', firstStart, lastEnd, 0, '#b8860b', '', 900 + idx]
+          );
+        });
+      }
+    } catch (e) { console.error('工程表の自動作成に失敗:', e); }
 
     // 4. AI見積ログ保存（精度改善用フィードバック）
     try {
@@ -9113,8 +9436,9 @@ ${pastWork || 'まだ実績なし'}`;
     if (location) remarksLines.push(`現場: ${location}`);
     if (area && String(area).trim()) remarksLines.push(`面積・数量（実測）: ${String(area).trim()}`);
     if (comment) remarksLines.push(`工事内容: ${comment}`);
-    if (result.recommendations) remarksLines.push(`提案: ${result.recommendations}`);
-    const invoiceNotes = remarksLines.length > 0 ? remarksLines.join('\n') : `AI見積もりから自動作成\n工事種別: ${result.workType}`;
+    // ★AIの提案文・解析メモは備考に入れない。お客様にお渡しする書類にそのまま出てしまうため。
+    //   AIの提案は estimate_log と施工のメモ（社内側）に残るので、必要ならそちらで見る。
+    const invoiceNotes = remarksLines.length > 0 ? remarksLines.join(String.fromCharCode(10)) : '';
 
     const invoiceId = runSql(
       'INSERT INTO invoices (construction_id, client_name, client_address, issue_date, due_date, amount, tax_rate, notes, status, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',

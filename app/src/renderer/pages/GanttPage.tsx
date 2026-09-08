@@ -10,6 +10,8 @@ export default function GanttPage() {
   const [viewMonths, setViewMonths] = useState(3);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<any>(null);
+  // 折りたたんでいる案件（フォルダ）。案件IDの集合。案件なしは 0 で持つ。
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
 
   // form
   const today = new Date().toISOString().split('T')[0];
@@ -56,6 +58,55 @@ export default function GanttPage() {
     load();
   };
 
+  const deleteGroup = async (g: any) => {
+    if (!confirm(`「${g.title}」の工程 ${g.tasks.length}件をまとめて削除しますか？`)) return;
+    for (const t of g.tasks) await api.deleteGanttTask(t.id);
+    load();
+  };
+
+  // ── 案件ごとのフォルダにまとめる ──
+  //   工程表は案件が増えるほど一本の長い表になって、どれがどの現場か分からなくなる。
+  //   案件を1つのフォルダにして、開け閉めできるようにする。
+  const groups = useMemo(() => {
+    const map = new Map<number, any>();
+    for (const t of tasks) {
+      const key = t.construction_id || 0;
+      if (!map.has(key)) {
+        map.set(key, { key, title: t.construction_title || (key === 0 ? '案件なし' : `案件 #${key}`), tasks: [] });
+      }
+      map.get(key).tasks.push(t);
+    }
+    const list = Array.from(map.values());
+    for (const g of list) {
+      g.tasks.sort((a: any, b: any) => (a.sort_order - b.sort_order) || String(a.start_date).localeCompare(String(b.start_date)));
+      g.start = g.tasks.reduce((m: string, t: any) => (!m || t.start_date < m ? t.start_date : m), '');
+      g.end = g.tasks.reduce((m: string, t: any) => (!m || t.end_date > m ? t.end_date : m), '');
+      g.progress = Math.round(g.tasks.reduce((s: number, t: any) => s + (t.progress || 0), 0) / g.tasks.length);
+      g.delayed = g.tasks.filter((t: any) => t.progress < 100 && t.end_date < today).length;
+    }
+    // 着手が早い現場を上に。案件なしは一番下。
+    list.sort((a, b) => (a.key === 0 ? 1 : b.key === 0 ? -1 : String(a.start).localeCompare(String(b.start))));
+    return list;
+  }, [tasks, today]);
+
+  // 左の一覧と右のバーで行がずれないよう、フォルダ行とタスク行を1本の配列にしてから描く
+  const rows = useMemo(() => {
+    const out: any[] = [];
+    for (const g of groups) {
+      out.push({ type: 'folder', g });
+      if (!collapsed.has(g.key)) for (const t of g.tasks) out.push({ type: 'task', t });
+    }
+    return out;
+  }, [groups, collapsed]);
+
+  const toggle = (key: number) => {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
   // Gantt chart calculations
   const { chartStart, dayCount, dayWidth } = useMemo(() => {
     const now = new Date();
@@ -74,7 +125,6 @@ export default function GanttPage() {
     const result: { label: string; offset: number; width: number }[] = [];
     const d = new Date(chartStart);
     while (d.getTime() < chartStart.getTime() + dayCount * 86400000) {
-      const weekStart = new Date(d);
       const daysLeft = Math.min(7 - d.getDay(), dayCount - daysBetween(chartStart, d));
       result.push({ label: `${d.getMonth() + 1}/${d.getDate()}`, offset: daysBetween(chartStart, d) * dayWidth, width: Math.max(daysLeft, 1) * dayWidth });
       d.setDate(d.getDate() + daysLeft);
@@ -82,13 +132,22 @@ export default function GanttPage() {
     return result;
   }, [chartStart, dayCount, dayWidth]);
 
+  const barGeom = (start: string, end: string) => {
+    const s = new Date(start);
+    const e = new Date(end);
+    return {
+      left: daysBetween(chartStart, s) * dayWidth,
+      width: Math.max((daysBetween(s, e) + 1) * dayWidth, dayWidth),
+    };
+  };
+
   return (
     <div>
       <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1>📊 工程表</h1>
         <PageGuide pageKey="gantt" steps={[
-          { icon: '📅', title: 'STEP 1：タスクを登録', desc: '「+ タスク追加」から工程名・担当者・開始日・終了日を入力します。', sub: '施工案件に紐づけて管理できます' },
-          { icon: '📊', title: 'STEP 2：ガントチャートで確認', desc: '全工程をガントチャートで視覚的に確認。進捗率もバーで表示されます。' },
+          { icon: '📁', title: 'STEP 1：案件ごとのフォルダ', desc: '工程は案件ごとにまとまっています。📁をクリックすると開け閉めできます。', sub: 'AI見積から自動登録すると、職人さんの予定がここに入ります' },
+          { icon: '📅', title: 'STEP 2：タスクを足す', desc: '「+ タスク追加」から工程名・担当者・開始日・終了日を入力します。' },
           { icon: '✏️', title: 'STEP 3：進捗を更新', desc: 'タスクをクリックして進捗率を更新し、工程の遅れを早期に把握できます。' },
         ]} />
       </div>
@@ -101,6 +160,12 @@ export default function GanttPage() {
           <button key={m} className={`btn btn-sm ${viewMonths === m ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setViewMonths(m)}>{m}ヶ月</button>
         ))}
         <button className="btn btn-primary" onClick={() => { resetForm(); setShowForm(true); }}>+ タスク追加</button>
+        {groups.length > 1 && (
+          <>
+            <button className="btn btn-sm btn-secondary" onClick={() => setCollapsed(new Set(groups.map(g => g.key)))}>すべて閉じる</button>
+            <button className="btn btn-sm btn-secondary" onClick={() => setCollapsed(new Set())}>すべて開く</button>
+          </>
+        )}
       </div>
 
       {showForm && (
@@ -134,16 +199,37 @@ export default function GanttPage() {
           {/* Left labels */}
           <div style={{ minWidth: 300, borderRight: '2px solid #ddd', flexShrink: 0 }}>
             <div style={{ height: 36, background: '#2e4057', color: '#fff', padding: '8px 12px', fontSize: 11, fontWeight: 'bold', display: 'flex', justifyContent: 'space-between' }}>
-              <span>タスク</span><span>操作</span>
+              <span>案件 / タスク</span><span>操作</span>
             </div>
-            {tasks.map((t: any) => {
+            {rows.map((row: any, i: number) => {
+              if (row.type === 'folder') {
+                const g = row.g;
+                const isOpen = !collapsed.has(g.key);
+                return (
+                  <div key={'g' + g.key} onClick={() => toggle(g.key)}
+                    style={{ height: 40, display: 'flex', alignItems: 'center', padding: '0 8px', borderBottom: '1px solid #dfe6ee', background: '#eef2f7', fontSize: 12, gap: 6, cursor: 'pointer' }}>
+                    <span style={{ fontSize: 11, color: '#5b6678', width: 12 }}>{isOpen ? '▾' : '▸'}</span>
+                    <span>📁</span>
+                    <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <strong style={{ color: '#1a2b4a' }}>{g.title}</strong>
+                      <span style={{ color: '#7a8697', fontSize: 10, marginLeft: 6 }}>{g.tasks.length}件</span>
+                      {g.delayed > 0 && <span style={{ color: '#c0392b', fontSize: 10, marginLeft: 6 }}>遅延{g.delayed}</span>}
+                    </div>
+                    <span style={{ fontSize: 10, color: g.progress >= 100 ? '#27ae60' : '#5b6678', minWidth: 28 }}>{g.progress}%</span>
+                    <button onClick={e => { e.stopPropagation(); deleteGroup(g); }}
+                      title="この案件の工程をまとめて削除"
+                      style={{ background: '#fde8e8', border: '1px solid #f5c6cb', borderRadius: 4, cursor: 'pointer', fontSize: 11, padding: '2px 6px' }}>🗑️</button>
+                  </div>
+                );
+              }
+              const t = row.t;
               const isDelayed = t.progress < 100 && t.end_date < today;
               return (
-                <div key={t.id} style={{ height: 40, display: 'flex', alignItems: 'center', padding: '0 8px', borderBottom: '1px solid #eee', fontSize: 12, background: isDelayed ? '#fde8e8' : 'transparent', gap: 6 }}>
+                <div key={t.id} style={{ height: 40, display: 'flex', alignItems: 'center', padding: '0 8px 0 26px', borderBottom: '1px solid #eee', fontSize: 12, background: isDelayed ? '#fde8e8' : 'transparent', gap: 6 }}>
                   {isDelayed && <span>⚠️</span>}
                   <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     <strong>{t.task_name}</strong>
-                    {t.construction_title && <span style={{ color: '#888', fontSize: 10, marginLeft: 4 }}>{t.construction_title}</span>}
+                    {t.assignee && <span style={{ color: '#888', fontSize: 10, marginLeft: 4 }}>{t.assignee}</span>}
                   </div>
                   <span style={{ fontSize: 10, color: t.progress >= 100 ? '#27ae60' : '#888', minWidth: 28 }}>{t.progress}%</span>
                   <button onClick={() => editTask(t)} style={{ background: '#f0f0f0', border: '1px solid #ddd', borderRadius: 4, cursor: 'pointer', fontSize: 11, padding: '2px 6px' }}>✏️</button>
@@ -151,7 +237,7 @@ export default function GanttPage() {
                 </div>
               );
             })}
-            {tasks.length === 0 && <div style={{ padding: 20, textAlign: 'center', color: '#999' }}>タスクなし</div>}
+            {rows.length === 0 && <div style={{ padding: 20, textAlign: 'center', color: '#999' }}>タスクなし</div>}
           </div>
 
           {/* Right chart */}
@@ -167,11 +253,20 @@ export default function GanttPage() {
               </div>
 
               {/* Task bars */}
-              {tasks.map((t: any) => {
-                const tStart = new Date(t.start_date);
-                const tEnd = new Date(t.end_date);
-                const left = daysBetween(chartStart, tStart) * dayWidth;
-                const width = Math.max((daysBetween(tStart, tEnd) + 1) * dayWidth, dayWidth);
+              {rows.map((row: any) => {
+                if (row.type === 'folder') {
+                  const g = row.g;
+                  const { left, width } = barGeom(g.start, g.end);
+                  return (
+                    <div key={'g' + g.key} style={{ height: 40, position: 'relative', borderBottom: '1px solid #dfe6ee', background: '#eef2f7' }}>
+                      <div style={{ position: 'absolute', left, top: 14, width, height: 12, background: '#c3d0e0', borderRadius: 6, overflow: 'hidden' }}>
+                        <div style={{ width: `${g.progress}%`, height: '100%', background: '#1a2b4a', borderRadius: 6 }} />
+                      </div>
+                    </div>
+                  );
+                }
+                const t = row.t;
+                const { left, width } = barGeom(t.start_date, t.end_date);
                 const isDelayed = t.progress < 100 && t.end_date < today;
                 const barColor = isDelayed ? '#e74c3c' : t.progress >= 100 ? '#27ae60' : (t.color || '#3498db');
                 return (
@@ -188,7 +283,7 @@ export default function GanttPage() {
 
               {/* Today line */}
               {todayOffset >= 0 && todayOffset <= dayCount && (
-                <div style={{ position: 'absolute', top: 36, left: todayOffset * dayWidth, width: 2, height: tasks.length * 40, background: '#e74c3c', zIndex: 10, pointerEvents: 'none' }}>
+                <div style={{ position: 'absolute', top: 36, left: todayOffset * dayWidth, width: 2, height: rows.length * 40, background: '#e74c3c', zIndex: 10, pointerEvents: 'none' }}>
                   <div style={{ position: 'absolute', top: 2, left: 4, fontSize: 9, color: '#e74c3c', fontWeight: 'bold', whiteSpace: 'nowrap' }}>今日</div>
                 </div>
               )}
@@ -200,6 +295,10 @@ export default function GanttPage() {
       {/* Summary */}
       {tasks.length > 0 && (
         <div style={{ display: 'flex', gap: 12, marginTop: 12 }}>
+          <div className="card" style={{ flex: 1, textAlign: 'center' }}>
+            <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2e4057' }}>{groups.length}</div>
+            <div style={{ fontSize: 12, color: '#888' }}>案件</div>
+          </div>
           <div className="card" style={{ flex: 1, textAlign: 'center' }}>
             <div style={{ fontSize: 24, fontWeight: 'bold', color: '#2e4057' }}>{tasks.length}</div>
             <div style={{ fontSize: 12, color: '#888' }}>総タスク</div>
