@@ -15,13 +15,14 @@ const ADMIN_SECRET = Deno.env.get("ADMIN_SECRET") || "";
 // プランごとの既定のAI利用単位。アプリの PLANS（app/src/database/database.ts）と揃えること。
 // ★アプリの承認画面は credits を渡さずプラン名だけ送るので、ここが古いと
 //   手動で承認したお客様だけ単位が合わなくなる。
-//   2026-09-02の月額改定で demo30/pro200/その他50 から変更した。
+//   2026-09-02の月額改定で demo30/pro200/その他50 から変更し、
+//   2026-09-08に金額据え置きのまま単位だけ引き上げた（standard20→50・better50→150・pro100→300）。
 const DEFAULT_CREDITS: Record<string, number> = {
   demo: 10,
   trial: 10,
-  standard: 20,
-  better: 50,
-  pro: 100,
+  standard: 50,
+  better: 150,
+  pro: 300,
   enterprise: 9999,
 };
 
@@ -676,7 +677,7 @@ try {
     const tid = encodeURIComponent(targets[0].id);
     if (sub === "approve") {
       const plan = String(body.plan || "standard");
-      const credits = Number(body.credits ?? DEFAULT_CREDITS[plan] ?? 20);
+      const credits = Number(body.credits ?? DEFAULT_CREDITS[plan] ?? 50);
       const patch: any = {
         plan, credits, max_credits: credits, active: true, blocked_message: null, updated_at: new Date().toISOString(),
         // ★デモから有料へ上げるときは期限を外す。残っていると、お金をいただいたのに

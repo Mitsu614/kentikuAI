@@ -1124,12 +1124,12 @@ function UserManagement() {
                 <label>プラン</label>
                 <select value={tenantForm.plan} onChange={e => {
                   const p = e.target.value;
-                  setTenantForm({ ...tenantForm, plan: p, credits: plans[p]?.credits || 20 });
+                  setTenantForm({ ...tenantForm, plan: p, credits: plans[p]?.credits || 50 });
                 }}>
                   <option value="demo">デモ（10単位/月・無料）</option>
-                  <option value="standard">スタンダード（20単位/月・3万円）</option>
-                  <option value="better">ベター（50単位/月・7万円）</option>
-                  <option value="pro">プロ（100単位/月・10万円／航空写真つき）</option>
+                  <option value="standard">スタンダード（50単位/月・3万円）</option>
+                  <option value="better">ベター（150単位/月・7万円）</option>
+                  <option value="pro">プロ（300単位/月・10万円／航空写真つき）</option>
                   <option value="enterprise">法人カスタム</option>
                 </select>
               </div>

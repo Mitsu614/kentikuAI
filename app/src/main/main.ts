@@ -2062,16 +2062,16 @@ app.whenReady().then(async () => {
   const allTenants = queryAll('SELECT id FROM tenants WHERE id > 1 ORDER BY id ASC');
   if (allTenants.length > 0) {
     setCurrentTenant(allTenants[0].id);
-    // 管理者（開発機）のテナントだけストック100を確保する。
+    // 管理者（開発機）のテナントだけストック300を確保する。
     // ★isOwner の判定を外さないこと。
-    //   ここが全員に効くと、どのプランのお客様も起動のたびに 100単位へ
-    //   書き換わってしまい、20/50/100 の段階が意味をなくす
-    //   （スタンダードが100単位だった頃は同じ値だったので表に出ていなかった）。
+    //   ここが全員に効くと、どのプランのお客様も起動のたびに 300単位へ
+    //   書き換わってしまい、50/150/300 の段階が意味をなくす
+    //   （スタンダードとプロが同じ単位だった頃は表に出ていなかった）。
     const myTenant = allTenants[0];
     if (isOwner) {
       const myPlan = queryOne('SELECT plan, plan_limit FROM tenants WHERE id = ?', [myTenant.id]);
-      if (!myPlan?.plan_limit || myPlan.plan_limit < 100) {
-        runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', ['pro', 100, myTenant.id]);
+      if (!myPlan?.plan_limit || myPlan.plan_limit < 300) {
+        runSql('UPDATE tenants SET plan = ?, plan_limit = ? WHERE id = ?', ['pro', 300, myTenant.id]);
       }
     }
   }

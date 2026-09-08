@@ -81,9 +81,9 @@ export function vacuum() {
 // 単位（monthlyLimit）が上がるほど月に回せる見積の本数が増える。
 export const PLANS: Record<string, { name: string; monthlyLimit: number; price: number; description: string }> = {
   demo:       { name: 'デモ',           monthlyLimit: 10,   price: 0,       description: '無料体験（月10単位・2週間）' },
-  standard:   { name: 'スタンダード',   monthlyLimit: 20,   price: 30000,   description: '月20単位・個人〜少人数の工務店' },
-  better:     { name: 'ベター',         monthlyLimit: 50,   price: 70000,   description: '月50単位・案件数が増えてきた工務店' },
-  pro:        { name: 'プロ',           monthlyLimit: 100,  price: 100000,  description: '月100単位・住所からの航空写真測定つき' },
+  standard:   { name: 'スタンダード',   monthlyLimit: 50,   price: 30000,   description: '月50単位・個人〜少人数の工務店' },
+  better:     { name: 'ベター',         monthlyLimit: 150,  price: 70000,   description: '月150単位・案件数が増えてきた工務店' },
+  pro:        { name: 'プロ',           monthlyLimit: 300,  price: 100000,  description: '月300単位・住所からの航空写真測定つき' },
   enterprise: { name: '法人カスタム',   monthlyLimit: 9999, price: 0,       description: '多店舗・複数会社（個別お見積り）' },
 };
 
@@ -713,6 +713,15 @@ function migrate() {
     }
     if (!tenantCols.find((c: any) => c.name === 'plan_started_at')) {
       db.run('ALTER TABLE tenants ADD COLUMN plan_started_at TEXT');
+    }
+    // 2026-09-08の単位改定（スタンダード20→50・ベター50→150・プロ100→300）。
+    // 金額は据え置きで単位だけ増やしたので、すでにご契約中のお客様も新しい単位に上げる。
+    // ★引き上げだけ。下げない（手動で多めに設定したお客様の値を削らないため）。
+    for (const key of ['standard', 'better', 'pro']) {
+      const def = PLANS[key];
+      if (!def) continue;
+      db.run('UPDATE tenants SET plan_limit = ? WHERE plan = ? AND (plan_limit IS NULL OR plan_limit < ?)',
+        [def.monthlyLimit, key, def.monthlyLimit]);
     }
     if (!tenantCols.find((c: any) => c.name === 'limit_notified_month')) {
       db.run('ALTER TABLE tenants ADD COLUMN limit_notified_month TEXT');
