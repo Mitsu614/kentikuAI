@@ -3738,7 +3738,37 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             <div className="card" style={{ marginTop: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
                 <h3 style={{ margin: 0 }}>費用内訳（数量・単価つき）</h3>
-                <span style={{ fontSize: 11, color: '#888' }}>数量・単価・金額はどれも直接直せます（残りが自動で引き直されます）</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, color: '#888' }}>数量・単価・金額はどれも直接直せます（残りが自動で引き直されます）</span>
+                  {/* 登録しなくても、この内訳のまま見積書を出せるようにする。
+                      画面の数量・単位・単価がそのまま見積書の明細になる。 */}
+                  <button className="btn btn-secondary btn-sm" type="button"
+                    onClick={async () => {
+                      try {
+                        const rows = (result.breakdown || []).map((b: any) => {
+                          const qty = Number(b.quantity) > 0 ? Number(b.quantity) : 1;
+                          const price = Number(b.unitPrice) > 0 ? Number(b.unitPrice) : Math.round((Number(b.cost) || 0) / qty);
+                          const place = String(b.location || '').trim();
+                          const nm = place && place !== '共通' ? `【${place}】${b.item}` : b.item;
+                          return { material_name: nm, name: nm, category: b.category || '', quantity: qty, unit: b.unit || '式', unit_price: price };
+                        });
+                        if (rows.length === 0) { alert('内訳がありません。'); return; }
+                        const total = rows.reduce((t: number, r: any) => t + r.quantity * r.unit_price, 0);
+                        const d = new Date();
+                        const iso = d.toISOString().split('T')[0];
+                        await (window as any).api.generateEstimatePDF({
+                          invoice: {
+                            id: Number(String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0')),
+                            client_name: clientName || '', client_address: '', issue_date: iso,
+                            amount: total, tax_rate: 0.1, labor_cost: 0, notes: '',
+                            construction_title: result.workType || '', property_name: location || '',
+                          },
+                          materials: rows,
+                        });
+                      } catch (e: any) { alert('見積書の出力に失敗しました: ' + (e?.message || e)); }
+                    }}
+                  >📋 この内訳で見積書PDFを出す</button>
+                </div>
               </div>
               {(() => {
                 // 場所（廊下・トイレ等）で分かれている見積は、部屋ごとの小計を先に見せる。
