@@ -297,6 +297,24 @@ export async function sendTakeoffFeedback(rows: TakeoffFeedback[]): Promise<numb
   return sent;
 }
 
+// 相場データベースの最新版を取ってくる。
+// アプリ同梱の cost-reference.ts はリリースしないと更新できず、実際に2ヶ月止まっていた。
+// 週1回 GitHub Actions が market_prices に新しい版を入れ、アプリはそれを起動時に受け取る。
+// ★ここで受け取るのは全社共通の相場だけ。個社の実績・実測値は一切含まない（金額はテナント隔離）。
+export interface MarketReference { version: number; content: string; created_at: string }
+export async function fetchMarketReference(): Promise<MarketReference | null> {
+  try {
+    const rows = await supabaseRequest('market_prices', 'GET', null, '?select=version,content,created_at&order=version.desc&limit=1');
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    const r = rows[0];
+    if (!r || typeof r.content !== 'string' || r.content.length < 2000) return null;   // 空・欠損版は使わない
+    return { version: Number(r.version) || 0, content: r.content, created_at: String(r.created_at || '') };
+  } catch (e: any) {
+    console.error('相場データの取得エラー:', e?.message || e);
+    return null;
+  }
+}
+
 // 全社の共有プールから、拾い出しの傾向を取ってくる（部位×単位ごとの平均比と件数）
 export async function fetchTakeoffKnowledge(): Promise<{ item_key: string; unit: string; ratio: number; count: number }[]> {
   try {

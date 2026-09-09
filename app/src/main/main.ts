@@ -6,7 +6,7 @@ import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, 
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
 import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION, fetchLandmarks, OSM_ATTRIBUTION, searchPlaces, MIN_ZOOM, MAX_ZOOM, AddressLevel, isPlaceName } from './aerial';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge, sendTakeoffFeedback, fetchTakeoffKnowledge } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge, sendTakeoffFeedback, fetchTakeoffKnowledge, fetchMarketReference } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 import { buildLearningContext, dropSummaryRows } from './learning-context';
@@ -1643,6 +1643,52 @@ ${lines}${unreadable}${warn}
 `;
 }
 
+// ── 相場データベースの受け取り（週1回サーバー側で更新される）────────────
+// アプリ同梱の COST_REFERENCE はリリースしないと更新できず、実際に2ヶ月止まっていた。
+// GitHub Actions が7日おきに調べて market_prices へ入れ、アプリは起動時に受け取って
+// ディスクに置く。取れなければ同梱版をそのまま使う（＝オフラインでも見積は出る）。
+//
+// ★これで更新されるのは「全国・大阪の相場」だけ。
+//   その会社の実測値・実績（実測面積／確定実績アンカー／修正履歴／読み取った書類の実額）は
+//   一切触らないし、プロンプト上でも常に相場より上に置く。相場は実績が無いときの土台。
+const MARKET_REF_TTL = 7 * 24 * 60 * 60 * 1000;   // 7日
+let marketRefCache: { version: number; content: string; at: number } | null = null;
+
+function marketRefPath(): string {
+  return path.join(app.getPath('userData'), 'market-prices.json');
+}
+
+function loadMarketRefFromDisk(): void {
+  try {
+    const p = marketRefPath();
+    if (!fs.existsSync(p)) return;
+    const j = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    if (j && typeof j.content === 'string' && j.content.length > 2000) {
+      marketRefCache = { version: Number(j.version) || 0, content: j.content, at: Number(j.at) || 0 };
+      console.log(`相場データ: ディスクから v${marketRefCache.version} を読み込み`);
+    }
+  } catch (e) { console.error('相場データの読み込み失敗:', e); }
+}
+
+async function refreshMarketReference(): Promise<void> {
+  try {
+    const r = await fetchMarketReference();
+    if (!r) return;
+    if (marketRefCache && r.version <= marketRefCache.version) {
+      marketRefCache.at = Date.now();
+      return;
+    }
+    marketRefCache = { version: r.version, content: r.content, at: Date.now() };
+    fs.writeFileSync(marketRefPath(), JSON.stringify(marketRefCache), 'utf-8');
+    console.log(`相場データ: v${r.version} に更新（${r.content.length}文字）`);
+  } catch (e) { console.error('相場データの更新失敗:', e); }
+}
+
+// 見積で実際に使う相場。取れていなければアプリ同梱版。
+function marketReference(): string {
+  return (marketRefCache && marketRefCache.content) || COST_REFERENCE;
+}
+
 // ── 図面拾い出しの学習ループ（全社共有）──────────────────────────
 // 人が直した数量を全社で持ち寄って、「この部位はAIが少なく拾う」を全員で共有する。
 // 金額は含めない（各社の商売なので）。数量の拾い方は業界共通の技術なので共有する。
@@ -2268,6 +2314,13 @@ app.whenReady().then(async () => {
 
   // 学習ループ: 起動時に匿名統計をSupabaseへ送信
   setTimeout(() => sendStatsToSupabase(), 8000);
+
+  // 相場データベース: ディスクにあれば即使い、7日を過ぎていれば裏で取り直す。
+  //   見積の待ち時間には入れない（取得を待たない）。
+  loadMarketRefFromDisk();
+  setTimeout(() => {
+    if (!marketRefCache || Date.now() - marketRefCache.at > MARKET_REF_TTL) refreshMarketReference();
+  }, 5000);
 
   // 外部公的データをバックグラウンドで事前取得（キャッシュ更新）
   setReinfolibApiKey(loadApiConfig().reinfolibApiKey);
@@ -6730,8 +6783,10 @@ Before（施工前）とAfter（施工後）の2枚の画像が提供されて�
 - 設備（キッチン・浴室・トイレ等の位置と数）
 これらの情報をestimatedScaleに記載し、見積もりの根拠として活用すること。
 
-## 建築工事 相場データベース（2025-2026年）
-${COST_REFERENCE}
+## 建築工事 相場データベース（全国・大阪の一般的な相場）
+★これは実績が無いときの土台にすぎない。この会社の実測値・確定実績・修正履歴・読み取った書類の実額が
+ある項目では、必ずそちらを優先し、相場に合わせて動かさないこと。
+${marketReference()}
 
 ${hasLocation ? `## 現場場所\n${location}\n\n★重要: 上記の場所に基づいて「全国 地域別 工事費係数」テーブルから該当する都道府県の係数を適用し、金額を補正すること。大阪以外の場合は必ず地域係数を掛けて算出すること。\n` : ''}
 ${comment ? `## ユーザーが依頼した工事内容（★最重要★）\n${comment}\n` : ''}

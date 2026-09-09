@@ -1,0 +1,41 @@
+name: market-prices
+
+# 相場データベースの週次更新（7日おき）。
+#   毎週月曜 04:00 JST に走る（日曜 19:00 UTC）。学習ループ（日曜18:00 UTC）とは1時間ずらす。
+#   結果はSupabaseの market_prices に新しい版として入り、アプリが起動時に受け取る。
+#   ＝アプリをリリースしなくても相場が新しくなる。
+#
+# 手で走らせたいとき: Actions タブ → market-prices → Run workflow
+#   dry_run にチェックを入れると、調べるだけで書き込まない。
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '調べるだけで書き込まない'
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 19 * * 0'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ガードが壊れていないことを先に確かめる。
+      # ここが通らないまま相場を書き換えると、歯止めの無い自動更新になる。
+      - name: ガードの検査
+        run: node app/tools/harness-market-prices/run.js
+
+      - name: 相場を更新
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/update-market-prices.js ${{ inputs.dry_run && '--dry-run' || '' }}

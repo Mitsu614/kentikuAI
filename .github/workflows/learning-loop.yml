@@ -1,9 +1,15 @@
 name: learning-loop
 
+# 2026-09-09に定期実行を止めた。
+#   このジョブは estimate_feedback（各社の実額）を集計して cost_coefficients を作るもの。
+#   「金額はテナント隔離」の方針でアプリが送信も取り込みも止めたため、動かしても
+#   凍った古いデータから、誰も読まない係数を作り直すだけになる。
+#   方針を戻す（main.ts の SHARE_MONEY_ACROSS_TENANTS を true にする）ときは
+#   下の schedule を戻すこと。手で回すのは workflow_dispatch でいつでもできる。
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 18 * * 0'
+#  schedule:
+#    - cron: '0 18 * * 0'
 
 jobs:
   analyze-and-update:
