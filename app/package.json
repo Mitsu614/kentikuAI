@@ -1,6 +1,6 @@
 {
   "name": "kenchiku-boost",
-  "version": "3.13.0",
+  "version": "3.14.0",
   "description": "建築ブースト — AI建築見積・請求書管理デスクトップアプリ",
   "main": "dist/main.js",
   "scripts": {
@@ -11,7 +11,12 @@
     "dist:portable": "npm run build && electron-builder --win portable",
     "check:prompt": "node tools/harness-takeoff/check-prompt-sync.js",
     "harness:takeoff": "node tools/harness-takeoff/check-prompt-sync.js && node tools/harness-takeoff/accuracy.js",
-    "harness:dry": "node tools/harness-takeoff/check-prompt-sync.js && node tools/harness-takeoff/accuracy.js --dry"
+    "harness:dry": "node tools/harness-takeoff/check-prompt-sync.js && node tools/harness-takeoff/accuracy.js --dry",
+    "harness:learning-context": "node tools/harness-learning-context/run.js",
+    "harness:learning-effect": "node tools/harness-learning-context/run.js --api",
+    "harness:learning": "node tools/harness-learning/run.js",
+    "harness:ocr": "node tools/harness-ocr-import/run.js",
+    "harness:learning-all": "npm run harness:learning-context && npm run harness:ocr"
   },
   "keywords": [
     "建築",

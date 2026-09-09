@@ -9,6 +9,8 @@ import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LA
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge, sendTakeoffFeedback, fetchTakeoffKnowledge } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
+import { buildLearningContext, dropSummaryRows } from './learning-context';
+import { importOcrResultCore } from './ocr-import';
 
 // ── トライアル用埋め込みキー ──
 const TRIAL_KEYS = {
@@ -365,6 +367,13 @@ let activeDbPath = ''; // 起動時に確定するDBファイルパス（画像�
 
 // Supabaseに実績データを送信（匿名化済み・未送信分のみ）
 async function sendStatsToSupabase() {
+  // ★金額はテナント隔離（SHARE_MONEY_ACROSS_TENANTS）。起動時のまとめ送信も止める。
+  //   リアルタイム側（shouldIsolateLearning）だけ塞いでも、ここが未送信分を
+  //   拾って送ってしまうため、両方を同じ旗で閉じる。
+  if (!SHARE_MONEY_ACROSS_TENANTS) {
+    console.log('学習ループ: 金額はテナント隔離のためクラウド送信しません（数量の共有は別経路）');
+    return;
+  }
   try {
     // synced_atカラムを追加（未追加時のみ）
     try { runSql('ALTER TABLE estimate_log ADD COLUMN synced_at TEXT', []); } catch (_) {}
@@ -612,7 +621,24 @@ function getTenantProfile(tid: number): { industryType: string | null; isolated:
 //   そのまま流出になるのを防ぐため（database.ts の山下さん自動判定は industry_type が空の
 //   ときしか発火しないので、業種だけ手動設定されたテナントはフラグが立たない）。
 //   見積アンカー側(analyzeImageCore)は既に heatshield を見ており、そちらと基準を揃える。
+// ★学習ポリシー（2026-09-09 決定）: 金額はテナント隔離、数量は全社共有。
+//   金額（単価・原価・売価・掛率）はその会社の商売そのもの。よその実額を混ぜると
+//   自社の値付けが歪むうえ、他社の原価がクラウド経由で回ることになる。
+//   → 金額は送らない・取り込まない。テナント内の実績（constructions.actual_* /
+//     estimate_log / ocr_log）だけで学習する（learning-context.ts）。
+//   一方、図面からの数量の拾い方は業界共通の技術なので全社で持ち寄る（takeoff_feedback）。
+//   ここを true に戻すと金額の全社共有が復活する。戻すときはハーネスも回すこと。
+const SHARE_MONEY_ACROSS_TENANTS = false;
+
+// テナント自体が隔離設定か（金額ポリシーとは別。こちらは「その会社を他社と混ぜない」の判定）。
+// 山下さん（特許遮熱シート）のように、商材そのものが他社に見えてはいけないテナントを指す。
+function isIsolatedTenant(tid: number): boolean {
+  const p = getTenantProfile(tid);
+  return p.isolated || p.industryType === 'heatshield';
+}
+
 function shouldIsolateLearning(tid: number, workType?: string): boolean {
+  if (!SHARE_MONEY_ACROSS_TENANTS) return true;   // 金額は常にテナント内で閉じる
   const p = getTenantProfile(tid);
   return p.isolated || p.industryType === 'heatshield' || isHeatshieldWork(workType);
 }
@@ -625,30 +651,7 @@ export interface ClientAttrs { job?: string; hobby?: string; age?: string; prior
  * ③ max_tokensで途中で切れた場合の括弧・文字列の補完。
  * 全部失敗したら最後のエラーを投げる。
  */
-// OCRした見積書の「見出し行（工事名 1式 ◯◯円）」は、その下に並ぶ内訳と金額が重複する。
-// これを明細として足すと原価が実際の2倍になり、掛率も売価/原価が1を割って学習を壊す。
-// （実例: 森鉄筋 養老工場の見積書。明細合計¥1,002,000 に対し税抜総額は¥500,000）
-// 明細合計が小計を明らかに超える場合、「他の全明細の合計とほぼ同額の行」を見出し行とみなして落とす。
-function dropSummaryRows(items: any[], subtotal: any): any[] {
-  if (!Array.isArray(items) || items.length < 2) return items || [];
-  const sub = Number(subtotal) || 0;
-  const amountOf = (i: any) => Number(i?.amount) || (Number(i?.quantity) || 1) * (Number(i?.unitPrice) || 0);
-  let rows = items.slice();
-  for (let pass = 0; pass < 2; pass++) {
-    const sum = rows.reduce((s, i) => s + amountOf(i), 0);
-    if (sub <= 0 || sum <= sub * 1.05) break;
-    // 自分を除いた残りの合計と2%以内で一致する行 ＝ 見出し行
-    const idx = rows.findIndex(i => {
-      const a = amountOf(i);
-      const rest = sum - a;
-      return a > 0 && rest > 0 && Math.abs(a - rest) <= rest * 0.02;
-    });
-    if (idx < 0) break;
-    console.warn(`[OCR] 見出し行を明細から除外: ${rows[idx]?.name} ¥${amountOf(rows[idx]).toLocaleString()}（明細合計¥${sum.toLocaleString()} / 小計¥${sub.toLocaleString()}）`);
-    rows = rows.filter((_, n) => n !== idx);
-  }
-  return rows;
-}
+// dropSummaryRows / buildLearningContext は learning-context.ts へ移動した（ハーネスから叩くため）。
 
 // 内訳の費目分類。AIが category を返さない古いログ用に、項目名からも推定できるようにする。
 function classifyBreakdownItem(item: any): '材料' | '施工費' | '仮設' | '経費' {
@@ -4699,6 +4702,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('takeoff:feedback', async (_e, rows: any[]) => {
     try {
       if (!Array.isArray(rows) || rows.length === 0) return { ok: true, sent: 0 };
+      // ★隔離テナント（特許遮熱シート等）は数量も送らない。
+      //   送るのは部位名・単位・数量だけで金額は含まないが、部位名に工法名がそのまま入る。
+      //   「スカイ工法施工 折板屋根用」のような特許工法の名前と、その典型的な数量が
+      //   共有プールに載ってしまう。数量の共有は全テナントの方針だが、ここだけは例外。
+      //   画面側でも止めていない（止められない）ので、必ずここで弾く。
+      if (isIsolatedTenant(getCurrentTenant())) {
+        console.log('拾い出し学習: 隔離テナントのため共有プールへ送信しません（受け取りは継続）');
+        return { ok: true, sent: 0 };
+      }
       const cfg = loadApiConfig();
       const industry = getTenantProfile(getCurrentTenant()).industryType || cfg.industryType || 'general';
       const sent = await sendTakeoffFeedback(rows.map((r: any) => ({
@@ -5735,171 +5747,38 @@ ${pages}</body></html>`;
 
   // ── OCR結果をDBに一括登録 ──
   ipcMain.handle('ai:importOcrResult', (_e, data: any) => {
-    const today = new Date().toISOString().split('T')[0];
+    // DBへ書く部分は ocr-import.ts（ハーネスから直接叩けるようにするため切り出し）。
     const tid = getCurrentTenant();
     const linkConstructionId = data._linkConstructionId || null;
-
-    // ★紐づけ絶対★
-    // 既存工事に紐づけないOCR取り込みは「新規案件」になる。新規案件は現場写真が無いと、
-    // どの建物の・どの屋根の金額なのかが永久に分からなくなり、実績として使えない。
-    // 画面側でも止めているが、ここでも必ず弾く（画面の実装漏れやIPC直叩きを許さない）。
-    const siteImages: string[] = Array.isArray(data._siteImages) ? data._siteImages.filter((s: any) => typeof s === 'string' && s.length > 100) : [];
-    if (!linkConstructionId && siteImages.length === 0) {
-      throw new Error('ERROR: 既存の工事に紐づけるか、新規案件として現場写真を1枚以上添付してください。写真の無い新規案件は登録できません。');
-    }
-
-    // 金額計算（税抜に統一）
-    const taxRate = data.taxRate || 0.1;
-    let laborCost = 0;
-    let materialTotal = 0;
-    const items = dropSummaryRows(data.items, data.subtotal);
-    for (const item of items) {
-      const amt = item.amount || (item.quantity || 1) * (item.unitPrice || 0);
-      if (item.name && (item.name.includes('人件費') || item.name.includes('施工費') || item.name.includes('労務費'))) {
-        laborCost += amt;
-      } else {
-        materialTotal += amt;
-      }
-    }
-    const totalCost = materialTotal + laborCost;
-    // subtotalがあればそれは税抜、totalしかなければ税抜に変換
-    const sellingPrice = data.subtotal || (data.total ? Math.round(data.total / (1 + taxRate)) : totalCost);
-    const markupRate = totalCost > 0 ? Math.round((sellingPrice / totalCost) * 100) / 100 : 1.3;
-
-    let propertyId: number;
-    let conId: number;
-
-    if (linkConstructionId) {
-      // 既存の施工に紐づける場合
-      const existing = queryAll('SELECT * FROM constructions WHERE id = ?', [linkConstructionId])[0];
-      if (!existing) throw new Error('指定された施工履歴が見つかりません');
-      conId = linkConstructionId;
-      propertyId = existing.property_id;
-
-      // 既存施工のAI見積データを取得（学習ループ用）
-      const aiMaterials = queryAll('SELECT SUM(quantity * unit_price) as total FROM construction_materials WHERE construction_id = ?', [conId]);
-      const aiMaterialCost = aiMaterials[0]?.total || 0;
-      const aiLaborCost = existing.labor_cost || 0;
-      const aiTotal = aiMaterialCost + aiLaborCost;
-
-      // 実績データとして学習ループに送信
-      const workType = existing.title || 'その他';
-      const feedbackData = {
-        work_type: workType,
-        ai_material_cost: aiMaterialCost,
-        ai_labor_cost: aiLaborCost,
-        ai_total: aiTotal,
-        ai_markup_rate: existing.markup_rate || 1.3,
-        actual_material_cost: materialTotal,
-        actual_labor_cost: laborCost,
-        actual_selling_price: sellingPrice,
-        actual_markup_rate: markupRate,
-        accuracy_ratio: aiTotal > 0 ? Math.round((sellingPrice / aiTotal) * 100) / 100 : null,
-      };
-
-      // Supabaseに送信（非同期で）
-      const ocrLearnTid = getCurrentTenant();
-      if (shouldIsolateLearning(ocrLearnTid, workType)) {
-        // 隔離テナント または 特許の遮熱シート工事: 共有プールに送らず自社実績だけで学習
-        console.log('学習ループ（OCR紐付け）: 隔離学習のため共有プール送信をスキップ');
-        sendLearningCompleteNotification(ocrLearnTid, workType);
-      } else {
-        sendLearningCompleteNotification(ocrLearnTid, workType);
-        const { sendFeedbackToSupabase, analyzeAndUpdateCoefficients } = require('./supabase-sync');
-        sendFeedbackToSupabase([feedbackData]).then(() => {
+    const imported = importOcrResultCore(data, {
+      tenantId: tid,
+      saveSiteImages: (images, propertyId) => {
+        // 現場写真は userData 配下のディスクへ。DBに画像を入れると重くなる。
+        try {
+          const first = offloadImageIfLarge(images[0], 'property');
+          runSql('UPDATE properties SET floor_plan_image = ?, floor_plan_image_path = ? WHERE id = ?',
+            [first.thumb, first.filePath, propertyId]);
+          for (let i = 1; i < images.length; i++) saveImageToDiskWithThumb(images[i], 'property');
+        } catch (e) { console.error('新規案件の現場写真の保存に失敗:', e); }
+      },
+      reportActuals: (fb) => {
+        // 実績が確定したので学習の完了を知らせる。金額の共有はポリシー次第。
+        if (shouldIsolateLearning(tid, fb.work_type)) {
+          console.log('学習ループ（OCR）: 金額はテナント隔離のため共有プール送信をスキップ');
+          sendLearningCompleteNotification(tid, fb.work_type);
+          return;
+        }
+        sendLearningCompleteNotification(tid, fb.work_type);
+        sendFeedbackToSupabase([fb]).then(() => {
           const config = loadApiConfig();
           if (config.anthropicKey) analyzeAndUpdateCoefficients(config.anthropicKey);
         }).catch((e: any) => console.error('学習ループ送信エラー:', e));
-      }
-
-      // 施工のnotesに実績紐付けを記録
-      runSql('UPDATE constructions SET notes = COALESCE(notes, \'\') || ? WHERE id = ?',
-        [`\n\n【実績紐付け済み】${data.documentType}: ${data.issuerName || ''}\n実績金額: ¥${sellingPrice.toLocaleString()}`, conId]);
-
-    } else {
-      // 新規作成（従来の動作）
-      propertyId = runSql('INSERT INTO properties (name, address, notes, tenant_id) VALUES (?,?,?,?)',
-        [data.title || '読み取り書類', data.clientAddress || null, `OCR取り込み: ${data.documentType}\n発行元: ${data.issuerName || ''}`, tid]);
-
-      // ★OCRで読み取った書類は「実際に出した金額」そのもの＝確定実績。actual_* に必ず書く。
-      //   確定実績アンカー(analyzeImageCore)は actual_* しか読まないため、ここを空にすると
-      //   PDFを何件取り込んでもアンカーが発火せず、AIが相場に引っ張られて金額を外す。
-      conId = runSql(
-        'INSERT INTO constructions (property_id, title, construction_date, labor_cost, markup_rate, notes, tenant_id, actual_material_cost, actual_labor_cost, actual_selling_price) VALUES (?,?,?,?,?,?,?,?,?,?)',
-        [propertyId, data.title || 'OCR取り込み工事', data.issueDate || today, laborCost, markupRate,
-         `OCR取り込み\n発行元: ${data.issuerName || ''}`, tid, materialTotal, laborCost, sellingPrice]
-      );
-
-      // 新規案件の現場写真を物件に保存（ディスク退避。DBには画像を入れない）
-      try {
-        const first = offloadImageIfLarge(siteImages[0], 'property');
-        runSql('UPDATE properties SET floor_plan_image = ?, floor_plan_image_path = ? WHERE id = ?',
-          [first.thumb, first.filePath, propertyId]);
-        for (let i = 1; i < siteImages.length; i++) saveImageToDiskWithThumb(siteImages[i], 'property');
-      } catch (e) { console.error('新規案件の現場写真の保存に失敗:', e); }
-
-      // 材料明細（見出し行を除いた明細を使う。見出し行を入れると原価が2倍になる）
-      for (const item of items) {
-        if (item.name && (item.name.includes('人件費') || item.name.includes('施工費') || item.name.includes('労務費'))) continue;
-        const matId = runSql('INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?,?,?,?,?,?)',
-          [item.name || '（品名不明）', item.category || 'その他', item.unit || '式', item.unitPrice || item.amount || 0, 'OCR取り込み', tid]);
-        runSql('INSERT INTO construction_materials (construction_id, material_id, quantity, unit_price) VALUES (?,?,?,?)',
-          [conId, matId, item.quantity || 1, item.unitPrice || item.amount || 0]);
-      }
-
-      // 新規OCR取込も学習ループに送信（実績データとして扱う）
-      if (materialTotal > 0 || laborCost > 0) {
-        const workType = data.title || 'OCR取込';
-        const ocrNewTid = getCurrentTenant();
-        if (shouldIsolateLearning(ocrNewTid, workType)) {
-          // 隔離テナント または 特許の遮熱シート工事: 共有プールに送らず自社実績だけで学習
-          console.log('学習ループ（OCR新規）: 隔離学習のため共有プール送信をスキップ');
-          sendLearningCompleteNotification(ocrNewTid, workType);
-        } else {
-          sendLearningCompleteNotification(ocrNewTid, workType);
-          sendFeedbackToSupabase([{
-            work_type: workType,
-            ai_material_cost: materialTotal,
-            ai_labor_cost: laborCost,
-            ai_total: sellingPrice,
-            ai_markup_rate: markupRate,
-            actual_material_cost: materialTotal,
-            actual_labor_cost: laborCost,
-            actual_selling_price: sellingPrice,
-            actual_markup_rate: markupRate,
-            accuracy_ratio: 1.0,
-          }]).then(() => {
-            const config = loadApiConfig();
-            if (config.anthropicKey) analyzeAndUpdateCoefficients(config.anthropicKey);
-            console.log('学習ループ: OCR新規取込データを送信完了');
-          }).catch((e: any) => console.error('学習ループ: OCR新規送信エラー:', e));
-        }
-      }
-    }
-
-    // 請求書（どちらの場合も作成）
-    const dueDate = data.dueDate || null;
-    const invId = runSql('INSERT INTO invoices (construction_id, client_name, client_address, issue_date, due_date, amount, tax_rate, notes, status, tenant_id) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      [conId, data.clientName || '（読み取り）', data.clientAddress || null, data.issueDate || today, dueDate, sellingPrice, data.taxRate || 0.1, `OCR取り込み\n${data.notes || ''}`, 'draft', tid]);
-
-    // estimate_logにOCR取込の結果を記録
-    try {
-      const jstNow = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Tokyo' }).replace('T', ' ');
-      runSql(
-        'INSERT INTO estimate_log (tenant_id, construction_id, work_type, ai_material_cost, ai_labor_cost, ai_total, ai_markup_rate, ai_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [tid, conId, data.title || 'OCR取込', materialTotal, laborCost, sellingPrice, markupRate, JSON.stringify(data), jstNow]
-      );
-    } catch (e) { console.error('OCR estimate_log記録失敗:', e); }
-
-    // OCRログに取り込み結果・コメント（紐づけメモ）を反映
-    try {
-      if (data._ocrLogId) {
-        runSql(
-          'UPDATE ocr_log SET imported = 1, construction_id = ?, comment = COALESCE(NULLIF(?, \'\'), comment) WHERE id = ? AND tenant_id = ?',
-          [conId, data._comment || '', data._ocrLogId, tid]
-        );
-      }
-    } catch (e) { console.error('ocr_log更新失敗:', e); }
+      },
+    });
+    const conId = imported.constructionId;
+    const propertyId = imported.propertyId;
+    const invId = imported.invoiceId;
+    const { materialTotal, laborCost, sellingPrice, markupRate, siteImages } = imported;
 
     logAudit('create', 'ocr_import', conId, `${data.documentType}: ${data.title}${linkConstructionId ? ' (実績紐付け)' : ''}`);
 
@@ -6312,207 +6191,30 @@ ${pages}</body></html>`;
     if (estTid !== getCurrentTenant()) {
       console.log(`[管理者] 見積対象テナントを ${estTid} に切り替えて解析（業種=${estProfile.industryType || 'general'}）`);
     }
-    // 隔離テナント（特許遮熱シート等・相場が存在しない商材）は、自社実績が唯一の正解データ。
-    // → 取り込む実績件数を大幅に増やして「テナント内でめっちゃ学習」させる。
-    const feedbackLimit = estProfile.isolated ? 200 : 50;
-
-    // AI見積 vs 実際の編集結果のフィードバックデータを生成（学習ループ: 確定実績のみ使用）
-    // constructions の fixed_selling_price / labor_cost や construction_materials の合計は使わない。
-    // AI見積は自動で constructions に保存されるため、それを「修正後の実額」として拾うと
-    // AI自身の出力を再学習して金額が暴走する（実績アンカー側と同じ理由で確定実績のみに限定）。
-    const feedbackRows = queryAll(`
-      SELECT el.work_type, el.building_age, el.structure,
-        el.ai_material_cost, el.ai_labor_cost, el.ai_total, el.ai_markup_rate,
-        el.actual_material_cost, el.actual_labor_cost, el.actual_markup_rate, el.actual_selling_price,
-        el.ai_json, el.feedback_at
-      FROM estimate_log el
-      WHERE el.tenant_id = ? AND el.feedback_at IS NOT NULL
-        AND (el.actual_material_cost > 0 OR el.actual_labor_cost > 0 OR el.actual_selling_price > 0)
-      ORDER BY el.feedback_at DESC
-      LIMIT ${feedbackLimit}
-    `, [estTid]);
-
-    let feedbackSummary = '';
-    if (feedbackRows.length > 0) {
-      const corrections: string[] = [];
-      for (const fb of feedbackRows) {
-        // 予実管理の入力欄は空欄を 0 として保存する（BudgetPage）。0 は「未入力」であって
-        // 「0円に修正された」ではないので、両側が正の値の項目だけを修正履歴として扱う。
-        const aiMat = Number(fb.ai_material_cost) || 0, aiLabor = Number(fb.ai_labor_cost) || 0;
-        const aiTotal = Number(fb.ai_total) || 0;
-        const actMat = Number(fb.actual_material_cost) || 0, actLabor = Number(fb.actual_labor_cost) || 0;
-        const actTotal = Number(fb.actual_selling_price) || 0;
-        const hasMat = aiMat > 0 && actMat > 0;
-        const hasLabor = aiLabor > 0 && actLabor > 0;
-        const hasTotal = aiTotal > 0 && actTotal > 0;
-        const matDiff = actMat - aiMat, laborDiff = actLabor - aiLabor, totalDiff = actTotal - aiTotal;
-        const matPct = hasMat ? Math.round((matDiff / aiMat) * 100) : 0;
-        const laborPct = hasLabor ? Math.round((laborDiff / aiLabor) * 100) : 0;
-        const totalPct = hasTotal ? Math.round((totalDiff / aiTotal) * 100) : 0;
-
-        // 5%以上の差分がある場合フィードバック
-        if (Math.abs(matPct) >= 5 || Math.abs(laborPct) >= 5 || Math.abs(totalPct) >= 5) {
-          // 改修・修繕は同じ工事種別でも築年数で実額が大きく変わる。どの築年帯・構造の実績かを
-          // 明示して、AIが「今回に近い築年帯の修正傾向」を優先できるようにする。
-          const fbAge = Number(fb.building_age) || 0;
-          const ageBand = fbAge > 0 ? `築${Math.floor(fbAge / 10) * 10}年台` : '';
-          const cond = [fb.structure || '', ageBand].filter(Boolean).join('・');
-          const parts: string[] = [cond ? `${fb.work_type}【${cond}】` : `${fb.work_type}`];
-          if (Math.abs(matPct) >= 5) parts.push(`材料費: AI${aiMat.toLocaleString()}円→修正後${actMat.toLocaleString()}円(${matDiff > 0 ? '+' : ''}${matPct}%)`);
-          if (Math.abs(laborPct) >= 5) parts.push(`人件費: AI${aiLabor.toLocaleString()}円→修正後${actLabor.toLocaleString()}円(${laborDiff > 0 ? '+' : ''}${laborPct}%)`);
-          if (Math.abs(totalPct) >= 5) parts.push(`売価: AI${aiTotal.toLocaleString()}円→修正後${actTotal.toLocaleString()}円(${totalDiff > 0 ? '+' : ''}${totalPct}%)`);
-          const aiMk = Number(fb.ai_markup_rate) || 0, actMk = Number(fb.actual_markup_rate) || 0;
-          if (aiMk > 0 && actMk > 0 && actMk !== aiMk) parts.push(`掛率: AI${aiMk}→実際${actMk}`);
-
-          // AI見積のbreakdownから削除・追加された項目を検出
-          try {
-            const aiResult = JSON.parse(fb.ai_json);
-            const aiItems = (aiResult.breakdown || []).map((b: any) => b.item);
-            const actualMats = queryAll(
-              `SELECT m.name FROM construction_materials cm JOIN materials m ON m.id = cm.material_id WHERE cm.construction_id = (SELECT construction_id FROM estimate_log WHERE ai_json = ? LIMIT 1)`,
-              [fb.ai_json]
-            ).map((m: any) => m.name);
-            const added = actualMats.filter((n: string) => !aiItems.some((ai: string) => n.includes(ai) || ai.includes(n)));
-            const removed = aiItems.filter((ai: string) => !actualMats.some((n: string) => n.includes(ai) || ai.includes(n)));
-            if (added.length > 0) parts.push(`追加された項目: ${added.slice(0, 3).join(', ')}`);
-            if (removed.length > 0) parts.push(`削除された項目: ${removed.slice(0, 3).join(', ')}`);
-          } catch (e) { console.error('Estimate feedback material diff failed:', e); }
-
-          corrections.push(parts.join(' | '));
-        }
-      }
-      if (corrections.length > 0) {
-        feedbackSummary = `\n## ★★★ 過去のAI見積に対するユーザー修正履歴（最重要）★★★\n以下は過去のAI見積が実際にどう修正されたかの記録です。これはお客様が「正しい金額」として修正した実績データです。\n同じ種類の工事では、必ずこの修正傾向を反映して金額を調整してください。\n例: 過去に材料費が+20%修正されていたら、今回も同種の工事では材料費を20%高めに見積もること。
-★【】内は「その実績の構造・築年帯」だ。改修・修繕・解体では、同じ工事種別でも築年帯で実額が大きく変わる。
-　今回の物件と**同じ構造・最も近い築年帯**の履歴を最優先で当てはめろ（一般論の年数目安より、この自社実績が優先）。
-　該当する築年帯の履歴が無い場合のみ、工事種別だけで平均した傾向を使え。\n${corrections.join('\n')}\n`;
-      }
-    }
-
-    // 【隔離テナント／遮熱シート業種】自社実績の「実際の価格そのもの」を価格アンカーとして渡す。
-    // 相場が無い特許商材（遮熱シート等）は、差分学習だけでなく“実際に成約した金額”を
-    // 絶対基準にした方が精度が出る。差分の有無に関わらず全実績を工事タイプ別に列挙する。
-    // ★isolatedフラグの付け忘れで実績が効かず高値へ暴走する事故を防ぐため、遮熱シート業種の
-    //   テナントは isolated が未設定でも必ずアンカーを発火させる（あくまで tenant_id 単位＝他社へ漏れない）。
-    const heatshieldEst = estProfile.industryType === 'heatshield' || config.industryType === 'heatshield';
-    if (estProfile.isolated || heatshieldEst) {
-      try {
-        // ★確定した実績(actual_*)だけをアンカーにする。fixed_selling_price や
-        //   construction_materials の合計＝AIが自動生成した見積そのものなので、これをアンカーに
-        //   使うと「自分の高い出力を実績として再学習」する悪循環になる。確定実績が無い工事は除外。
-        const anchorRows = queryAll(`
-          SELECT c.title as work_type,
-            COALESCE(c.actual_material_cost, 0) as mat,
-            COALESCE(c.actual_labor_cost, 0) as labor,
-            COALESCE(c.actual_selling_price, 0) as sell,
-            c.markup_rate, c.notes, c.construction_date
-          FROM constructions c
-          WHERE c.tenant_id = ?
-          ORDER BY c.id DESC
-          LIMIT 200
-        `, [estTid]);
-        const anchors = anchorRows
-          .filter((r: any) => (r.sell || 0) > 0 || (r.mat || 0) > 0)
-          .map((r: any) => {
-            const method = (r.notes || '').split('\n')[0] || '';
-            const bits = [`${r.work_type || '工事'}`];
-            if (method && !`${r.work_type}`.includes(method)) bits.push(`工法/メモ:${method}`);
-            if (r.mat > 0) bits.push(`材料費¥${Math.round(r.mat).toLocaleString()}`);
-            if (r.labor > 0) bits.push(`人件費¥${Math.round(r.labor).toLocaleString()}`);
-            if (r.sell > 0) bits.push(`成約売価¥${Math.round(r.sell).toLocaleString()}`);
-            return `- ${bits.join(' / ')}`;
-          });
-        if (anchors.length > 0) {
-          feedbackSummary += `\n## ★★★ 自社の実績価格アンカー（この会社の唯一の正解データ・最優先で合わせろ）★★★\nこの会社は相場が存在しない専門商材を扱うため、全国相場や汎用単価は当てにならない。\n以下は実際に自社が成約・実施した価格そのもの。同じ工事・同じ工法では、必ずこの実績価格帯に金額を合わせること。\n相場データと矛盾する場合は、必ず下記の自社実績価格を優先せよ。\n実績が近いものが無い場合のみ、最も近い工法の自社実績から推定し、confidenceを下げること。\n${anchors.join('\n')}\n`;
-          console.log(`隔離テナント学習強化: 自社実績アンカー ${anchors.length}件をプロンプトに投入`);
-        }
-      } catch (e) { console.error('自社実績アンカー生成失敗:', e); }
-
-      // 過去にAI-OCRで読み取った書類（見積書・請求書PDF/画像）も価格アンカーにする。
-      // 山下さんの過去の遮熱シート見積書PDFを読み込むほど、その実際の金額・明細で学習が進む。
-      try {
-        const ocrRows = queryAll(
-          `SELECT document_type, title, total, ocr_json, comment, created_at
-           FROM ocr_log WHERE tenant_id = ? AND (total > 0 OR ocr_json IS NOT NULL)
-           ORDER BY id DESC LIMIT 40`,
-          [estTid]
-        );
-        const ocrAnchors: string[] = [];
-        const seenDocs = new Set<string>();
-        for (const r of ocrRows) {
-          const bits: string[] = [`[${r.document_type || '書類'}] ${r.title || '（件名なし）'}`];
-          if (r.total > 0) bits.push(`合計¥${Math.round(r.total).toLocaleString()}`);
-          // 明細から単価付き項目を抽出。遮熱/特許/シート（＝この会社の唯一の正解データ）は
-          // 打ち切らず必ず全項目残し、その他項目のみ上限を設ける（過去PDFの実単価を厚く学習）。
-          try {
-            const oj = JSON.parse(r.ocr_json || '{}');
-            // 見出し行（工事名 1式 ◯◯円）は内訳と金額が重複する。アンカーに載せると
-            // AIが「本体は◯◯円/式」と誤学習するので、ここでも必ず落とす。
-            const items = dropSummaryRows(Array.isArray(oj.items) ? oj.items : [], oj.subtotal);
-            const priced = items.filter((it: any) => it && it.name && (it.unitPrice > 0 || it.amount > 0));
-
-            // 同じ書類を複数回取り込んでいると、同じ単価が何度もアンカーに並んで重み付けが狂う。
-            // 件名で照合していたが、OCRが工法名を読み違えると（スカイ工法／スカイエ法／スカイエ工法）
-            // 別書類とみなされ、森鉄筋様の1枚が3回並んでいた。金額の並びで同一性を判定する。
-            const docKey = `${Math.round(r.total || 0)}|${priced.map((it: any) => Math.round(it.amount || it.unitPrice || 0)).join(',')}`;
-            if (seenDocs.has(docKey)) continue;
-            seenDocs.add(docKey);
-            const isCore = (it: any) => /(遮熱|特許|シート|工法|カバー|葺|内張|外張|吹付)/.test(it.name || '');
-            // ★数量は単価があるときも必ず載せる。
-            // 以前は単価があると数量を落としていた。その結果、森鉄筋様の実績が
-            //   「スカイ工法施工 折板屋根用 足場面積 33.8m(折板屋根面積×1.4) ¥6,500/㎡（金額¥312,000）」
-            // としてAIに渡り、見積数量の 48㎡ がどこにも現れなかった。AIに見える面積は
-            // 品名の中の 33.8 だけなので「6,500円/㎡ × 屋根面積」と読むしかない。
-            // 実際、早川鉄筋様の見積で屋根面積725.8㎡にそのまま単価を掛け、展開係数1.4を落とした。
-            const fmt = (it: any) => {
-              const u = it.unitPrice > 0 ? `¥${Math.round(it.unitPrice).toLocaleString()}${it.unit ? '/' + it.unit : ''}` : '';
-              const qty = it.quantity > 0 ? `数量${it.quantity}${it.unit || ''}` : '';
-              const amt = it.amount > 0 ? `金額¥${Math.round(it.amount).toLocaleString()}` : '';
-              const tail = [qty, u, amt].filter(Boolean).join(' × ').replace(' × 金額', ' ＝ 金額');
-              return `${it.name}${tail ? ' ' + tail : ''}`;
-            };
-            const core = priced.filter(isCore);          // 遮熱シート本体系は全部残す（打ち切らない）
-            const others = priced.filter((it: any) => !isCore(it)).slice(0, 12); // その他は最大12件
-            const detail = [...core.map(fmt), ...others.map(fmt)];
-            if (detail.length > 0) bits.push(`明細(${core.length}件が遮熱系/計${priced.length}件): ${detail.join(' / ')}`);
-          } catch (_) {}
-          if (r.comment) bits.push(`メモ: ${r.comment}`);
-          ocrAnchors.push(`- ${bits.join(' | ')}`);
-        }
-        if (ocrAnchors.length > 0) {
-          feedbackSummary += `\n## ★★★ 過去に読み取った自社書類（見積書・請求書）の実額（最優先アンカー）★★★\n以下はこの会社が実際に発行した見積書・請求書をOCRで読み取った実データ。金額・単価・明細はすべて実際に使われた正解値。\n同じ工種・同じ工法では、必ずこの実額・実単価に合わせて見積もること。全国相場より必ずこちらを優先せよ。\n${ocrAnchors.join('\n')}\n`;
-          console.log(`隔離テナント学習強化: 過去OCR書類アンカー ${ocrAnchors.length}件をプロンプトに投入`);
-        }
-      } catch (e) { console.error('OCR書類アンカー生成失敗:', e); }
-    }
-
-    // 過去の読み取り書類へのコメント（現場メモ＝紐づけ情報）をプロンプトに反映 → 学習
-    let ocrCommentSummary = '';
-    try {
-      const commentRows = queryAll(
-        `SELECT title, document_type, total, comment, created_at FROM ocr_log
-         WHERE tenant_id = ? AND comment IS NOT NULL AND comment != ''
-         ORDER BY created_at DESC LIMIT 30`,
-        [getCurrentTenant()]
-      );
-      if (commentRows.length > 0) {
-        const lines = commentRows.map((r: any) =>
-          `- ${r.title || r.document_type || '書類'}${r.total ? `（¥${Math.round(r.total).toLocaleString()}）` : ''}: ${r.comment}`
-        ).join('\n');
-        ocrCommentSummary = `\n## ★ 過去の実績書類への現場メモ（担当者コメント・最重要の補足）★\n以下は読み取った過去の見積書・請求書に対して、この会社の担当者が付けたメモです。金額の根拠・工法・特殊事情が書かれています。同種の工事ではこのメモの内容を必ず反映して見積もってください。\n${lines}\n`;
-      }
-    } catch (e) { console.error('OCRコメント取得失敗:', e); }
+    // ── テナント別の学習コンテキスト（修正履歴・実績アンカー・OCR書類・現場メモ）──
+    //   実体は learning-context.ts。ハーネスから同じ関数を叩いて中身を検証している。
+    const learningCtx = buildLearningContext({
+      estTid,
+      isolated: !!estProfile.isolated,
+      heatshield: estProfile.industryType === 'heatshield' || config.industryType === 'heatshield',
+    });
+    const feedbackRows = learningCtx.feedbackRows;
+    const feedbackSummary = learningCtx.feedbackSummary;
+    const ocrCommentSummary = learningCtx.ocrCommentSummary;
 
     // ※テナント別プロファイル（estTid / estProfile）は上部（フィードバック取得時）で取得済み
 
-    // 学習ループ: Supabase係数 + 旧統計を取得してプロンプトに追加
-    // ※足場・人件費などは全テナント共有の相場/係数を参照する（山下さんも同様）。
-    //   特許の遮熱シート本体の価格だけは、後述の heatshield 業種分岐で「自社実績優先」と指示する。
+    // 全社共有の見積係数。★金額はテナント隔離（SHARE_MONEY_ACROSS_TENANTS）にしたため既定で使わない。
+    //   cost_coefficients は他社の実額（AI見積 vs 実績）から作られた金額の補正値で、
+    //   これをプロンプトに入れると「金額は自社だけで学習する」方針と矛盾する。
+    //   静的な相場データ（cost-reference.ts）と公的統計は他社の実額ではないので従来どおり使う。
     let globalStats = '';
-    try {
-      const coefficients = await fetchCostCoefficients();
-      globalStats = coefficientsToPromptText(coefficients);
-    } catch (e) { console.error('Supabase coefficients fetch failed:', e); }
+    if (SHARE_MONEY_ACROSS_TENANTS) {
+      try {
+        const coefficients = await fetchCostCoefficients();
+        globalStats = coefficientsToPromptText(coefficients);
+      } catch (e) { console.error('Supabase coefficients fetch failed:', e); }
+    }
 
     // 外部公的データ（e-Stat・国交省）を取得してプロンプトに追加
     let externalData = '';
@@ -7145,46 +6847,7 @@ ${globalStats}
 ${externalData}
 ${marketPrompt}
 ${clientAttrsPrompt}
-${(() => {
-  // ── テナント別「クセ・好み」フィット（先方の値付け・好みにめっちゃ合わせる）──
-  const lines: string[] = [];
-  try {
-    // 1) 明示的な好み（チャット/実績から学習・確信度の高い順）
-    const chatMemos = queryAll('SELECT category, key, value, confidence FROM chat_learnings WHERE tenant_id = ? ORDER BY confidence DESC, category', [estTid]);
-    if (chatMemos.length > 0) {
-      lines.push('【この会社が明示した好み・ルール（必ず守れ）】');
-      for (const m of chatMemos) {
-        const strong = (m.confidence || 0) >= 0.5 ? '★繰り返し確認済み・特に厳守: ' : '';
-        lines.push(`- ${strong}[${m.category}] ${m.key}: ${m.value}`);
-      }
-    }
-  } catch (_) {}
-  try {
-    // 2) 習慣的な掛率（この会社の値付けのクセ）
-    const mk = queryOne('SELECT AVG(markup_rate) as avg_mk, COUNT(*) as cnt FROM constructions WHERE tenant_id = ? AND markup_rate > 0', [estTid]);
-    if (mk && mk.cnt >= 3 && mk.avg_mk > 0) {
-      lines.push(`【値付けのクセ】この会社は過去${mk.cnt}件で掛率が平均 約${Math.round(mk.avg_mk * 100)}%。粗利率ルールより、まずこの会社の実掛率に寄せて売価を出すこと。`);
-    }
-  } catch (_) {}
-  try {
-    // 3) AI見積に対する系統的な偏り（毎回いくらか高め/低めに直す傾向）
-    let sum = 0, n = 0;
-    for (const fb of feedbackRows) {
-      if (fb.ai_total > 0 && fb.actual_selling_price > 0) {
-        sum += ((fb.actual_selling_price - fb.ai_total) / fb.ai_total) * 100; n++;
-      }
-    }
-    if (n >= 3) {
-      const bias = Math.round(sum / n);
-      if (Math.abs(bias) >= 4) {
-        lines.push(`【売価の偏り】この会社は過去${n}件でAI見積を平均${bias > 0 ? '+' : ''}${bias}%に修正している。今回も同傾向を見込み、売価を${bias > 0 ? '高め' : '低め'}(約${bias > 0 ? '+' : ''}${bias}%)に寄せること。`);
-      }
-    }
-  } catch (_) {}
-  if (lines.length === 0) return '';
-  return '\n## ★★★ この会社にフィットさせる（最優先・相場より優先）★★★\n以下はこの会社（テナント）固有の好み・値付けのクセ。全国相場や一般ルールより、まずこの会社の傾向に必ず合わせること。\n' +
-    lines.join('\n') + '\n';
-})()}
+${learningCtx.fitSummary}
 ## 登録済み材料カテゴリ
 ${categories}
 

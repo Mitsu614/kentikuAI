@@ -83,3 +83,7 @@ S__*.jpg
 # ── 作業用の一時ファイル ──
 supabase/.temp/
 test_insert.json
+
+# ハーネスが本番TSをその場でコンパイルする先（実行のたびに作り直す）
+app/.harness-build/
+app/.tsconfig.harness.json
