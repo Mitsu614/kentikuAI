@@ -31,15 +31,17 @@ const H = {
 
 // 金額（円）→ プラン。日本円は小数を持たないので amount はそのまま円。
 // 税別で登録しても税込で登録しても拾えるよう、両方の金額を並べてある。
+// ★単位数（credits）の正は app/src/database/database.ts の PLANS。金額・単位を変えたら
+//   そちらを直したうえで、この表と SettingsPage.tsx の plans も必ず揃えること。
 // ★プランの値段を変えたらここも直すこと。合わない金額は「不明」として何もしない
 //   （勝手に近いプランへ寄せると、少ない入金で上位プランが開いてしまう）。
 const PLAN_BY_AMOUNT: Record<string, { plan: string; credits: number }> = {
-  "30000": { plan: "standard", credits: 20 },
-  "33000": { plan: "standard", credits: 20 },
-  "70000": { plan: "better", credits: 50 },
-  "77000": { plan: "better", credits: 50 },
-  "100000": { plan: "pro", credits: 100 },
-  "110000": { plan: "pro", credits: 100 },
+  "30000": { plan: "standard", credits: 50 },
+  "33000": { plan: "standard", credits: 50 },
+  "70000": { plan: "better", credits: 150 },
+  "77000": { plan: "better", credits: 150 },
+  "100000": { plan: "pro", credits: 300 },
+  "110000": { plan: "pro", credits: 300 },
 };
 
 // 導入費用（初回のご契約時のみ・一回払い）。継続課金ではないので、

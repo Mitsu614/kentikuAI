@@ -1016,17 +1016,17 @@ function UserManagement() {
   const [form, setForm] = useState({ username: '', password: '', role: 'user' });
   const [msg, setMsg] = useState('');
   const [showAddTenant, setShowAddTenant] = useState(false);
-  const [tenantForm, setTenantForm] = useState({ companyName: '', plan: 'demo', credits: 30, username: '', password: '' });
+  const [tenantForm, setTenantForm] = useState({ companyName: '', plan: 'demo', credits: 10, username: '', password: '' });
   const [tenantMsg, setTenantMsg] = useState('');
   const [tenantLoading, setTenantLoading] = useState(false);
 
-  // 2026-09-02の月額改定に合わせた単位数。ここが旧いままだと、テナントを手で作ったときに
+  // 2026-09-08の単位引き上げに合わせた単位数。ここが旧いままだと、テナントを手で作ったときに
   // 契約と違う単位数で発行してしまう（database.ts の PLANS が正）。
   const plans: Record<string, { name: string; credits: number }> = {
     demo: { name: 'デモ', credits: 10 },
-    standard: { name: 'スタンダード', credits: 20 },
-    better: { name: 'ベター', credits: 50 },
-    pro: { name: 'プロ', credits: 100 },
+    standard: { name: 'スタンダード', credits: 50 },
+    better: { name: 'ベター', credits: 150 },
+    pro: { name: 'プロ', credits: 300 },
     enterprise: { name: '法人カスタム', credits: 9999 },
   };
 
@@ -1075,7 +1075,7 @@ function UserManagement() {
         tenantId,
       });
       setTenantMsg(`「${tenantForm.companyName}」を追加しました（${plans[tenantForm.plan]?.name}プラン / ${tenantForm.credits}単位）`);
-      setTenantForm({ companyName: '', plan: 'demo', credits: 30, username: '', password: '' });
+      setTenantForm({ companyName: '', plan: 'demo', credits: 10, username: '', password: '' });
       load();
     } catch (e: any) { setTenantMsg('エラー: ' + (e.message || '作成に失敗しました')); }
     setTenantLoading(false);
