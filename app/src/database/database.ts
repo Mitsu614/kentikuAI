@@ -83,12 +83,12 @@ export const PLANS: Record<string, { name: string; monthlyLimit: number; price: 
   demo:       { name: 'デモ',           monthlyLimit: 10,   price: 0,       description: '無料体験（月10単位・2週間）' },
   // クロス専門など、月数件しか見積を作らない会社向け（2026-09-14 追加）。
   // 拾い出し2単位＋見積1単位＝1件3単位なので、20単位で月6〜7件が目安。
-  light:      { name: 'ライト',         monthlyLimit: 20,   price: 14800,   description: '月20単位・クロス等の専門工事、月6件程度まで' },
+  light:      { name: 'ライト',         monthlyLimit: 20,   price: 14800,   description: '月20単位・クロス等の専門工事、月6件程度まで（航空写真測定を除く）' },
   standard:   { name: 'スタンダード',   monthlyLimit: 50,   price: 30000,   description: '月50単位・個人〜少人数の工務店' },
   // スタンダードとベターの間が 50→150 と3倍飛びで、月60〜100件の会社の行き場が無かった（2026-09-14 追加）。
   standard_plus: { name: 'スタンダード＋', monthlyLimit: 100, price: 50000, description: '月100単位・見積担当2名程度' },
   better:     { name: 'ベター',         monthlyLimit: 150,  price: 70000,   description: '月150単位・案件数が増えてきた工務店' },
-  pro:        { name: 'プロ',           monthlyLimit: 300,  price: 100000,  description: '月300単位・住所からの航空写真測定つき' },
+  pro:        { name: 'プロ',           monthlyLimit: 300,  price: 100000,  description: '月300単位・全社で積算を回す規模に' },
   enterprise: { name: '法人カスタム',   monthlyLimit: 9999, price: 0,       description: '多店舗・複数会社（個別お見積り）' },
 };
 

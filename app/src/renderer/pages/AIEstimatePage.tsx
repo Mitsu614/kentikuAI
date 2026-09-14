@@ -748,7 +748,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [myPlan, setMyPlan] = useState<string>('');
   // 管理者はプランに関係なく全機能を使える（本体の isAdminTenant() と同じ扱い）
   const [isAdmin, setIsAdmin] = useState(false);
-  const aerialAllowed = isAdmin || !myPlan || ['pro', 'enterprise', 'demo'].includes(myPlan);
+  // 航空写真測定はライト以外の全プランで使える（2026-09-14）。
+  // ライトは20単位しかなく、1回3単位のこの機能を入れると本来の見積に使う分が溶けるため対象外。
+  const aerialAllowed = isAdmin || !myPlan || myPlan !== 'light';
   useEffect(() => {
     (window as any).api.getPlan()
       .then((p: any) => setMyPlan(p?.plan || ''))

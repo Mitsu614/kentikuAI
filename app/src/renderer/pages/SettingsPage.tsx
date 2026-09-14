@@ -623,7 +623,8 @@ function PlanManagement() {
   const SETUP_FEE_LINK = 'https://buy.stripe.com/fZueVe85B9Fx07v7EG24009';   // 200,000円・一回払い（継続ではない）
 
   const PAID_PLANS = ['light', 'standard', 'standard_plus', 'better', 'pro', 'enterprise'];
-  // ライトは月14,800円。ここに導入費用20万（13ヶ月分）を乗せると誰も入れないので、対象外にする。
+  // 導入費用は「初期設定・データ取り込み・レクチャーという人の作業」の対価。
+  // ライトはその作業をお付けしない（お客様ご自身で設定していただく）ので、いただかない。
   const SETUP_FEE_EXEMPT = ['light'];
   // 初回のご契約か（デモ・トライアルから有料へ上がる場合）。有料同士のプラン変更は無料。
   const needsSetupFee = !!SETUP_FEE_LINK && !PAID_PLANS.includes(planInfo?.plan);
@@ -751,7 +752,7 @@ function PlanManagement() {
             <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
               ① 導入費用のお支払い → ② 月額プランのお申し込み、の順にお進みください。
               初期設定・データ移行・操作レクチャーが含まれます。プラン変更のときは、これはかかりません。
-              なお、ライトプランは導入費用をいただいておりません。
+              ライトプランは、これらの作業をお客様ご自身で行っていただくため、導入費用はいただきません。
             </div>
             <button
               className="btn btn-sm"
@@ -1141,7 +1142,7 @@ function UserManagement() {
                   <option value="standard">スタンダード（50単位/月・3万円）</option>
                   <option value="standard_plus">スタンダード＋（100単位/月・5万円）</option>
                   <option value="better">ベター（150単位/月・7万円）</option>
-                  <option value="pro">プロ（300単位/月・10万円／航空写真つき）</option>
+                  <option value="pro">プロ（300単位/月・10万円）</option>
                   <option value="enterprise">法人カスタム</option>
                 </select>
               </div>

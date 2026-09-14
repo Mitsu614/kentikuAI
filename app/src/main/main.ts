@@ -7635,8 +7635,12 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
   //
   // デモを通しているのは、商談で見せられないと売れないため。
   // デモ自体が30単位・2週間で自動終了するので、使い続けられはしない。
-  const AERIAL_PLANS = ['pro', 'enterprise', 'demo'];
-  const AERIAL_DENY = 'ERROR: 住所からの航空写真測定は「プロ」プラン以上の機能です。'
+  // 航空写真測定は2026-09-14に開放（もとは pro / enterprise / demo 限定）。
+  // ライトだけ対象外。20単位しかないところに1回3単位の機能を入れると、
+  // 本来の見積・拾い出しに使う単位が溶ける（地図を触っているうちに月の枠が終わる）。
+  // 画面の出し分けだけだと開発者ツールから直接呼ばれたときに通ってしまうので、ここでも弾く。
+  const AERIAL_BLOCKED = ['light'];
+  const AERIAL_DENY = 'ERROR: 住所からの航空写真測定は、スタンダードプラン以上の機能です。'
     + '写真だけの推定と違い、縮尺が確定した航空写真の上で範囲を合わせるので数量がぶれません。'
     + '設定画面の「プラン」からお申し込みいただけます。';
 
@@ -8045,7 +8049,7 @@ slopeFactor と developFactor は内装では常に 1 だ。`;
     // ★画面側でも隠しているが、本体でも必ず止めること。
     //   画面の出し分けだけだと、開発者ツールから直接呼ばれたときに通ってしまう。
     //   （写真からの測定 ai:estimateArea は全プランのまま。ここは住所版だけ）
-    if (!admin && !AERIAL_PLANS.includes(getTenantPlan().plan)) throw new Error(AERIAL_DENY);
+    if (!admin && AERIAL_BLOCKED.includes(getTenantPlan().plan)) throw new Error(AERIAL_DENY);
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
     try { runSql('CREATE TABLE IF NOT EXISTS area_precheck_log (tenant_id INTEGER, day TEXT, count INTEGER, PRIMARY KEY (tenant_id, day))', []); } catch (_) {}
     const used = queryOne('SELECT count FROM area_precheck_log WHERE tenant_id = ? AND day = ?', [tid, today])?.count || 0;
