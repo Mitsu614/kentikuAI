@@ -42,8 +42,6 @@ const PLAN_BY_AMOUNT: Record<string, { plan: string; credits: number }> = {
   "33000": { plan: "standard", credits: 50 },
   "50000": { plan: "standard_plus", credits: 100 },
   "55000": { plan: "standard_plus", credits: 100 },
-  "70000": { plan: "better", credits: 150 },
-  "77000": { plan: "better", credits: 150 },
   "100000": { plan: "pro", credits: 300 },
   "110000": { plan: "pro", credits: 300 },
 };
@@ -51,7 +49,14 @@ const PLAN_BY_AMOUNT: Record<string, { plan: string; credits: number }> = {
 // 導入費用（初回のご契約時のみ・一回払い）。継続課金ではないので、
 // この入金ではプランを開けない。「払われた」という記録だけを残す。
 // ★金額を変えたら、Stripeの決済リンクと SettingsPage.tsx の SETUP_FEE も揃えること。
-const SETUP_FEE_AMOUNTS = new Set(["200000", "220000"]);
+// 初期設定サポートは「月額の2ヶ月分」。プランごとに金額が違うので全部並べる（税込も）。
+//   ライト 29,800 ／ スタンダード 60,000 ／ スタンダード＋ 100,000 ／ プロ 200,000
+const SETUP_FEE_AMOUNTS = new Set([
+  "29800", "32780",
+  "60000", "66000",
+  "100000", "110000",
+  "200000", "220000",
+]);
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {

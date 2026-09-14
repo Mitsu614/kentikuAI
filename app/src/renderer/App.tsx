@@ -484,7 +484,7 @@ export default function App() {
             <div style={{ marginTop: 16, textAlign: 'left', borderTop: '1px solid #eee', paddingTop: 16 }}>
               <div style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 4, textAlign: 'center', color: '#1a2332' }}>無料デモを始める</div>
               <div style={{ fontSize: 12, color: '#888', marginBottom: 12, textAlign: 'center', lineHeight: 1.7 }}>
-                承認待ちはありません。メールに届く確認番号を入れると、その場で使えます（10単位・30日）。
+                承認待ちはありません。メールに届く確認番号を入れると、その場で使えます（30単位・約10案件）。
               </div>
               {regMessage && <div style={{ color: '#27ae60', fontSize: 14, marginBottom: 12, textAlign: 'center', whiteSpace: 'pre-line', lineHeight: 1.7 }}>{regMessage}</div>}
               {regError && <div style={{ color: '#e74c3c', fontSize: 14, marginBottom: 12, textAlign: 'center' }}>{regError}</div>}

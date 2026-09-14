@@ -579,7 +579,9 @@ function PlanManagement() {
   const [requesting, setRequesting] = useState(false);
   // 導入費用の支払い画面を開いたか。入金の自動確認はできない（Webhookを繋いでいない）ので、
   // 「開いた＝支払いに進んだ」を目印にして、月額の申し込みを②として続けさせる。
-  const [setupFeeOpened, setSetupFeeOpened] = useState(false);
+  // 初期費用はプランごとに金額もリンクも違う。どのプランの分を支払ったかを個別に持つ。
+  // ひとつのフラグにすると、ライトの29,800円を払っただけでプロの月額まで申し込めてしまう。
+  const [setupFeePaid, setSetupFeePaid] = useState<Record<string, boolean>>({});
 
   useEffect(() => { load(); }, []);
 
@@ -611,7 +613,6 @@ function PlanManagement() {
     light:    'https://buy.stripe.com/eVqcN6etZ04X3jH2km2400b',   // 月14,800円（総額）
     standard: 'https://buy.stripe.com/bJecN61Hd191g6t9MO24006',   // 月30,000円（総額）
     standard_plus: 'https://buy.stripe.com/fZu9AUbhN04X3jH0ce2400a',   // 月50,000円（総額）
-    better:   'https://buy.stripe.com/dRm00k0D9g3V4nLgbc24007',   // 月70,000円（総額）
     pro:      'https://buy.stripe.com/7sYcN60D9cRJdYl3oq24008',   // 月100,000円（総額）
   };
 
@@ -619,21 +620,44 @@ function PlanManagement() {
   // ★Stripeで「200,000円・一回払い」の決済リンクを作り、ここに貼ること。
   //   空のままだと関門が出ず、月額のリンクだけが開く＝20万を取りっぱぐれる。
   //   すでにお使いのお客様（有料プランの方）はプランを変えても対象外。
-  const SETUP_FEE = 200000;
-  const SETUP_FEE_LINK = 'https://buy.stripe.com/fZueVe85B9Fx07v7EG24009';   // 200,000円・一回払い（継続ではない）
+  // 金額はプランごと。ライトだけ作業の中身を軽くしてある
+  //   ライト 29,800円 … アカウント発行・業種設定・過去見積10件の取り込み・操作説明1時間
+  //   その他 200,000円 … 初期設定・データ移行・操作レクチャー（フル）
+  // ★ここを0円にしてはいけない。獲得コストが回収できないまま短期解約されるのと、
+  //   取り込みを誰もやらず学習が立ち上がらないのと、2つ同時に起きる。
+  // 初期設定サポートは「月額の2ヶ月分」で統一（2026-09-14）。作業量ともおおむね比例する。
+  const SETUP_FEES: Record<string, number> = {
+    light: 29800,          // 月14,800 × 2
+    standard: 60000,       // 月30,000 × 2
+    standard_plus: 100000, // 月50,000 × 2
+    pro: 200000,           // 月100,000 × 2
+  };
+  const SETUP_FEE_DEFAULT = 200000;
+  const setupFeeAmount = (planKey: string) => SETUP_FEES[planKey] ?? SETUP_FEE_DEFAULT;
 
-  const PAID_PLANS = ['light', 'standard', 'standard_plus', 'better', 'pro', 'enterprise'];
-  // 導入費用は「初期設定・データ取り込み・レクチャーという人の作業」の対価。
-  // ライトはその作業をお付けしない（お客様ご自身で設定していただく）ので、いただかない。
-  const SETUP_FEE_EXEMPT = ['light'];
+  // ★Stripeで「一回払い」の決済リンクを作り、ここに貼ること。
+  //   空のままだと関門が出ず、月額のリンクだけが開く＝初期費用を取りっぱぐれる。
+  // ★プランごとに「一回払い」のリンクを作って貼ること。金額が違うので使い回してはいけない。
+  //   空のプランは関門が出ず、月額のリンクだけが開く＝初期費用を取りっぱぐれる。
+  const SETUP_LINKS: Record<string, string> = {
+    light:         'https://buy.stripe.com/eVqcN6adJbNFaM91gi2400c',   // 29,800円・一回払い
+    standard:      'https://buy.stripe.com/14AcN61Hd6tl1bz7EG2400d',   // 60,000円・一回払い
+    standard_plus: 'https://buy.stripe.com/6oU00k1Hd04X3jHbUW2400e',   // 100,000円・一回払い
+    pro:           'https://buy.stripe.com/fZueVe85B9Fx07v7EG24009',   // 200,000円・一回払い
+  };
+  const SETUP_LINK_DEFAULT = '';
+  const setupFeeLink = (planKey: string) => SETUP_LINKS[planKey] || SETUP_LINK_DEFAULT;
+
+  const PAID_PLANS = ['light', 'standard', 'standard_plus', 'better', 'pro', 'enterprise'];   // better は販売終了。既存契約の判定用に残す
   // 初回のご契約か（デモ・トライアルから有料へ上がる場合）。有料同士のプラン変更は無料。
-  const needsSetupFee = !!SETUP_FEE_LINK && !PAID_PLANS.includes(planInfo?.plan);
-  // プラン単位の判定（ライトは初回契約でも導入費用なし）
-  const setupFeeFor = (planKey: string) => needsSetupFee && !SETUP_FEE_EXEMPT.includes(planKey);
+  const needsSetupFee = !PAID_PLANS.includes(planInfo?.plan);
+  // そのプランで初期費用の関門を出すか（リンクが無いプランは関門を出さず、担当者案内に回す）
+  const setupFeeFor = (planKey: string) => needsSetupFee && !!setupFeeLink(planKey);
 
-  const openSetupFee = () => {
-    window.open(SETUP_FEE_LINK, '_blank');
-    setSetupFeeOpened(true);
+  const openSetupFee = (planKey: string) => {
+    const link = setupFeeLink(planKey);
+    if (link) window.open(link, '_blank');
+    setSetupFeePaid(prev => ({ ...prev, [planKey]: true }));
   };
 
   const requestPlan = async (planKey: string) => {
@@ -747,23 +771,16 @@ function PlanManagement() {
             padding: 14, marginBottom: 12,
           }}>
             <div style={{ fontSize: 14, fontWeight: 'bold', color: '#c05621', marginBottom: 4 }}>
-              初回のご契約には導入費用 ¥{SETUP_FEE.toLocaleString()}（初回のみ・総額）がかかります
+              初回のご契約には、初期設定サポート費用（初回のみ・総額）がかかります
             </div>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
-              ① 導入費用のお支払い → ② 月額プランのお申し込み、の順にお進みください。
-              初期設定・データ移行・操作レクチャーが含まれます。プラン変更のときは、これはかかりません。
-              ライトプランは、これらの作業をお客様ご自身で行っていただくため、導入費用はいただきません。
+              金額は<strong>月額の2ヶ月分</strong>です（ライト ¥{SETUP_FEES.light.toLocaleString()}／スタンダード ¥{SETUP_FEES.standard.toLocaleString()}／スタンダード＋ ¥{SETUP_FEES.standard_plus.toLocaleString()}／プロ ¥{SETUP_FEES.pro.toLocaleString()}）。<br />
+              初期設定、過去見積の取り込み、操作のご説明が含まれます。<br />
+              ご希望のプランの「① …を支払う」→「② 月額プランに申し込む」の順にお進みください。プラン変更のときは、これはかかりません。
             </div>
-            <button
-              className="btn btn-sm"
-              style={{ background: '#e67e22', color: '#fff', border: 'none' }}
-              onClick={openSetupFee}
-            >
-              ① 導入費用 ¥{SETUP_FEE.toLocaleString()} を支払う
-            </button>
-            {setupFeeOpened && (
+            {Object.keys(setupFeePaid).length > 0 && (
               <div style={{ fontSize: 12, color: '#27ae60', marginTop: 8, fontWeight: 'bold' }}>
-                お支払いが済みましたら、下のプランから「申し込む」を押してください。
+                お支払いが済みましたら、同じプランの「② 月額プランに申し込む」を押してください。
               </div>
             )}
           </div>
@@ -803,15 +820,24 @@ function PlanManagement() {
                   月 {key === 'enterprise' ? '個別設定' : p.monthlyLimit + '単位'}
                 </div>
                 <div style={{ fontSize: 11, color: '#aaa', marginBottom: 8 }}>{p.description}</div>
+                {canRequest && setupFeeFor(key) && !setupFeePaid[key] && (
+                  <button
+                    className="btn btn-sm"
+                    style={{ background: '#e67e22', color: '#fff', border: 'none', width: '100%', marginBottom: 6 }}
+                    onClick={e => { e.stopPropagation(); openSetupFee(key); }}
+                  >
+                    ① 初期設定 ¥{setupFeeAmount(key).toLocaleString()} を支払う
+                  </button>
+                )}
                 {canRequest && (
                   <button
                     className={`btn btn-sm ${isUpgrade ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => requestPlan(key)}
-                    disabled={requesting || (setupFeeFor(key) && !setupFeeOpened)}
+                    disabled={requesting || (setupFeeFor(key) && !setupFeePaid[key])}
                     style={{ width: '100%' }}
-                    title={setupFeeFor(key) && !setupFeeOpened ? '先に導入費用のお支払いへお進みください' : ''}
+                    title={setupFeeFor(key) && !setupFeePaid[key] ? 'このプランの初期設定サポート費用のお支払いへお進みください' : ''}
                   >
-                    {setupFeeFor(key) && !setupFeeOpened ? '② 月額プランに申し込む' : (isUpgrade ? '申し込む' : 'プラン変更')}
+                    {setupFeeFor(key) && !setupFeePaid[key] ? '② 月額プランに申し込む' : (isUpgrade ? '申し込む' : 'プラン変更')}
                   </button>
                 )}
                 {key === 'enterprise' && !isCurrent && (
@@ -1024,18 +1050,17 @@ function UserManagement() {
   const [form, setForm] = useState({ username: '', password: '', role: 'user' });
   const [msg, setMsg] = useState('');
   const [showAddTenant, setShowAddTenant] = useState(false);
-  const [tenantForm, setTenantForm] = useState({ companyName: '', plan: 'demo', credits: 10, username: '', password: '' });
+  const [tenantForm, setTenantForm] = useState({ companyName: '', plan: 'demo', credits: 30, username: '', password: '' });
   const [tenantMsg, setTenantMsg] = useState('');
   const [tenantLoading, setTenantLoading] = useState(false);
 
   // 2026-09-08の単位引き上げに合わせた単位数。ここが旧いままだと、テナントを手で作ったときに
   // 契約と違う単位数で発行してしまう（database.ts の PLANS が正）。
   const plans: Record<string, { name: string; credits: number }> = {
-    demo: { name: 'デモ', credits: 10 },
+    demo: { name: 'デモ', credits: 30 },
     light: { name: 'ライト', credits: 20 },
     standard: { name: 'スタンダード', credits: 50 },
     standard_plus: { name: 'スタンダード＋', credits: 100 },
-    better: { name: 'ベター', credits: 150 },
     pro: { name: 'プロ', credits: 300 },
     enterprise: { name: '法人カスタム', credits: 9999 },
   };
@@ -1085,7 +1110,7 @@ function UserManagement() {
         tenantId,
       });
       setTenantMsg(`「${tenantForm.companyName}」を追加しました（${plans[tenantForm.plan]?.name}プラン / ${tenantForm.credits}単位）`);
-      setTenantForm({ companyName: '', plan: 'demo', credits: 10, username: '', password: '' });
+      setTenantForm({ companyName: '', plan: 'demo', credits: 30, username: '', password: '' });
       load();
     } catch (e: any) { setTenantMsg('エラー: ' + (e.message || '作成に失敗しました')); }
     setTenantLoading(false);
@@ -1137,11 +1162,10 @@ function UserManagement() {
                   const p = e.target.value;
                   setTenantForm({ ...tenantForm, plan: p, credits: plans[p]?.credits || 50 });
                 }}>
-                  <option value="demo">デモ（10単位/月・無料）</option>
+                  <option value="demo">デモ（30単位/月・約10案件・無料）</option>
                   <option value="light">ライト（20単位/月・14,800円）</option>
                   <option value="standard">スタンダード（50単位/月・3万円）</option>
                   <option value="standard_plus">スタンダード＋（100単位/月・5万円）</option>
-                  <option value="better">ベター（150単位/月・7万円）</option>
                   <option value="pro">プロ（300単位/月・10万円）</option>
                   <option value="enterprise">法人カスタム</option>
                 </select>

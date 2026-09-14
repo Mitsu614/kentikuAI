@@ -17,11 +17,15 @@ const ADMIN_SECRET = Deno.env.get("ADMIN_SECRET") || "";
 //   手動で承認したお客様だけ単位が合わなくなる。
 //   2026-09-02の月額改定で demo30/pro200/その他50 から変更し、
 //   2026-09-08に金額据え置きのまま単位だけ引き上げた（standard20→50・better50→150・pro100→300）。
+// ★単位数の正は app/src/database/database.ts の PLANS。変えたらこちらも揃えること。
+// デモは1案件＝3単位（拾い出し2＋見積1）なので、10単位では3案件しか試せなかった。
+// 30単位＝約10案件に引き上げ（2026-09-14）。
 const DEFAULT_CREDITS: Record<string, number> = {
-  demo: 10,
-  trial: 10,
+  demo: 30,
+  trial: 30,
+  light: 20,
   standard: 50,
-  better: 150,
+  standard_plus: 100,
   pro: 300,
   enterprise: 9999,
 };
