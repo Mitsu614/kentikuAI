@@ -609,6 +609,7 @@ function PlanManagement() {
   //   リンクは会社名を必須項目にしてある（承認が会社名でテナントを引くため）。
   const STRIPE_LINKS: Record<string, string> = {
     standard: 'https://buy.stripe.com/bJecN61Hd191g6t9MO24006',   // 月30,000円（総額）
+    standard_plus: 'https://buy.stripe.com/fZu9AUbhN04X3jH0ce2400a',   // 月50,000円（総額）
     better:   'https://buy.stripe.com/dRm00k0D9g3V4nLgbc24007',   // 月70,000円（総額）
     pro:      'https://buy.stripe.com/7sYcN60D9cRJdYl3oq24008',   // 月100,000円（総額）
   };
@@ -620,7 +621,7 @@ function PlanManagement() {
   const SETUP_FEE = 200000;
   const SETUP_FEE_LINK = 'https://buy.stripe.com/fZueVe85B9Fx07v7EG24009';   // 200,000円・一回払い（継続ではない）
 
-  const PAID_PLANS = ['standard', 'better', 'pro', 'enterprise'];
+  const PAID_PLANS = ['standard', 'standard_plus', 'better', 'pro', 'enterprise'];
   // 初回のご契約か（デモ・トライアルから有料へ上がる場合）。有料同士のプラン変更は無料。
   const needsSetupFee = !!SETUP_FEE_LINK && !PAID_PLANS.includes(planInfo?.plan);
 
@@ -1025,6 +1026,7 @@ function UserManagement() {
   const plans: Record<string, { name: string; credits: number }> = {
     demo: { name: 'デモ', credits: 10 },
     standard: { name: 'スタンダード', credits: 50 },
+    standard_plus: { name: 'スタンダード＋', credits: 100 },
     better: { name: 'ベター', credits: 150 },
     pro: { name: 'プロ', credits: 300 },
     enterprise: { name: '法人カスタム', credits: 9999 },
@@ -1129,6 +1131,7 @@ function UserManagement() {
                 }}>
                   <option value="demo">デモ（10単位/月・無料）</option>
                   <option value="standard">スタンダード（50単位/月・3万円）</option>
+                  <option value="standard_plus">スタンダード＋（100単位/月・5万円）</option>
                   <option value="better">ベター（150単位/月・7万円）</option>
                   <option value="pro">プロ（300単位/月・10万円／航空写真つき）</option>
                   <option value="enterprise">法人カスタム</option>

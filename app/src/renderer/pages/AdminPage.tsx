@@ -58,7 +58,9 @@ const TABS: { key: TabKey; label: string }[] = [
 ];
 
 const PLAN_OPTIONS = [
-  { value: 'standard',   label: 'スタンダード' },
+  { value: 'standard',      label: 'スタンダード' },
+  { value: 'standard_plus', label: 'スタンダード＋' },
+  { value: 'better',        label: 'ベター' },
   { value: 'pro',        label: 'プロ' },
   { value: 'enterprise', label: 'エンタープライズ' },
 ];
@@ -66,6 +68,7 @@ const PLAN_OPTIONS = [
 const PLAN_LABEL: Record<string, string> = {
   demo:       'デモ',
   standard:   'スタンダード',
+  standard_plus: 'スタンダード＋',
   better:     'ベター',
   pro:        'プロ',
   enterprise: 'エンタープライズ',
@@ -640,7 +643,7 @@ export default function AdminPage() {
                                 )}
                                 {/* 導入費用20万は月額とは別のリンク。片方で止まると取りこぼすので、
                                     有料プランなのに未入金の行はここで赤く出す。 */}
-                                {['standard', 'better', 'pro'].includes(r.plan) && !r.setup_fee_paid_at && (
+                                {['standard', 'standard_plus', 'better', 'pro'].includes(r.plan) && !r.setup_fee_paid_at && (
                                   <div style={{ fontSize: 11, color: '#c62828', marginTop: 3 }}>導入費用 未入金</div>
                                 )}
                               </>
@@ -658,6 +661,7 @@ export default function AdminPage() {
                               >
                                 <option value="demo">デモ</option>
                                 <option value="standard">スタンダード</option>
+                                <option value="standard_plus">スタンダード＋</option>
                                 <option value="better">ベター</option>
                                 <option value="pro">プロ</option>
                               </select>
@@ -689,6 +693,7 @@ export default function AdminPage() {
                               >
                                 <option value="demo">デモ</option>
                                 <option value="standard">スタンダード</option>
+                                <option value="standard_plus">スタンダード＋</option>
                                 <option value="better">ベター</option>
                                 <option value="pro">プロ</option>
                               </select>

@@ -38,6 +38,8 @@ const H = {
 const PLAN_BY_AMOUNT: Record<string, { plan: string; credits: number }> = {
   "30000": { plan: "standard", credits: 50 },
   "33000": { plan: "standard", credits: 50 },
+  "50000": { plan: "standard_plus", credits: 100 },
+  "55000": { plan: "standard_plus", credits: 100 },
   "70000": { plan: "better", credits: 150 },
   "77000": { plan: "better", credits: 150 },
   "100000": { plan: "pro", credits: 300 },
