@@ -608,6 +608,7 @@ function PlanManagement() {
   //   申し込んだお客様に120万円を請求する状態になっていた。
   //   リンクは会社名を必須項目にしてある（承認が会社名でテナントを引くため）。
   const STRIPE_LINKS: Record<string, string> = {
+    light:    'https://buy.stripe.com/eVqcN6etZ04X3jH2km2400b',   // 月14,800円（総額）
     standard: 'https://buy.stripe.com/bJecN61Hd191g6t9MO24006',   // 月30,000円（総額）
     standard_plus: 'https://buy.stripe.com/fZu9AUbhN04X3jH0ce2400a',   // 月50,000円（総額）
     better:   'https://buy.stripe.com/dRm00k0D9g3V4nLgbc24007',   // 月70,000円（総額）
@@ -621,9 +622,13 @@ function PlanManagement() {
   const SETUP_FEE = 200000;
   const SETUP_FEE_LINK = 'https://buy.stripe.com/fZueVe85B9Fx07v7EG24009';   // 200,000円・一回払い（継続ではない）
 
-  const PAID_PLANS = ['standard', 'standard_plus', 'better', 'pro', 'enterprise'];
+  const PAID_PLANS = ['light', 'standard', 'standard_plus', 'better', 'pro', 'enterprise'];
+  // ライトは月14,800円。ここに導入費用20万（13ヶ月分）を乗せると誰も入れないので、対象外にする。
+  const SETUP_FEE_EXEMPT = ['light'];
   // 初回のご契約か（デモ・トライアルから有料へ上がる場合）。有料同士のプラン変更は無料。
   const needsSetupFee = !!SETUP_FEE_LINK && !PAID_PLANS.includes(planInfo?.plan);
+  // プラン単位の判定（ライトは初回契約でも導入費用なし）
+  const setupFeeFor = (planKey: string) => needsSetupFee && !SETUP_FEE_EXEMPT.includes(planKey);
 
   const openSetupFee = () => {
     window.open(SETUP_FEE_LINK, '_blank');
@@ -746,6 +751,7 @@ function PlanManagement() {
             <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
               ① 導入費用のお支払い → ② 月額プランのお申し込み、の順にお進みください。
               初期設定・データ移行・操作レクチャーが含まれます。プラン変更のときは、これはかかりません。
+              なお、ライトプランは導入費用をいただいておりません。
             </div>
             <button
               className="btn btn-sm"
@@ -800,11 +806,11 @@ function PlanManagement() {
                   <button
                     className={`btn btn-sm ${isUpgrade ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => requestPlan(key)}
-                    disabled={requesting || (needsSetupFee && !setupFeeOpened)}
+                    disabled={requesting || (setupFeeFor(key) && !setupFeeOpened)}
                     style={{ width: '100%' }}
-                    title={needsSetupFee && !setupFeeOpened ? '先に導入費用のお支払いへお進みください' : ''}
+                    title={setupFeeFor(key) && !setupFeeOpened ? '先に導入費用のお支払いへお進みください' : ''}
                   >
-                    {needsSetupFee && !setupFeeOpened ? '② 月額プランに申し込む' : (isUpgrade ? '申し込む' : 'プラン変更')}
+                    {setupFeeFor(key) && !setupFeeOpened ? '② 月額プランに申し込む' : (isUpgrade ? '申し込む' : 'プラン変更')}
                   </button>
                 )}
                 {key === 'enterprise' && !isCurrent && (
@@ -1025,6 +1031,7 @@ function UserManagement() {
   // 契約と違う単位数で発行してしまう（database.ts の PLANS が正）。
   const plans: Record<string, { name: string; credits: number }> = {
     demo: { name: 'デモ', credits: 10 },
+    light: { name: 'ライト', credits: 20 },
     standard: { name: 'スタンダード', credits: 50 },
     standard_plus: { name: 'スタンダード＋', credits: 100 },
     better: { name: 'ベター', credits: 150 },
@@ -1130,6 +1137,7 @@ function UserManagement() {
                   setTenantForm({ ...tenantForm, plan: p, credits: plans[p]?.credits || 50 });
                 }}>
                   <option value="demo">デモ（10単位/月・無料）</option>
+                  <option value="light">ライト（20単位/月・14,800円）</option>
                   <option value="standard">スタンダード（50単位/月・3万円）</option>
                   <option value="standard_plus">スタンダード＋（100単位/月・5万円）</option>
                   <option value="better">ベター（150単位/月・7万円）</option>

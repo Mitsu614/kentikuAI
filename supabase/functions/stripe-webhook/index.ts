@@ -36,6 +36,8 @@ const H = {
 // ★プランの値段を変えたらここも直すこと。合わない金額は「不明」として何もしない
 //   （勝手に近いプランへ寄せると、少ない入金で上位プランが開いてしまう）。
 const PLAN_BY_AMOUNT: Record<string, { plan: string; credits: number }> = {
+  "14800": { plan: "light", credits: 20 },
+  "16280": { plan: "light", credits: 20 },
   "30000": { plan: "standard", credits: 50 },
   "33000": { plan: "standard", credits: 50 },
   "50000": { plan: "standard_plus", credits: 100 },

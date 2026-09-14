@@ -58,6 +58,7 @@ const TABS: { key: TabKey; label: string }[] = [
 ];
 
 const PLAN_OPTIONS = [
+  { value: 'light',         label: 'ライト' },
   { value: 'standard',      label: 'スタンダード' },
   { value: 'standard_plus', label: 'スタンダード＋' },
   { value: 'better',        label: 'ベター' },
@@ -67,6 +68,7 @@ const PLAN_OPTIONS = [
 
 const PLAN_LABEL: Record<string, string> = {
   demo:       'デモ',
+  light:      'ライト',
   standard:   'スタンダード',
   standard_plus: 'スタンダード＋',
   better:     'ベター',
@@ -660,6 +662,7 @@ export default function AdminPage() {
                                 style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ddd', fontSize: 12 }}
                               >
                                 <option value="demo">デモ</option>
+                                <option value="light">ライト</option>
                                 <option value="standard">スタンダード</option>
                                 <option value="standard_plus">スタンダード＋</option>
                                 <option value="better">ベター</option>
@@ -692,6 +695,7 @@ export default function AdminPage() {
                                 style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ddd', fontSize: 12 }}
                               >
                                 <option value="demo">デモ</option>
+                                <option value="light">ライト</option>
                                 <option value="standard">スタンダード</option>
                                 <option value="standard_plus">スタンダード＋</option>
                                 <option value="better">ベター</option>
