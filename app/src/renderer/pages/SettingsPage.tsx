@@ -646,6 +646,12 @@ function PlanManagement() {
     pro:           'https://buy.stripe.com/fZueVe85B9Fx07v7EG24009',   // 200,000円・一回払い
   };
   const SETUP_LINK_DEFAULT = '';
+
+  // 追加ストック（その月だけ単位を足す・一回払い）。プラン変更は不要。
+  // ★本体プランより割高にしてあること（毎月足りない方は上位プランのほうが安くなる、という誘導）。
+  const ADDON_UNITS = 10;
+  const ADDON_PRICE = 8000;
+  const ADDON_LINK = 'https://buy.stripe.com/bJefZietZ4lddYl5wy2400f';   // 8,000円・一回払い（10単位）
   const setupFeeLink = (planKey: string) => SETUP_LINKS[planKey] || SETUP_LINK_DEFAULT;
 
   const PAID_PLANS = ['light', 'standard', 'standard_plus', 'better', 'pro', 'enterprise'];   // better は販売終了。既存契約の判定用に残す
@@ -731,10 +737,36 @@ function PlanManagement() {
           {usagePercent >= 100
             ? planInfo.plan === 'trial'
               ? '🎁 クレジットを使い切りました。引き続きご利用いただくにはプランのアップグレードが必要です。下記プランからお選びください。'
-              : '⚠️ 今月のAIストックの上限に達しました。追加ストックが必要な場合は管理者にお問い合わせください。'
+              : `⚠️ 今月のAIストックを使い切りました。下の「${ADDON_UNITS}単位を追加する」からその月ぶんを足せます。`
             : planInfo.plan === 'trial'
               ? `🎁 残りクレジット: ${planInfo.remaining}単位`
               : '⚠️ AIストックの残りが少なくなっています。'}
+        </div>
+      )}
+
+      {/* 追加ストック（今月だけ足す）。デモ・トライアルは対象外＝プランのお申し込みに誘導する。 */}
+      {planInfo.plan !== 'demo' && planInfo.plan !== 'trial' && (
+        <div style={{
+          border: '1px solid #ddd', borderRadius: 8, padding: '12px 16px', marginBottom: 16,
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          background: isNearLimit ? '#fffdf5' : '#fff',
+        }}>
+          <div style={{ flex: '1 1 16rem', minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 'bold', marginBottom: 2 }}>
+              追加ストック {ADDON_UNITS}単位　¥{ADDON_PRICE.toLocaleString()}
+            </div>
+            <div style={{ fontSize: 12, color: '#666', lineHeight: 1.7 }}>
+              今月だけ単位を足せます。プラン変更の手続きは不要です。<br />
+              毎月足りないようでしたら、上のプランのほうがお安くなります。
+            </div>
+          </div>
+          <button
+            className="btn btn-sm"
+            style={{ background: '#e67e22', color: '#fff', border: 'none', flex: 'none' }}
+            onClick={() => window.open(ADDON_LINK, '_blank')}
+          >
+            {ADDON_UNITS}単位を追加する
+          </button>
         </div>
       )}
 

@@ -51,6 +51,10 @@ const PLAN_BY_AMOUNT: Record<string, { plan: string; credits: number }> = {
 // ★金額を変えたら、Stripeの決済リンクと SettingsPage.tsx の SETUP_FEE も揃えること。
 // 初期設定サポートは「月額の2ヶ月分」。プランごとに金額が違うので全部並べる（税込も）。
 //   ライト 29,800 ／ スタンダード 60,000 ／ スタンダード＋ 100,000 ／ プロ 200,000
+// 追加ストック（その月だけ単位を足す・一回払い）。8,000円で10単位。
+// ★ここは「上書き」ではなく「加算」。上書きにすると、払った瞬間に残数が10に減る。
+const ADDON_AMOUNTS: Record<string, number> = { "8000": 10, "8800": 10 };
+
 const SETUP_FEE_AMOUNTS = new Set([
   "29800", "32780",
   "60000", "66000",
@@ -174,10 +178,32 @@ async function findByCompany(company: string): Promise<{ row: any | null; ambigu
 //    月額より先に20万だけ払われることがある（案内の順番どおり）。
 //    行が無ければ「導入費用は済み・月額はこれから」の状態で作っておく。
 //    そうしないと、払った人がどこにも出てこず、取りこぼしになる。
+// ── 追加ストック: 残数と上限に足す（今月だけ増える。翌月の請求でプランの数に戻る） ──
+async function onAddonPaid(s: any, add: number) {
+  const yen = Number(s?.amount_total ?? 0);
+  const customerId = String(s?.customer || "");
+  const company = companyFromSession(s);
+
+  let row = await findByCustomer(customerId);
+  let ambiguous = false;
+  if (!row) ({ row, ambiguous } = await findByCompany(company));
+  if (ambiguous) return { skipped: `会社名「${company}」が複数あり特定できない`, company };
+  if (!row) return { skipped: `会社名「${company}」のライセンスが見つからない（追加ストック ${yen}円）` };
+
+  const credits = Number(row.credits ?? 0) + add;
+  const maxCredits = Number(row.max_credits ?? 0) + add;
+  const patch: any = { credits, max_credits: maxCredits, updated_at: new Date().toISOString() };
+  if (customerId) patch.stripe_customer_id = customerId;
+  await sbPatch(`remote_licenses?id=eq.${encodeURIComponent(row.id)}`, patch);
+  return { action: "addon_credits", company: row.company_name, added: add, credits, yen };
+}
+
 async function onSetupFeePaid(s: any) {
   const yen = Number(s?.amount_total ?? 0);
+  const addon = ADDON_AMOUNTS[String(yen)];
+  if (addon) return await onAddonPaid(s, addon);
   if (!SETUP_FEE_AMOUNTS.has(String(yen))) {
-    return { skipped: `一回払い ${yen} 円は導入費用の金額ではない` };
+    return { skipped: `一回払い ${yen} 円は導入費用・追加ストックのいずれの金額でもない` };
   }
   const customerId = String(s?.customer || "");
   const company = companyFromSession(s);
