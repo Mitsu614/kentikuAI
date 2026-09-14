@@ -241,7 +241,7 @@
       "unit": "単位（㎡/m/箇所/台/m3/kg/式）",
       "deduction": "開口部などの控除の有無と内容（例: 'サッシ6箇所 計9.8㎡を控除'）。控除対象外なら null",
       "lossRate": ロス率（数値。0.05 = 5%。掛けないなら 0）,
-      "quantityWithLoss": 発注数量（数値。quantity×(1+lossRate) を四捨五入）,
+      "quantityWithLoss": 発注数量（数値。quantity×(1+lossRate)。鉄筋のトン数のように1未満になる単位があるので、小数第3位まで残せ）,
       "unitPrice": 資料に単価が書かれていればその数値（円／unitあたり）。書かれていなければ null。★相場から推測して埋めるな,
       "priceSource": "unitPrice をどこから取ったか（例: '資料2 内訳書 12行目 材工共'）。unitPrice が null なら null",
       "source": "出典（例: 'P1 1階平面図 X1〜X3通り'、'P2 南立面図'）",

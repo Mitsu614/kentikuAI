@@ -15,7 +15,7 @@ interface Window {
     getCostEdit: (constructionId: number) => Promise<any>;
 
     // 図面からの数量拾い出し（Takeoff）
-    takeoffDrawing: (data: { files: { type?: string; data: string; name?: string }[]; comment?: string; scaleHint?: string; targets?: string }) => Promise<any>;
+    takeoffDrawing: (data: { files: { type?: string; data: string; name?: string }[]; comment?: string; scaleHint?: string; targets?: string; industryOverride?: string }) => Promise<any>;
     takeoffHistory: () => Promise<any[]>;
     generateTakeoffPDF: (data: { takeoff: any; title?: string; clientName?: string }) => Promise<boolean>;
 

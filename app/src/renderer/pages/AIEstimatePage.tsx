@@ -1399,6 +1399,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         comment,
         scaleHint: takeoffScale,
         targets: takeoffTargets,
+        industryOverride: industryOverride || undefined,
       });
       endBusy();
       setTakeoff(res);
@@ -1422,7 +1423,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     items[i] = {
       ...items[i],
       quantity: n,
-      quantityWithLoss: Math.round(n * (1 + loss) * 100) / 100,
+      // 2桁で丸めると鉄筋のトン数が桁落ちする（0.085t → 0.09t）。本体側の roundQty と揃える。
+      quantityWithLoss: (() => { const v = n * (1 + loss); if (!isFinite(v) || v === 0) return 0; const r = Math.round(v * 1000) / 1000; return r !== 0 ? r : Number(v.toPrecision(3)); })(),
       confidence: '高',            // 人が確定させた数量は最上位の確度として扱う
       assumption: items[i]?.assumption,
       formula: `${items[i]?.formula || ''}${items[i]?.formula ? ' → ' : ''}手入力 ${n}${items[i]?.unit || ''}`,

@@ -1341,6 +1341,30 @@ function applyEstimateFix(result: any, fix: any, context: string): any {
   return reconcileEstimateTotal(result, context);
 }
 
+// 数量の丸め。2桁で丸めていたころ、鉄筋のトン数が桁落ちしていた
+// （0.085t → 0.09t で +6%、0.045t → 0.05t で +11%。鉄筋は金額の桁を決める工種なので致命的）。
+// 小数第3位まで残し、それでも0になる極小値だけ有効数字3桁まで粘る。
+function roundQty(n: number): number {
+  const v = Number(n);
+  if (!isFinite(v) || v === 0) return 0;
+  const r = Math.round(v * 1000) / 1000;
+  return r !== 0 ? r : Number(v.toPrecision(3));
+}
+
+// 拾い出しに渡す業種のヒント。どの部位を優先して拾うかだけを指示する。
+const TAKEOFF_INDUSTRY_HINT: Record<string, string> = {
+  general:    '総合建設業（工務店・リフォーム）。木造の構造材・内外装の仕上げ・設備を幅広く拾え。',
+  building:   '建築一式工事業（新築・増改築の元請）。鉄筋・鉄骨・コンクリート・型枠といった躯体の数量を最優先で拾え。金額の桁はここで決まる。',
+  steel:      '鉄骨工事業。部材符号ごとの鉄骨数量（t）、高力ボルト・スタッドジベル・ベースプレートの本数、耐火被覆の㎡を最優先で拾え。',
+  interior:   '内装仕上工事業。床・壁・天井の仕上げ面積、石膏ボード・LGS・クロス・幅木を最優先で拾え。開口の控除とロス率を必ず反映しろ。',
+  painting:   '塗装工事業。下地種別ごとの塗装面積と、素地調整・養生・足場の対象面積を最優先で拾え。',
+  demolition: '解体工事業。構造種別ごとの延床面積、廃材の種類別数量（コンクリート塊・木くず・混合廃棄物）を最優先で拾え。',
+  exterior:   '外構・エクステリア業。舗装・土間コン・ブロック・フェンス・植栽の数量を最優先で拾え。',
+  equipment:  '設備工事業。電気設備（器具の箇所数・ケーブルのm）、給排水・空調の配管と機器を最優先で拾え。',
+  plant:      'プラント設備工事業。配管（口径別のm）・機器の台数・架台の鋼材量を最優先で拾え。',
+  lease:      '仮設工事リース業。足場・仮囲い・仮設材の掛け面積と部材数量を最優先で拾え。',
+};
+
 function parseLenientJson(raw: string): any {
   try { return JSON.parse(raw); } catch (_) {}
 
@@ -7174,7 +7198,7 @@ manDaysBreakdownの書き方例:
   // ★PDFはClaudeにネイティブで渡す。画像へラスタ化すると寸法線の細字・小数点が潰れて誤読するため。
   const takeoffDrawingCore = async (data: {
     files?: { type?: 'pdf' | 'image'; data: string; name?: string }[];
-    comment?: string; scaleHint?: string; targets?: string;
+    comment?: string; scaleHint?: string; targets?: string; industryOverride?: string;
   }) => {
     const files = (data?.files || []).filter((f: any) => f && f.data);
     if (files.length === 0) throw new Error('ERROR: 図面または材料一覧表のファイル（PDFまたは画像）を選択してください。');
@@ -7193,6 +7217,20 @@ manDaysBreakdownの書き方例:
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。サポートにお問い合わせください。');
     const Anthropic = require('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey: config.anthropicKey });
+
+    // 業種を拾い出しにも渡す。「今回だけ」の指定が最優先で、無ければテナントの設定。
+    // 業種が噛み合っていないと確度が落ちる（RC造の配筋図を内装の前提で読ませると
+    // 「内装仕上の情報が含まれていません」と返ってきて、拾えた数量まで確度が下がる）。
+    const takeoffIndustry = String(data?.industryOverride || '').trim()
+      || getTenantProfile(getCurrentTenant()).industryType
+      || config.industryType || '';
+    const industrySection = TAKEOFF_INDUSTRY_HINT[takeoffIndustry]
+      ? `
+## ★この会社の業種★
+${TAKEOFF_INDUSTRY_HINT[takeoffIndustry]}
+★ただし図面に他工種が描かれていれば、それも落とさず拾え。業種は優先順位であって、対象を狭める指示ではない。
+`
+      : '';
 
     const content: any[] = [];
     files.forEach((f: any, i: number) => {
@@ -7310,7 +7348,7 @@ manDaysBreakdownの書き方例:
 - ロス率はケーブル・電線管5%、器具は0%。
 - **図面に無い器具を推測で足すな。** 凡例・器具配置図・回路表のどれが足りないのかを unreadable に書け
   （例「凡例が無く記号の種別が確定できない。凡例または器具リストがあれば拾えます」）。
-${takeoffShared}${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
+${takeoffShared}${industrySection}${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
 ## 拾い出しの鉄則（違反したら拾い出しとして失格）
 1. **寸法数値が最優先**。図面に寸法線の数値（例 8,190）があれば必ずそれを使え。縮尺からの目測は、寸法数値が無い部位でだけ使い、その行の confidence を「低」にしろ。
    ★**室名の横に「厨房 A：4.50×3.425＝15.41m²」のように面積が直接書かれていることが多い。**
@@ -7456,7 +7494,7 @@ ${takeoffShared}${takeoffAreaSection}${data?.targets && String(data.targets).tri
       "unit": "単位（㎡/m/箇所/台/m3/kg/式）",
       "deduction": "開口部などの控除の有無と内容（例: 'サッシ6箇所 計9.8㎡を控除'）。控除対象外なら null",
       "lossRate": ロス率（数値。0.05 = 5%。掛けないなら 0）,
-      "quantityWithLoss": 発注数量（数値。quantity×(1+lossRate) を四捨五入）,
+      "quantityWithLoss": 発注数量（数値。quantity×(1+lossRate)。鉄筋のトン数のように1未満になる単位があるので、小数第3位まで残せ）,
       "unitPrice": 資料に単価が書かれていればその数値（円／unitあたり）。書かれていなければ null。★相場から推測して埋めるな,
       "priceSource": "unitPrice をどこから取ったか（例: '資料2 内訳書 12行目 材工共'）。unitPrice が null なら null",
       "source": "出典（例: 'P1 1階平面図 X1〜X3通り'、'P2 南立面図'）",
@@ -7536,7 +7574,7 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
       const q = Number(it.quantity) || 0;
       const loss = Number(it.lossRate) || 0;
       const withLoss = Number(it.quantityWithLoss) || 0;
-      const expected = Math.round(q * (1 + loss) * 100) / 100;
+      const expected = roundQty(q * (1 + loss));
       // 申告値が期待値と5%以上ずれていたら、式のほうを信じて引き直す
       const fixed = (withLoss > 0 && Math.abs(withLoss - expected) / Math.max(expected, 1) < 0.05) ? withLoss : expected;
       return { ...it, quantity: q, lossRate: loss, quantityWithLoss: fixed };
