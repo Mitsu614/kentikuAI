@@ -26,7 +26,8 @@ const DRY = args.includes('--dry');
 const conc = Number((args.find(a => a.startsWith('--conc=')) || '').split('=')[1]) || 3;
 const onlyArg = (args.find(a => a.startsWith('--only=')) || '').split('=')[1];
 const only = onlyArg ? onlyArg.split(',') : null;
-const targets = only ? SCENARIOS.filter(s => only.includes(s.id)) : SCENARIOS;
+// --only=e2 のように接頭辞でも指定できる（使い方の例がそう書いてあるので合わせる）。
+const targets = only ? SCENARIOS.filter(s => only.some(o => s.id === o || s.id.startsWith(o + '-'))) : SCENARIOS;
 
 // ── 相場DBの電気セクションを実ソースから抽出（実装とベンチを乖離させない）──
 function electricRef() {
@@ -104,7 +105,36 @@ async function callAI(client, scn, refText) {
   const text = r.content.map(c => c.type === 'text' ? c.text : '').join('');
   const m = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/(\{[\s\S]*\})/);
   if (!m) throw new Error('no-json');
-  return JSON.parse(m[1]);
+  return parseLenientJson(m[1]);
+}
+
+// 本番（main.ts の parseLenientJson）と同じ寛容さで読む。
+// ここが素の JSON.parse だと、本番なら救えている応答をハーネスだけが落としてしまい、
+// 「AIが失敗した」と誤って記録される（実際に e14-ev-charger がそれで ERROR になった）。
+function parseLenientJson(raw) {
+  try { return JSON.parse(raw); } catch (_) {}
+  // ① 末尾カンマ（配列/オブジェクトの閉じ直前）
+  let s = raw.replace(/,(\s*[}\]])/g, '$1');
+  try { return JSON.parse(s); } catch (_) {}
+  // ② 数値の桁区切りカンマ。文字列内は触らず、: の後に来る数値だけを対象にする
+  s = s.replace(/:\s*(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?)(\s*[,}\]])/g,
+    (_m, num, tail) => ': ' + num.replace(/,/g, '') + tail);
+  try { return JSON.parse(s); } catch (_) {}
+  // ③ 途中で切れた場合：開いたままの文字列・括弧を閉じる
+  let inStr = false, esc = false;
+  const stack = [];
+  const BACKSLASH = String.fromCharCode(92);
+  for (const ch of s) {
+    if (esc) { esc = false; continue; }
+    if (ch === BACKSLASH) { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === '{' || ch === '[') stack.push(ch);
+    else if (ch === '}' || ch === ']') stack.pop();
+  }
+  let fixed = s + (inStr ? '"' : '');
+  while (stack.length) fixed += stack.pop() === '{' ? '}' : ']';
+  return JSON.parse(fixed.replace(/,(\s*[}\]])/g, '$1'));
 }
 
 // 判定: AI直接工事費が正解レンジ[min,max]（±15%の許容）に入れば OK

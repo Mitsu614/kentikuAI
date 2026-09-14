@@ -44,8 +44,14 @@ function stripInterpolations(s) {
   return out;
 }
 
+// prompt.txt 側は、差し込み位置を {{CONTEXT}} という目印で持つ（context.js がここに
+// 面積セクション・対象・条件・縮尺を差し込む）。比較のときは MARK と同じ扱いにして消す。
+const CONTEXT_MARK = "{{CONTEXT}}";
+
 function norm(s) {
-  const t = stripInterpolations(s.replace(/\r\n/g, "\n").replace(/\\`/g, "`"));
+  const t = stripInterpolations(
+    s.replace(/\r\n/g, "\n").replace(/\\`/g, "`").split(CONTEXT_MARK).join(MARK)
+  );
   return t
     .split("\n")
     .map(line => {
@@ -106,10 +112,33 @@ function check() {
   };
 }
 
-module.exports = { check };
+// main.ts を正として prompt.txt を作り直す。
+// 補間（${...}）の連なりは1か所だけなので、そこを {{CONTEXT}} に置き換えて書く。
+// これが無いと context.js が差し込み位置を見つけられず、ハーネスが動かない。
+function write() {
+  const got = extractFromMain();
+  if (!got.ok) return got;
+  const runRe = new RegExp("([$]{(?:[^{}]|{[^{}]*})*})+", "g");
+  const runs = got.text.match(runRe) || [];
+  if (runs.length !== 1) {
+    return { ok: false, why: `main.ts の補間の塊が${runs.length}か所ある（1か所である前提）。手で直すこと` };
+  }
+  // norm() は {{CONTEXT}} を消してしまうので、一度 norm を通らない札に置いてから戻す。
+  const TMP = "CTX";
+  const body = norm(got.text.replace(runRe, TMP)).split(TMP).join(CONTEXT_MARK);
+  fs.writeFileSync(PROMPT, body + "\n", "utf8");
+  return { ok: true, why: "prompt.txt を書き出した", chars: body.length };
+}
+
+module.exports = { check, write };
 
 if (require.main === module) {
   const C = { g: "\x1b[32m", r: "\x1b[31m", d: "\x1b[90m", x: "\x1b[0m" };
+  if (process.argv.includes("--write")) {
+    const w = write();
+    console.log(w.ok ? `${C.g}OK${C.x}  ${w.why}（${w.chars}字）` : `${C.r}NG${C.x}  ${w.why}`);
+    process.exit(w.ok ? 0 : 1);
+  }
   const r = check();
   if (r.ok) {
     console.log(`${C.g}OK${C.x}  prompt.txt は main.ts と一致している（${r.chars}字）`);

@@ -158,6 +158,69 @@ const SCENARIOS = [
       { type: 'pcb_transport', qty: 1 },
     ],
   },
+  {
+    id: 'e12-factory-highbay',
+    title: '工場の水銀灯→高天井LED更新',
+    spec: `鉄骨造の工場（天井高8m）の照明更新。
+- 水銀灯→高天井LED器具 交換 24台（87〜129W級）
+- 金属管配管 60m（露出・既設ルート流用不可の区間）
+- CVT幹線 22sq級 45m（分電盤〜照明幹線の張替え）
+場所は大阪府内、稼働中の工場のため夜間作業。
+※高所作業車・ローリングタワーのリース費は別途手配のため、この見積には含めない。`,
+    items: [
+      { type: 'led_highbay', qty: 24 },
+      { type: 'metal_conduit_m', qty: 60 },
+      { type: 'cvt22_m', qty: 45 },
+    ],
+  },
+  {
+    id: 'e13-apartment-weak',
+    title: '賃貸マンションの弱電・防災更新',
+    spec: `賃貸マンション（12戸）の弱電設備更新。
+- 情報コンセント（LAN・TV）24箇所
+- LAN配線 CAT6A 12本（各戸1本・端末処理込）
+- インターホン・電気錠 12台（親機・子機・電気錠連動）
+- 火災報知感知器 30個（住戸内・共用部）`,
+    items: [
+      { type: 'info_outlet', qty: 24 },
+      { type: 'lan_cat6a', qty: 12 },
+      { type: 'intercom_lock', qty: 12 },
+      { type: 'fire_detector', qty: 30 },
+    ],
+  },
+  {
+    id: 'e14-ev-charger',
+    title: 'EV充電設備の設置',
+    spec: `月極駐車場（10台分）へのEV充電設備の新設。
+- EV普通充電コンセント（200V）8基
+- EV普通充電器（6kW・スタンド型）2基
+- 動力用分電盤 新設 1面
+- CVT幹線 22sq級 80m（受電盤〜駐車場）
+- PF/CD管配管 80m`,
+    items: [
+      { type: 'ev_charge_200v', qty: 8 },
+      { type: 'ev_charge_6kw', qty: 2 },
+      { type: 'panel_power', qty: 1 },
+      { type: 'cvt22_m', qty: 80 },
+      { type: 'pf_conduit_m', qty: 80 },
+    ],
+  },
+  {
+    id: 'e15-cubicle-200',
+    title: 'キュービクル200kVA級の更新',
+    spec: `既設キュービクルの更新（高圧受電・契約電力150kW級）。
+- キュービクル 200kVA級 1基（本体・据付・結線・受電試験込）
+- 接地工事 1式
+- CVT幹線 60〜100sq 35m（キュービクル〜主分電盤）
+- ケーブルラック敷設 35m
+※既設キュービクルの撤去・処分は別途。PCBは非含有を確認済み。`,
+    items: [
+      { type: 'cubicle_200', qty: 1 },
+      { type: 'ground_work', qty: 1 },
+      { type: 'cvt60_m', qty: 35 },
+      { type: 'cable_rack_m', qty: 35 },
+    ],
+  },
 ];
 
 module.exports = { SCENARIOS };
