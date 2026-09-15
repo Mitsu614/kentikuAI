@@ -184,6 +184,36 @@ export default function ConstructionsPage({ highlightId, onHighlightClear }: { h
     if (showDetail) loadDetail(showDetail.id);
   };
 
+  // 明細を直したその場で、お客様にお出しする見積書を出す。
+  // 請求書があればその宛名・発行日を使う。手で登録した施工など請求書が無いときは、
+  // 今の明細と売価から組み立てる（宛名は空欄＝手書きで入れられる）。
+  const exportEstimatePDF = async () => {
+    if (!showDetail) return;
+    try {
+      const byConstruction = await (window as any).api.getInvoiceByConstruction(showDetail.id);
+      if (byConstruction?.invoice) {
+        await (window as any).api.generateEstimatePDF(byConstruction);
+        return;
+      }
+      const [mats, calc] = await Promise.all([
+        window.api.listConstructionMaterials(showDetail.id),
+        window.api.calculateConstruction(showDetail.id),
+      ]);
+      if (mats.length === 0 && !(calc?.laborCost > 0)) { alert('明細がありません。項目を追加してから出力してください。'); return; }
+      await (window as any).api.generateEstimatePDF({
+        invoice: {
+          id: showDetail.id,
+          client_name: '', client_address: '',
+          issue_date: new Date().toISOString().split('T')[0],
+          amount: calc?.sellingPrice || 0, tax_rate: 0.1,
+          labor_cost: calc?.laborCost || 0, notes: '',
+          construction_title: showDetail.title || '', property_name: showDetail.property_name || '',
+        },
+        materials: mats,
+      });
+    } catch (e: any) { alert('見積書の出力に失敗しました: ' + (e?.message || e)); }
+  };
+
   const fmt = (n: number) => '¥' + Math.round(n).toLocaleString();
 
   return (
@@ -258,7 +288,10 @@ export default function ConstructionsPage({ highlightId, onHighlightClear }: { h
             <div className="card">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h2>{showDetail.title}</h2>
-                <button className="btn btn-sm btn-secondary" onClick={() => setShowDetail(null)}>✕ 閉じる</button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-sm btn-primary" onClick={exportEstimatePDF}>📋 見積書PDF出力</button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => setShowDetail(null)}>✕ 閉じる</button>
+                </div>
               </div>
 
               {/* 計算結果 */}

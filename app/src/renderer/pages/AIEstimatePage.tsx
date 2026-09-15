@@ -3635,10 +3635,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   <div style={{ fontSize: 12, background: '#fff', color: '#1e7a4d', padding: '4px 12px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold' }}
                     onClick={async () => {
                       try {
+                        // getInvoiceByConstruction は { invoice, materials } を返す（見積書PDFにそのまま渡せる形）
                         const inv = await (window as any).api.getInvoiceByConstruction(autoCreated.constructionId);
-                        if (!inv?.id) { alert('見積書のもとになる請求書が見つかりませんでした。'); return; }
-                        const detail = await (window as any).api.getInvoiceDetail(inv.id);
-                        await (window as any).api.generateEstimatePDF(detail);
+                        if (!inv?.invoice) { alert('見積書のもとになる請求書が見つかりませんでした。'); return; }
+                        await (window as any).api.generateEstimatePDF(inv);
                       } catch (e: any) { alert('見積書の出力に失敗しました: ' + (e?.message || e)); }
                     }}>
                     📋 見積書をPDFで出す

@@ -3389,7 +3389,9 @@ app.whenReady().then(async () => {
   const cleanDocNotes = (raw: any): string => {
     const text = String(raw || '');
     if (!text.trim()) return '';
-    const dropHead = /^(AI(自動作成|解析|見積)|提案[:：]|信頼度[:：]|工事種別[:：]|imagePrompt|【葺き師への施工指示】|【施工指示】)/;
+    // 「面積・数量（実測）」「工事内容」はAI見積の入力メモが自動で入ったもの。社内の控えであって、
+    // お客様にお出しする書類に載せるものではない（手で書いた備考はそのまま出す）。
+    const dropHead = /^(AI(自動作成|解析|見積)|提案[:：]|信頼度[:：]|工事種別[:：]|面積・数量（実測）[:：]|工事内容[:：]|imagePrompt|【葺き師への施工指示】|【施工指示】)/;
     const lines = text.split(/\r?\n/).filter((l) => {
       const t = l.trim();
       if (!t) return false;
@@ -3399,6 +3401,14 @@ app.whenReady().then(async () => {
       return true;
     });
     return lines.join('\n').trim();
+  };
+
+  // 書類の件名。AI見積で作った物件名には「（AI見積もり）」が付いているが、お客様向けの書類には出さない。
+  // 付け札を外すと工事名と同じ言葉になる（例: 内装工事 / 内装工事）ので、そのときは物件名を重ねない。
+  const docSubject = (title: any, propertyName: any): string => {
+    const t = String(title || '').trim() || '（未設定）';
+    const p = String(propertyName || '').replace(/[（(]\s*AI見積(もり|り)?\s*[）)]/g, '').trim();
+    return escapeHtml(p && p !== t ? `${t} / ${p}` : t);
   };
 
   const generateInvoicePdfBuffer = async (data: any): Promise<Buffer> => {
@@ -3618,8 +3628,7 @@ app.whenReady().then(async () => {
   </div>
 
   <div class="subject">
-    件名: ${title}
-    ${invoice.property_name ? ` / ${escapeHtml(invoice.property_name)}` : ''}
+    件名: ${docSubject(invoice.construction_title, invoice.property_name)}
   </div>
 
   <div class="total-box">
@@ -5039,7 +5048,7 @@ table{width:100%;border-collapse:collapse;margin:12px 0}th{background:#2e4057;co
 <div class="meta">No. EST-${String(invoice.id).padStart(4, '0')}<br>発行日: ${escapeHtml(invoice.issue_date)}
 ${cfg.companyName ? `<div style="margin-top:10px;border-top:1px solid #ccc;padding-top:6px"><div style="display:flex;align-items:flex-start;gap:8px"><div style="flex:1">${cfg.companyLogo ? `<img src="${cfg.companyLogo}" style="max-width:80px;max-height:30px;margin-bottom:4px" /><br>` : ''}<strong>${escapeHtml(cfg.companyName)}</strong><br><span style="font-size:9px">${escapeHtml(cfg.companyAddress || '')}${cfg.companyTel ? '<br>TEL: ' + escapeHtml(cfg.companyTel) : ''}</span></div>${cfg.companySeal ? `<img src="${cfg.companySeal}" style="width:60px;height:60px;object-fit:contain;opacity:0.85" />` : ''}</div></div>` : ''}</div></div>
 <div class="validity">有効期限: 発行日より30日間</div>
-<div style="margin:12px 0;font-size:12px">件名: ${title}${invoice.property_name ? ' / ' + escapeHtml(invoice.property_name) : ''}</div>
+<div style="margin:12px 0;font-size:12px">件名: ${docSubject(invoice.construction_title, invoice.property_name)}</div>
 <div class="total-box"><span style="font-size:13px">お見積金額（税込）</span><span style="font-size:22px;font-weight:bold">${fmt(totalWithTax)}</span></div>
 <table><thead><tr><th style="text-align:center;width:30px">No</th><th>項目</th><th style="text-align:center;width:50px">数量</th><th style="text-align:center;width:40px">単位</th><th style="text-align:right;width:80px">単価</th><th style="text-align:right;width:90px">金額</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="summary"><div class="summary-row sub"><span>小計（税抜）</span><span>${fmt(taxExcluded)}</span></div><div class="summary-row"><span>消費税（${Math.round(taxRate * 100)}%）</span><span>${fmt(taxAmount)}</span></div><div class="summary-row total"><span>お見積金額（税込）</span><span>${fmt(totalWithTax)}</span></div></div>
