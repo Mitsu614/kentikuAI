@@ -1341,6 +1341,28 @@ function applyEstimateFix(result: any, fix: any, context: string): any {
   return reconcileEstimateTotal(result, context);
 }
 
+// 拾い出しの係数。会社ごとに流儀が違う（幅木は0.85で見る、クロスのロスは12%、等）ので、
+// プロンプトに直書きせず設定から差し替えられるようにする。未設定なら実務標準の既定値。
+const TAKEOFF_FACTOR_DEFAULTS = {
+  openingThreshold: 1,    // 開口部の控除をする最小面積（㎡/箇所）
+  baseboardFactor: 0.9,   // 幅木＝壁の延長 × この係数（開口ぶんを落とす）
+  lossBoard: 5,           // ロス率%：板もの・断熱（板状/マット）
+  lossSheet: 10,          // ロス率%：クロス・シート
+  lossLinear: 5,          // ロス率%：長尺材
+  lossCable: 5,           // ロス率%：ケーブル・電線管
+};
+type TakeoffFactors = typeof TAKEOFF_FACTOR_DEFAULTS;
+
+function takeoffFactors(cfg: any): TakeoffFactors {
+  const src = (cfg && cfg.takeoffFactors) || {};
+  const out: any = { ...TAKEOFF_FACTOR_DEFAULTS };
+  for (const k of Object.keys(TAKEOFF_FACTOR_DEFAULTS)) {
+    const v = Number(src[k]);
+    if (isFinite(v) && v >= 0) out[k] = v;
+  }
+  return out as TakeoffFactors;
+}
+
 // 数量の丸め。2桁で丸めていたころ、鉄筋のトン数が桁落ちしていた
 // （0.085t → 0.09t で +6%、0.045t → 0.05t で +11%。鉄筋は金額の桁を決める工種なので致命的）。
 // 小数第3位まで残し、それでも0になる極小値だけ有効数字3桁まで粘る。
@@ -7224,6 +7246,15 @@ manDaysBreakdownの書き方例:
     const takeoffIndustry = String(data?.industryOverride || '').trim()
       || getTenantProfile(getCurrentTenant()).industryType
       || config.industryType || '';
+    // 会社ごとの係数。プロンプト本文の既定値より、こちらを優先させる。
+    const F = takeoffFactors(config);
+    const factorsSection = `
+## ★この会社の積算ルール（本文の標準値より優先）★
+- 開口部の控除: 1箇所あたり **${F.openingThreshold}㎡以上** の開口（窓・出入口）を控除する。これ未満は控除しない。
+- 幅木の延長: **壁の延長 × ${F.baseboardFactor}**（開口ぶんを落とす）
+- ロス率: 板もの・断熱 **${F.lossBoard}%** ／ クロス・シート **${F.lossSheet}%** ／ 長尺材 **${F.lossLinear}%** ／ ケーブル・電線管 **${F.lossCable}%**
+★本文に書かれた数値と食い違う場合は、必ずここの数値を使え。
+`;
     const industrySection = TAKEOFF_INDUSTRY_HINT[takeoffIndustry]
       ? `
 ## ★この会社の業種★
@@ -7348,7 +7379,7 @@ ${TAKEOFF_INDUSTRY_HINT[takeoffIndustry]}
 - ロス率はケーブル・電線管5%、器具は0%。
 - **図面に無い器具を推測で足すな。** 凡例・器具配置図・回路表のどれが足りないのかを unreadable に書け
   （例「凡例が無く記号の種別が確定できない。凡例または器具リストがあれば拾えます」）。
-${takeoffShared}${industrySection}${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
+${takeoffShared}${industrySection}${factorsSection}${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
 ## 拾い出しの鉄則（違反したら拾い出しとして失格）
 1. **寸法数値が最優先**。図面に寸法線の数値（例 8,190）があれば必ずそれを使え。縮尺からの目測は、寸法数値が無い部位でだけ使い、その行の confidence を「低」にしろ。
    ★**室名の横に「厨房 A：4.50×3.425＝15.41m²」のように面積が直接書かれていることが多い。**

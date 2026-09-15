@@ -234,6 +234,47 @@ export default function SettingsPage() {
       </div>
 
       {/* 業種選択 */}
+      {/* 拾い出しの係数。会社ごとに流儀が違うので、リリースを待たずにここで変えられるようにする。 */}
+      <div className="card" style={{ border: '2px solid #8e7cc3' }}>
+        <h3 style={{ marginBottom: 12 }}>📐 拾い出しの係数</h3>
+        <p style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>
+          図面から数量を拾うときの決まりごとです。御社のやり方に合わせて変えてください。空欄にすると初期値に戻ります。
+        </p>
+        {[
+          { key: 'openingThreshold', label: '開口部を控除する最小面積', unit: '㎡/箇所', def: 1,
+            hint: 'これより小さい窓・出入口は、壁の面積から引きません。小さくすると数量が減り、大きくすると多めに出ます。' },
+          { key: 'baseboardFactor', label: '幅木の係数（壁の延長 × ）', unit: '', def: 0.9,
+            hint: '出入口のぶんを落とすための係数です。0.9 なら壁の延長の9割を幅木の長さとします。' },
+          { key: 'lossBoard', label: 'ロス率：板もの・断熱', unit: '%', def: 5, hint: '' },
+          { key: 'lossSheet', label: 'ロス率：クロス・シート', unit: '%', def: 10, hint: '' },
+          { key: 'lossLinear', label: 'ロス率：長尺材', unit: '%', def: 5, hint: '' },
+          { key: 'lossCable', label: 'ロス率：ケーブル・電線管', unit: '%', def: 5, hint: '' },
+        ].map(f => (
+          <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 0', borderBottom: '1px dashed #eee' }}>
+            <label style={{ flex: '1 1 16rem', fontSize: 14 }}>
+              {f.label}
+              {f.hint && <span style={{ display: 'block', fontSize: 11, color: '#888', lineHeight: 1.7 }}>{f.hint}</span>}
+            </label>
+            <input
+              type="number" step="0.05" min="0"
+              value={(config.takeoffFactors || {})[f.key] ?? ''}
+              placeholder={String(f.def)}
+              onChange={e => {
+                const v = e.target.value;
+                const next = { ...(config.takeoffFactors || {}) };
+                if (v === '') delete next[f.key]; else next[f.key] = Number(v);
+                setConfig({ ...config, takeoffFactors: next });
+              }}
+              style={{ width: 90, padding: '6px 8px', textAlign: 'right', fontSize: 15 }}
+            />
+            <span style={{ fontSize: 12, color: '#888', width: '3.5rem' }}>{f.unit}</span>
+          </div>
+        ))}
+        <p style={{ fontSize: 12, color: '#888', marginTop: 10, lineHeight: 1.8 }}>
+          ここで設定した値は、AIへの指示のなかで<strong>標準の数値より優先</strong>されます。変更したら下の「保存」を押してください。
+        </p>
+      </div>
+
       <div className="card" style={{ border: '2px solid #e67e22' }}>
         <h3 style={{ marginBottom: 12 }}>🏗️ 業種設定</h3>
         <p style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>業種を選択すると、AI見積もりの相場データや材料マスタがその業種に最適化されます。</p>

@@ -58,6 +58,9 @@ const TABS: { key: TabKey; label: string }[] = [
 ];
 
 const PLAN_OPTIONS = [
+  // デモが入っていなかったため、有料のお客様をデモへ戻すことが管理画面からできなかった
+  // （プラン変更のプルダウンに選択肢が無い＝手がない）。2026-09-14 に追加。
+  { value: 'demo',          label: 'デモ' },
   { value: 'light',         label: 'ライト' },
   { value: 'standard',      label: 'スタンダード' },
   { value: 'standard_plus', label: 'スタンダード＋' },
