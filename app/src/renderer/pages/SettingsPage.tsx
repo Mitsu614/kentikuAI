@@ -238,7 +238,7 @@ export default function SettingsPage() {
       <div className="card" style={{ border: '2px solid #8e7cc3' }}>
         <h3 style={{ marginBottom: 12 }}>📐 拾い出しの係数</h3>
         <p style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>
-          図面から数量を拾うときの決まりごとです。御社のやり方に合わせて変えてください。空欄にすると初期値に戻ります。
+          図面から数量を拾うときの決まりごとです。御社のやり方に合わせて変えてください。空欄にすると初期値に戻ります。<br />クロス・硝子フィルムは、面積だけでなく<strong>本数・総延長・巻数</strong>まで計算します（柄物は品番のリピート寸法を見積時にお伝えいただければ、その倍数で切り上げます）。
         </p>
         {[
           { key: 'openingThreshold', label: '開口部を控除する最小面積', unit: '㎡/箇所', def: 1,
@@ -249,6 +249,13 @@ export default function SettingsPage() {
           { key: 'lossSheet', label: 'ロス率：クロス・シート', unit: '%', def: 10, hint: '' },
           { key: 'lossLinear', label: 'ロス率：長尺材', unit: '%', def: 5, hint: '' },
           { key: 'lossCable', label: 'ロス率：ケーブル・電線管', unit: '%', def: 5, hint: '' },
+          { key: 'clothWidth', label: 'クロスの有効幅', unit: 'mm', def: 920,
+            hint: 'ここからロール材の計算が始まります。面積だけでなく、本数・総延長・巻数まで出します。' },
+          { key: 'clothRoll', label: 'クロス1巻の長さ', unit: 'm', def: 50, hint: '' },
+          { key: 'clothCut', label: 'クロスの上下カット代（合計）', unit: 'mm', def: 150, hint: '' },
+          { key: 'filmWidth', label: '硝子フィルムの有効幅', unit: 'mm', def: 900, hint: '' },
+          { key: 'filmRoll', label: '硝子フィルム1巻の長さ', unit: 'm', def: 30, hint: '' },
+          { key: 'filmCut', label: '硝子フィルムのカット代（合計）', unit: 'mm', def: 40, hint: '' },
         ].map(f => (
           <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 0', borderBottom: '1px dashed #eee' }}>
             <label style={{ flex: '1 1 16rem', fontSize: 14 }}>

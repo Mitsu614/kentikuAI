@@ -1350,6 +1350,13 @@ const TAKEOFF_FACTOR_DEFAULTS = {
   lossSheet: 10,          // ロス率%：クロス・シート
   lossLinear: 5,          // ロス率%：長尺材
   lossCable: 5,           // ロス率%：ケーブル・電線管
+  // ロール材（クロス・硝子フィルム）。面積だけでは発注できないので、本数・総延長・巻数も出す。
+  clothWidth: 920,        // クロスの有効幅(mm)
+  clothRoll: 50,          // クロス1巻の長さ(m)
+  clothCut: 150,          // クロスの上下カット代の合計(mm)
+  filmWidth: 900,         // 硝子フィルムの有効幅(mm)
+  filmRoll: 30,           // 硝子フィルム1巻の長さ(m)
+  filmCut: 40,            // 硝子フィルムのカット代の合計(mm)
 };
 type TakeoffFactors = typeof TAKEOFF_FACTOR_DEFAULTS;
 
@@ -7220,7 +7227,7 @@ manDaysBreakdownの書き方例:
   // ★PDFはClaudeにネイティブで渡す。画像へラスタ化すると寸法線の細字・小数点が潰れて誤読するため。
   const takeoffDrawingCore = async (data: {
     files?: { type?: 'pdf' | 'image'; data: string; name?: string }[];
-    comment?: string; scaleHint?: string; targets?: string; industryOverride?: string;
+    comment?: string; scaleHint?: string; targets?: string; industryOverride?: string; repeats?: string;
   }) => {
     const files = (data?.files || []).filter((f: any) => f && f.data);
     if (files.length === 0) throw new Error('ERROR: 図面または材料一覧表のファイル（PDFまたは画像）を選択してください。');
@@ -7253,6 +7260,22 @@ manDaysBreakdownの書き方例:
 - 開口部の控除: 1箇所あたり **${F.openingThreshold}㎡以上** の開口（窓・出入口）を控除する。これ未満は控除しない。
 - 幅木の延長: **壁の延長 × ${F.baseboardFactor}**（開口ぶんを落とす）
 - ロス率: 板もの・断熱 **${F.lossBoard}%** ／ クロス・シート **${F.lossSheet}%** ／ 長尺材 **${F.lossLinear}%** ／ ケーブル・電線管 **${F.lossCable}%**
+
+## ★ロール材（クロス・硝子フィルム）の拾い方★
+面積(㎡)だけでは発注できない。**本数・総延長(m)・巻数**も必ず出し、formula に書け。
+- クロス: 有効幅 **${F.clothWidth}mm** ／ 1巻 **${F.clothRoll}m** ／ 上下カット代 合計 **${F.clothCut}mm**
+- 硝子フィルム: 有効幅 **${F.filmWidth}mm** ／ 1巻 **${F.filmRoll}m** ／ カット代 合計 **${F.filmCut}mm**
+
+計算の順序:
+1. **本数 = 貼る面の幅(mm) ÷ 有効幅 … 切り上げ**（半端な1本も1本と数える。ここで幅方向のロスが出る）
+2. **1本の長さ = 面の高さ(mm) + カット代**
+3. ★**柄物のクロスで、品番のリピート寸法(mm)が与えられている場合は、1本の長さをリピートの倍数に切り上げろ。**
+   例: 高さ2400＋カット150＝2550、リピート640 → 2550÷640=3.98 → 4リピート＝2560mm
+4. **総延長(m) = 本数 × 1本の長さ ÷ 1000**
+5. **巻数 = 総延長 ÷ 1巻の長さ … 切り上げ**
+
+★面の幅・高さが図面から読めないときは、面積と天井高から幅を逆算してよいが、その行の confidence を下げろ。
+★リピートが分からないときは、リピート計算をせず、unreadable に「クロスのリピート寸法が不明（品番が分かれば再計算できます）」と書け。**推測でリピートを決めるな。**
 ★本文に書かれた数値と食い違う場合は、必ずここの数値を使え。
 `;
     const industrySection = TAKEOFF_INDUSTRY_HINT[takeoffIndustry]
@@ -7379,7 +7402,11 @@ ${TAKEOFF_INDUSTRY_HINT[takeoffIndustry]}
 - ロス率はケーブル・電線管5%、器具は0%。
 - **図面に無い器具を推測で足すな。** 凡例・器具配置図・回路表のどれが足りないのかを unreadable に書け
   （例「凡例が無く記号の種別が確定できない。凡例または器具リストがあれば拾えます」）。
-${takeoffShared}${industrySection}${factorsSection}${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}
+${takeoffShared}${industrySection}${factorsSection}${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}${data?.repeats && String(data.repeats).trim() ? `
+## ★クロスの品番・リピート（ユーザー指定）★
+${String(data.repeats).trim()}
+★ここに書かれた品番のリピート寸法(mm)を使い、1本の長さをリピートの倍数に切り上げて、本数・総延長・巻数を出すこと。
+` : ''}
 ## 拾い出しの鉄則（違反したら拾い出しとして失格）
 1. **寸法数値が最優先**。図面に寸法線の数値（例 8,190）があれば必ずそれを使え。縮尺からの目測は、寸法数値が無い部位でだけ使い、その行の confidence を「低」にしろ。
    ★**室名の横に「厨房 A：4.50×3.425＝15.41m²」のように面積が直接書かれていることが多い。**

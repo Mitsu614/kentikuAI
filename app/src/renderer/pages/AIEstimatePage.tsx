@@ -111,6 +111,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [takeoff, setTakeoff] = useState<any>(null);
   const [takeoffLoading, setTakeoffLoading] = useState(false);
   const [takeoffTargets, setTakeoffTargets] = useState(''); // 拾ってほしい対象（任意）
+  // クロスの品番・リピート（任意）。柄物は1本の長さをリピートの倍数に切り上げる必要があるため、
+  // 「品番が分かれば再計算できます」とAIに言わせている以上、入れる場所を用意しておく。
+  const [takeoffRepeats, setTakeoffRepeats] = useState('');
   const [takeoffScale, setTakeoffScale] = useState('');     // 縮尺の指定（図面に表記が無い/違うとき）
   const [takeoffOpen, setTakeoffOpen] = useState(false);
   const [takeoffDragging, setTakeoffDragging] = useState(false);
@@ -1405,6 +1408,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         comment,
         scaleHint: takeoffScale,
         targets: takeoffTargets,
+        repeats: takeoffRepeats,
         industryOverride: industryOverride || undefined,
       });
       endBusy();
@@ -2243,6 +2247,13 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     onChange={e => setTakeoffTargets(e.target.value)}
                     placeholder="拾ってほしい対象（任意）例: 屋根と外壁だけ / 建具の数量"
                     style={{ flex: '2 1 220px', padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 13, fontFamily: 'inherit' }}
+                  />
+                  <input
+                    value={takeoffRepeats}
+                    onChange={e => setTakeoffRepeats(e.target.value)}
+                    placeholder="クロスの品番・リピート（任意）例: SP-9501 リピート640mm / 無地"
+                    title="柄物のクロスは、1本の長さをリピートの倍数に切り上げて本数・巻数を出します。品番だけ、リピート寸法だけでも結構です。"
+                    style={{ width: '100%', marginTop: 6, padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 13, fontFamily: 'inherit' }}
                   />
                   <input
                     type="text"
