@@ -74,6 +74,14 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     { v: 'lease',      label: '仮設工事リース業', hint: '足場・仮設のリース。日数×日額で積算' },
   ];
   const [askIndustry, setAskIndustry] = useState(false);
+  // クロスの拾い方は会社ごとに流儀が違う（見込みを巻くか、カーテンボックスを貼るか、
+  // 開口をどこから引くか）。設定画面を見に行く人はいないので、クロスを拾う直前に一度だけ聞く。
+  const [askCloth, setAskCloth] = useState(false);
+  const [clothSaving, setClothSaving] = useState(false);
+  const [clothReturn, setClothReturn] = useState('0');
+  const [clothCurtain, setClothCurtain] = useState('0');
+  const [clothOpening, setClothOpening] = useState('1');
+  const pendingTakeoff = useRef<null | (() => void)>(null);
   const [industryChoice, setIndustryChoice] = useState('');
   const [industrySaving, setIndustrySaving] = useState(false);
   const pendingAnalyze = useRef<null | (() => void)>(null);
@@ -85,6 +93,35 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       return !c?.industryConfirmed;
     } catch (_) { return false; }   // 読めないときは邪魔しない
   };
+  // クロスまわりの確認が要るか。内装業種か、対象・コメントにクロスと書かれていて、まだ未確認のとき。
+  const needsCloth = async () => {
+    try {
+      const c = await (window as any).api.loadConfig();
+      if (c?.takeoffFactors?.clothConfirmed) return false;
+      const ind = industryOverride || c?.industryType || '';
+      const text = `${takeoffTargets} ${comment} ${takeoffRepeats}`;
+      return ind === 'interior' || /クロス|壁紙|内装/.test(text);
+    } catch (_) { return false; }   // 読めないときは邪魔しない
+  };
+  const saveCloth = async () => {
+    if (clothSaving) return;
+    setClothSaving(true);
+    try {
+      const c = await (window as any).api.loadConfig();
+      const tf = { ...(c?.takeoffFactors || {}) };
+      tf.returnDepth = Number(clothReturn) || 0;
+      tf.curtainBox = Number(clothCurtain) || 0;
+      if (Number(clothOpening) > 0) tf.openingThreshold = Number(clothOpening);
+      tf.clothConfirmed = true;
+      await (window as any).api.saveConfig({ ...c, takeoffFactors: tf });
+      setAskCloth(false);
+      const go = pendingTakeoff.current; pendingTakeoff.current = null;
+      if (go) go();
+    } catch (e: any) {
+      setError(e?.message || 'クロスの設定の保存に失敗しました');
+    } finally { setClothSaving(false); }
+  };
+
   const saveIndustry = async () => {
     if (!industryChoice || industrySaving) return;
     setIndustrySaving(true);
@@ -1399,6 +1436,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // 拾い出し実行。金額は出さない工程なので、失敗しても見積本体には影響させない。
   const runTakeoff = async () => {
     if (takeoffFiles.length === 0) return;
+    // クロスを拾う前に一度だけ流儀を聞く。答えは設定に保存され、次からは聞かない。
+    if (await needsCloth()) {
+      pendingTakeoff.current = () => { void runTakeoff(); };
+      setAskCloth(true);
+      return;
+    }
     setTakeoffLoading(true);
     setError('');
     startBusy({ key: 'takeoff', title: '図面から数量を拾っています', etaSec: TAKEOFF_SEC, sub: '寸法・縮尺を読み取り中', note: '図面の枚数が多いほど時間がかかります' });
@@ -1956,6 +1999,63 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       )}
 
       {/* ── 業種の確認（初回の見積の前に1度だけ） ── */}
+      {askCloth && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(20,28,40,.62)', zIndex: 4000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+        }}>
+          <div className="card" style={{ maxWidth: 620, width: '100%', maxHeight: '88vh', overflowY: 'auto', padding: '22px 26px' }}>
+            <h3 style={{ margin: '0 0 6px', color: '#1a2b4a', fontSize: 19 }}>クロスの拾い方を教えてください</h3>
+            <div style={{ fontSize: 13, color: '#5a6675', lineHeight: 1.8, marginBottom: 16 }}>
+              会社によって数え方が違うところです。<b>一度だけの確認です。</b>
+              あとから設定画面（拾い出しの係数）でいつでも変更できます。
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>① 窓やドアの見込み（ちり）に、クロスを巻き込みますか</div>
+              <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>巻き込む場合は、額縁の見込み寸法を入れてください。巻き込まないなら 0 のままで結構です。</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="number" min="0" step="5" value={clothReturn} onChange={e => setClothReturn(e.target.value)}
+                  style={{ width: 100, padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 15, textAlign: 'right' }} />
+                <span style={{ fontSize: 13, color: '#666' }}>mm（0＝巻き込まない）</span>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>② カーテンボックスの内部は貼りますか</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {[{ v: '0', l: '貼らない' }, { v: '1', l: '貼る' }].map(o => (
+                  <button key={o.v} type="button" onClick={() => setClothCurtain(o.v)}
+                    style={{
+                      padding: '8px 18px', borderRadius: 8, fontSize: 14, cursor: 'pointer',
+                      border: `2px solid ${clothCurtain === o.v ? '#3a7bd5' : '#e0e6ee'}`,
+                      background: clothCurtain === o.v ? '#eef4fc' : '#fff',
+                      fontWeight: clothCurtain === o.v ? 700 : 400,
+                    }}>{o.l}</button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>③ 開口部は、どのくらいの大きさから引きますか</div>
+              <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>これより小さい窓・出入口は、壁の面積から引きません。</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input type="number" min="0" step="0.1" value={clothOpening} onChange={e => setClothOpening(e.target.value)}
+                  style={{ width: 100, padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 15, textAlign: 'right' }} />
+                <span style={{ fontSize: 13, color: '#666' }}>㎡ 以上を控除</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => { pendingTakeoff.current = null; setAskCloth(false); }}>あとで</button>
+              <button className="btn btn-primary" onClick={saveCloth} disabled={clothSaving}>
+                {clothSaving ? '保存中…' : 'この設定で拾う'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {askIndustry && (
         <div style={{
           position: 'fixed', inset: 0, background: 'rgba(20,28,40,.62)', zIndex: 4000,

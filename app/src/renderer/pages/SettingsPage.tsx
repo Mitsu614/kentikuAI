@@ -256,6 +256,10 @@ export default function SettingsPage() {
           { key: 'filmWidth', label: '硝子フィルムの有効幅', unit: 'mm', def: 900, hint: '' },
           { key: 'filmRoll', label: '硝子フィルム1巻の長さ', unit: 'm', def: 30, hint: '' },
           { key: 'filmCut', label: '硝子フィルムのカット代（合計）', unit: 'mm', def: 40, hint: '' },
+          { key: 'returnDepth', label: '見込み（ちり）への巻き込み', unit: 'mm', def: 0,
+            hint: '窓やドアの内側（見込み）にクロスを巻き込む場合、その寸法を入れてください。0のままなら巻き込みは拾いません。額縁の見込みが25mmなら25と入れます。' },
+          { key: 'curtainBox', label: 'カーテンボックスの内部を貼る', unit: '1=貼る', def: 0,
+            hint: '内部にもクロスを貼る場合は 1、貼らない場合は 0。' },
         ].map(f => (
           <div key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 0', borderBottom: '1px dashed #eee' }}>
             <label style={{ flex: '1 1 16rem', fontSize: 14 }}>
