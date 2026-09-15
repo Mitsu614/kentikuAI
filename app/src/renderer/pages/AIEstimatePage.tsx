@@ -126,6 +126,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   // この1件だけ業種を変える（設定は書き換えない）。鉄骨だけ別業種で出したい、という使い方。
   const [industryOverride, setIndustryOverride] = useState('');
   const [roofType, setRoofType] = useState(''); // 屋根種別（お客様確認）→ 展開係数をAIに強制する
+  // 「その他」を選んだときだけ使う、御社の展開係数。4択に無い値で見ている会社があるため。
+  const [roofFactorCustom, setRoofFactorCustom] = useState('');
   const [structure, setStructure] = useState(''); // 建物構造（木造/鉄骨/RC/SRC）。未選択ならAIが推察する
   const [buildingAge, setBuildingAge] = useState(''); // 築年数（年）。改修・解体時のコストに反映させる
   // 現場条件 — 足場・搬入・アクセス・居ながら施工。写真では分からないが金額を直撃する。未選択ならAIが写真から推察。
@@ -1269,7 +1271,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     const slope = Number(aerial.slopeFactor) > 0 ? Number(aerial.slopeFactor) : 1;
     const roof = plan * slope;
     // 画面で選んだ屋根種別が最優先。選んでいなければ航空写真からの判定を候補として使う
-    const picked = roofType ? Number(roofType.split('|')[1]) || 1 : 0;
+    const picked = roofType === 'custom'
+      ? (Number(roofFactorCustom) || 1)
+      : (roofType ? Number(roofType.split('|')[1]) || 1 : 0);
     const suggest = aerial.developSuggest?.factor || 0;
     const dev = picked || suggest || 1;
     return {
@@ -1487,7 +1491,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         try { await (window as any).api.upsertCustomerProfile({ name: clientName.trim(), job: clientJob, hobby: clientHobby }); } catch (_) {}
       }
       // 屋根種別（お客様確認）→ 展開係数をAIに強制するための構造化データ
-      const roof = roofType ? { label: roofType.split('|')[0], developFactor: Number(roofType.split('|')[1]) || 0 } : null;
+      const roof = roofType === 'custom'
+        ? (Number(roofFactorCustom) > 0 ? { label: `その他（×${Number(roofFactorCustom)}）`, developFactor: Number(roofFactorCustom) } : null)
+        : (roofType ? { label: roofType.split('|')[0], developFactor: Number(roofType.split('|')[1]) || 0 } : null);
       // 現場条件（足場・搬入・アクセス・居ながら）→ 一つでも入っていれば構造化して渡す。未入力はAIが写真から推察。
       const site = { access: siteAccess, adjacency: siteAdjacency, occupied: siteOccupied, stories: siteStories };
       // 図面拾い出しがあれば確定数量として渡す（AIの目測推定より優先される）
@@ -2402,7 +2408,21 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               <option value="折板150mm|1.69">折板 150mm（大スパン）… 展開係数 ×1.69</option>
               <option value="スレート大波|1.1">スレート大波 … 展開係数 ×1.1</option>
               <option value="平葺き・瓦・シングル|1.0">平葺き・瓦・シングル … 補正なし ×1.0</option>
+              <option value="custom">その他（展開係数を直接入力）</option>
             </select>
+            {roofType === 'custom' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: '#475569' }}>展開係数 ×</span>
+                <input
+                  type="number" step="0.01" min="1" max="3"
+                  value={roofFactorCustom}
+                  onChange={e => setRoofFactorCustom(e.target.value)}
+                  placeholder="1.45"
+                  style={{ width: 90, padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 14, textAlign: 'right' }}
+                />
+                <span style={{ fontSize: 12, color: '#888' }}>御社の見積書に書かれている数値を入れてください</span>
+              </div>
+            )}
             <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
               折板は山谷のぶん材料面積が増えます。<strong>お客様に屋根種別を聞いて選ぶと、AIの判定より確実に展開係数が当たります。</strong>（塗装・葺き替えなど材料が波形に沿わない工事は「自動」でOK）
             </div>

@@ -81,6 +81,8 @@ function probe(items) {
 (async () => {
   const file = process.argv[2];
   const runs = Number(process.argv[3] || 3);
+  // 第4引数で「拾ってほしい対象」を差し替えられる（本番のコメント欄と同じ位置に入る）
+  const targets = process.argv[4] || TARGETS;
   if (!file || !fs.existsSync(file)) {
     console.error('使い方: node app/tools/harness-takeoff/run.js "<図面ファイル>" [試行回数]');
     process.exit(1);
@@ -91,8 +93,14 @@ function probe(items) {
   const buf = fs.readFileSync(file);
   const isPdf = path.extname(file).toLowerCase() === '.pdf';
   const b64 = buf.toString('base64');
-  const media = isPdf ? null
-    : (buf[0] === 0x89 ? 'image/png' : buf[0] === 0x47 ? 'image/gif' : 'image/jpeg');
+  // ★実体（マジックバイト）で判定する。本番の detectMediaType と同じ考え方。
+  //   拡張子は嘘をつく（.jpg なのに中身が WebP のファイルがあり、
+  //   宣言と実体が食い違うと Anthropic API が400を返す）。
+  const media = isPdf ? null : (
+    buf[0] === 0x89 ? 'image/png'
+    : buf[0] === 0x47 ? 'image/gif'
+    : (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') ? 'image/webp'
+    : 'image/jpeg');
 
   const content = [{ type: 'text', text: `【図面1：${path.basename(file)}】` }];
   content.push(isPdf
@@ -100,7 +108,7 @@ function probe(items) {
     : { type: 'image', source: { type: 'base64', media_type: media, data: b64 } });
   content.push({
     type: 'text',
-    text: fillPrompt(TAKEOFF_PROMPT, { targets: TARGETS, comment: COMMENT }),
+    text: fillPrompt(TAKEOFF_PROMPT, { targets, comment: COMMENT }),
   });
 
   const results = [];
