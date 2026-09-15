@@ -677,27 +677,23 @@ function PlanManagement() {
   //   その他 200,000円 … 初期設定・データ移行・操作レクチャー（フル）
   // ★ここを0円にしてはいけない。獲得コストが回収できないまま短期解約されるのと、
   //   取り込みを誰もやらず学習が立ち上がらないのと、2つ同時に起きる。
-  // 初期設定サポートは「月額の2ヶ月分」で統一（2026-09-14）。作業量ともおおむね比例する。
-  const SETUP_FEES: Record<string, number> = {
-    light: 29800,          // 月14,800 × 2
-    standard: 60000,       // 月30,000 × 2
-    standard_plus: 100000, // 月50,000 × 2
-    pro: 200000,           // 月100,000 × 2
-  };
-  const SETUP_FEE_DEFAULT = 200000;
+  // 初期設定サポートは全プラン一律100,000円（2026-09-15）。
+  // プラン別（月額の2ヶ月分）にしていたが、説明が長くなるわりに得るものが小さかった。
+  // 一律にすると1社あたりの年間売上が上がり、同じ年商に必要な獲得社数が減る
+  // （スタンダードで 290万→338万／必要ペース 月3.5社→3.0社）。
+  // ★そのぶん、含まれる作業もプランによらず揃えること（取り込み20件・レクチャー1回）。
+  const SETUP_FEES: Record<string, number> = {};
+  const SETUP_FEE_DEFAULT = 100000;
   const setupFeeAmount = (planKey: string) => SETUP_FEES[planKey] ?? SETUP_FEE_DEFAULT;
 
   // ★Stripeで「一回払い」の決済リンクを作り、ここに貼ること。
   //   空のままだと関門が出ず、月額のリンクだけが開く＝初期費用を取りっぱぐれる。
   // ★プランごとに「一回払い」のリンクを作って貼ること。金額が違うので使い回してはいけない。
   //   空のプランは関門が出ず、月額のリンクだけが開く＝初期費用を取りっぱぐれる。
-  const SETUP_LINKS: Record<string, string> = {
-    light:         'https://buy.stripe.com/eVqcN6adJbNFaM91gi2400c',   // 29,800円・一回払い
-    standard:      'https://buy.stripe.com/14AcN61Hd6tl1bz7EG2400d',   // 60,000円・一回払い
-    standard_plus: 'https://buy.stripe.com/6oU00k1Hd04X3jHbUW2400e',   // 100,000円・一回払い
-    pro:           'https://buy.stripe.com/fZueVe85B9Fx07v7EG24009',   // 200,000円・一回払い
-  };
-  const SETUP_LINK_DEFAULT = '';
+  // 一律100,000円なので、全プランで同じリンクを使う。
+  // （60,000円と200,000円のリンクは Stripe 側に残してあるが、もう案内していない）
+  const SETUP_LINKS: Record<string, string> = {};
+  const SETUP_LINK_DEFAULT = 'https://buy.stripe.com/6oU00k1Hd04X3jHbUW2400e';   // 100,000円・一回払い
 
   // 追加ストック（その月だけ単位を足す・一回払い）。プラン変更は不要。
   // ★本体プランより割高にしてあること（毎月足りない方は上位プランのほうが安くなる、という誘導）。
@@ -858,8 +854,8 @@ function PlanManagement() {
               初回のご契約には、初期設定サポート費用（初回のみ・総額）がかかります
             </div>
             <div style={{ fontSize: 12, color: '#666', marginBottom: 10 }}>
-              金額は<strong>月額の2ヶ月分</strong>です（ライト ¥{SETUP_FEES.light.toLocaleString()}／スタンダード ¥{SETUP_FEES.standard.toLocaleString()}／スタンダード＋ ¥{SETUP_FEES.standard_plus.toLocaleString()}／プロ ¥{SETUP_FEES.pro.toLocaleString()}）。<br />
-              初期設定、過去見積の取り込み、操作のご説明が含まれます。<br />
+              <strong>全プラン一律 ¥{SETUP_FEE_DEFAULT.toLocaleString()}</strong>（初回のみ・総額）。<br />
+              初期設定、御社の過去見積20件の取り込み、操作のご説明（1回）が含まれます。<br />
               ご希望のプランの「① …を支払う」→「② 月額プランに申し込む」の順にお進みください。プラン変更のときは、これはかかりません。
             </div>
             {Object.keys(setupFeePaid).length > 0 && (
@@ -871,7 +867,11 @@ function PlanManagement() {
         )}
 
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {Object.entries(plans).map(([key, p]: [string, any]) => {
+          {/* ライトは案内しない（2026-09-15）。月数件の会社は要求が重いわりに単価が低く、
+              獲得コストが同じなのに LTV が1/5になる（LTV÷CAC で 2.7倍 vs 14倍）。
+              プラン定義と決済経路は残してあるので、個別に必要になれば管理画面から設定できる。
+              すでにライトをご契約中の方には、これまでどおり表示する。 */}
+          {Object.entries(plans).filter(([k]) => k !== 'light' || planInfo?.plan === 'light').map(([key, p]: [string, any]) => {
             const isCurrent = key === planInfo.plan;
             const isUpgrade = p.price > (planInfo.price || 0);
             const canRequest = !isCurrent && !hasPendingRequest && key !== 'enterprise';
