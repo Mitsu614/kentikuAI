@@ -159,19 +159,42 @@ function companyFromSession(s: any): string {
 async function findByCustomer(customerId: string): Promise<any | null> {
   if (!customerId) return null;
   const rows = await sbGet(
-    `remote_licenses?stripe_customer_id=eq.${encodeURIComponent(customerId)}&select=id,company_name,plan,credits,max_credits,active,license_token,setup_fee_paid_at`,
+    `remote_licenses?stripe_customer_id=eq.${encodeURIComponent(customerId)}&select=${LICENSE_COLS}`,
   );
   return rows[0] || null;
 }
 
+// 会社名の表記ゆれを潰した比較用の鍵。license 関数の companyKey と同じ規則にそろえること。
+//   「株式会社ＴＳＵＮＥ」「株式会社 TSUNE」「(株)tsune」→ すべて "tsune"
+function companyKey(s: string): string {
+  return String(s || "")
+    .normalize("NFKC")
+    .replace(/[\s　]/g, "")
+    .replace(/株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|一般財団法人|公益社団法人|\(株\)|\(有\)|\(同\)/g, "")
+    .toLowerCase();
+}
+
+const LICENSE_COLS = "id,company_name,plan,credits,max_credits,active,license_token,setup_fee_paid_at";
+
 async function findByCompany(company: string): Promise<{ row: any | null; ambiguous: boolean }> {
   if (!company) return { row: null, ambiguous: false };
   const rows = await sbGet(
-    `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=id,company_name,plan,credits,max_credits,active,license_token,setup_fee_paid_at`,
+    `remote_licenses?company_name=eq.${encodeURIComponent(company)}&select=${LICENSE_COLS}`,
   );
   // 同名が複数あるときは選ばない。取り違えると別の会社のライセンスを書き換えてしまう。
   if (rows.length > 1) return { row: null, ambiguous: true };
-  return { row: rows[0] || null, ambiguous: false };
+  if (rows[0]) return { row: rows[0], ambiguous: false };
+
+  // ★完全一致が無いときは表記ゆれで引き直す。
+  //   デモ登録は「TSUNE」、決済画面では「株式会社ＴＳＵＮＥ」と打つ、ということが普通に起きる。
+  //   ここで見つけられないと別の会社として新しい行が作られ、入金したのにお客様のアプリは
+  //   デモのまま（アプリが持つ鍵は元の行のもの）になる。
+  const key = companyKey(company);
+  if (!key) return { row: null, ambiguous: false };
+  const all = await sbGet(`remote_licenses?select=${LICENSE_COLS}`);
+  const hits = all.filter((r) => companyKey(r.company_name) === key);
+  if (hits.length > 1) return { row: null, ambiguous: true };
+  return { row: hits[0] || null, ambiguous: false };
 }
 
 // ── 導入費用（一回払い）: 入金を記録するだけ。プランは開けない ──
