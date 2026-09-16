@@ -81,6 +81,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [clothReturn, setClothReturn] = useState('0');
   const [clothCurtain, setClothCurtain] = useState('0');
   const [clothOpening, setClothOpening] = useState('1');
+  // 図面を読んで初めてクロスだと分かった場合は、聞いたあとに拾い直す（文言もボタンも変わる）
+  const [clothRedo, setClothRedo] = useState(false);
+  // 拾い出しの「計算の説明」を開いているか（表の計算式とは別に、言葉で通しで読める欄）
+  const [explainOpen, setExplainOpen] = useState(false);
   const pendingTakeoff = useRef<null | (() => void)>(null);
   const [industryChoice, setIndustryChoice] = useState('');
   const [industrySaving, setIndustrySaving] = useState(false);
@@ -93,15 +97,32 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       return !c?.industryConfirmed;
     } catch (_) { return false; }   // 読めないときは邪魔しない
   };
-  // クロスまわりの確認が要るか。内装業種か、対象・コメントにクロスと書かれていて、まだ未確認のとき。
+  // まだ一度も流儀を聞いていないなら true
+  const clothUnconfirmed = async () => {
+    try {
+      const c = await (window as any).api.loadConfig();
+      return !c?.takeoffFactors?.clothConfirmed;
+    } catch (_) { return false; }   // 読めないときは邪魔しない
+  };
+  // クロスまわりの確認が要るか。内装業種か、対象・コメントに内装まわりの語があって、まだ未確認のとき。
+  // ★「クロス」と書いてもらえるとは限らない（業種が建築一式のまま内装図を入れる人が普通にいる）。
+  //   外壁塗装をクロス扱いしないよう、外壁・擁壁は判定から先に落とす。
   const needsCloth = async () => {
     try {
       const c = await (window as any).api.loadConfig();
       if (c?.takeoffFactors?.clothConfirmed) return false;
       const ind = industryOverride || c?.industryType || '';
-      const text = `${takeoffTargets} ${comment} ${takeoffRepeats}`;
-      return ind === 'interior' || /クロス|壁紙|内装/.test(text);
+      const text = `${takeoffTargets} ${comment} ${takeoffRepeats}`.replace(/外壁|擁壁|塀/g, '');
+      return ind === 'interior' || /クロス|ｸﾛｽ|壁紙|内装|軽天|幅木|巾木|間仕切|間取|居室|天井|壁|ボード|部屋|原状回復|リフォーム/.test(text);
     } catch (_) { return false; }   // 読めないときは邪魔しない
+  };
+  // 拾った結果にクロスが入っていたか。図面を読むまで分からないので、実行後にもう一度見る。
+  const clothInResult = (res: any) => {
+    const text = [
+      ...(res?.items || []).map((x: any) => `${x.part || ''} ${x.name || ''}`),
+      ...(res?.summary || []).map((x: any) => x.label || ''),
+    ].join(' ');
+    return /クロス|ｸﾛｽ|壁紙/.test(text);
   };
   const saveCloth = async () => {
     if (clothSaving) return;
@@ -109,13 +130,22 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     try {
       const c = await (window as any).api.loadConfig();
       const tf = { ...(c?.takeoffFactors || {}) };
+      const before = { r: Number(tf.returnDepth) || 0, cb: Number(tf.curtainBox) || 0, op: Number(tf.openingThreshold) || 1 };
       tf.returnDepth = Number(clothReturn) || 0;
       tf.curtainBox = Number(clothCurtain) || 0;
       if (Number(clothOpening) > 0) tf.openingThreshold = Number(clothOpening);
       tf.clothConfirmed = true;
       await (window as any).api.saveConfig({ ...c, takeoffFactors: tf });
       setAskCloth(false);
+      // 拾い直しは2単位を使い直す。答えが今までと同じ（＝数量が1ミリも動かない）なら、使わせない。
+      const same = before.r === tf.returnDepth && before.cb === tf.curtainBox
+        && before.op === (Number(tf.openingThreshold) || 1);
       const go = pendingTakeoff.current; pendingTakeoff.current = null;
+      if (clothRedo && same) {
+        setClothRedo(false);
+        return;   // 今の拾い出し結果のままでよい
+      }
+      setClothRedo(false);
       if (go) go();
     } catch (e: any) {
       setError(e?.message || 'クロスの設定の保存に失敗しました');
@@ -1439,6 +1469,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     // クロスを拾う前に一度だけ流儀を聞く。答えは設定に保存され、次からは聞かない。
     if (await needsCloth()) {
       pendingTakeoff.current = () => { void runTakeoff(); };
+      setClothRedo(false);
       setAskCloth(true);
       return;
     }
@@ -1460,6 +1491,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
       // 拾えた主要数量を「実測値」欄にも反映しておく（見積プロンプトの二重の保険）
       const sum = (res?.summary || []).map((x: any) => `${x.label} ${x.value}`).join(' / ');
       if (sum && !area.trim()) setArea(sum);
+      // 実行前は言葉でしか判断できない。図面を読んでクロスが出てきたのに未確認なら、ここで聞いて拾い直す。
+      if (clothInResult(res) && await clothUnconfirmed()) {
+        pendingTakeoff.current = () => { void runTakeoff(); };
+        setClothRedo(true);
+        setAskCloth(true);
+      }
     } catch (e: any) {
       endBusy({ ok: false });
       setError((e?.message || '拾い出しに失敗しました').replace(/^Error: /, '').replace(/^ERROR: /, ''));
@@ -2007,6 +2044,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
           <div className="card" style={{ maxWidth: 620, width: '100%', maxHeight: '88vh', overflowY: 'auto', padding: '22px 26px' }}>
             <h3 style={{ margin: '0 0 6px', color: '#1a2b4a', fontSize: 19 }}>クロスの拾い方を教えてください</h3>
             <div style={{ fontSize: 13, color: '#5a6675', lineHeight: 1.8, marginBottom: 16 }}>
+              {clothRedo && <><b>この図面にはクロスが入っていました。</b>窓まわりの数え方を教えていただければ、その流儀で拾い直します（拾い直すときだけ2単位を使います。<b>今までどおりの答えなら数量は変わらないので、単位は使いません</b>）。<br /></>}
               会社によって数え方が違うところです。<b>一度だけの確認です。</b>
               あとから設定画面（拾い出しの係数）でいつでも変更できます。
             </div>
@@ -2047,9 +2085,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
             </div>
 
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="btn btn-secondary" onClick={() => { pendingTakeoff.current = null; setAskCloth(false); }}>あとで</button>
+              <button className="btn btn-secondary" onClick={() => { pendingTakeoff.current = null; setAskCloth(false); setClothRedo(false); }}>
+                {clothRedo ? 'このままでよい' : 'あとで'}
+              </button>
               <button className="btn btn-primary" onClick={saveCloth} disabled={clothSaving}>
-                {clothSaving ? '保存中…' : 'この設定で拾う'}
+                {clothSaving ? '保存中…' : clothRedo ? 'この設定で拾い直す' : 'この設定で拾う'}
               </button>
             </div>
           </div>
@@ -2479,6 +2519,61 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
                       数量は直接直せます。直した行は「人が確定させた数量」として扱われ、見積はその値で積算します。
                     </div>
+
+                    {/* 計算の説明。表の「計算式」は式だけなので、どう数えたかを日本語で通しで読める欄を別に置く。
+                        お客様に聞かれたとき、ここをそのまま読めば答えになるのが狙い。 */}
+                    {((takeoff.explanation || []).length > 0 || takeoff.factorsUsed) && (
+                      <div style={{ marginTop: 10, border: '1px solid #d8e2ec', borderRadius: 8, overflow: 'hidden' }}>
+                        <button
+                          type="button"
+                          onClick={() => setExplainOpen(o => !o)}
+                          style={{
+                            width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
+                            background: '#eef4fa', color: '#1a3a5c', fontSize: 13, fontWeight: 'bold',
+                            padding: '9px 12px', fontFamily: 'inherit',
+                          }}>
+                          {explainOpen ? '▼' : '▶'} 計算の説明を{explainOpen ? '閉じる' : '見る'}
+                          <span style={{ fontWeight: 'normal', color: '#5b7a99', marginLeft: 8, fontSize: 12 }}>
+                            どこを見て、何を掛けて、何を引いたか
+                          </span>
+                        </button>
+                        {explainOpen && (
+                          <div style={{ padding: '12px 14px', background: '#fbfdff' }}>
+                            {(takeoff.explanation || []).map((e: any, i: number) => (
+                              <div key={i} style={{ marginBottom: 14 }}>
+                                <div style={{ fontSize: 13, fontWeight: 'bold', color: '#1a3a5c', marginBottom: 3 }}>
+                                  {e.topic}
+                                  {/* 合計は上の表から出した値。説明文と表で数字が食い違わないよう、AIには書かせていない。 */}
+                                  {(e.totals || []).length > 0 && (
+                                    <span style={{ fontWeight: 'normal', color: '#2e7d32', marginLeft: 8, fontSize: 12 }}>
+                                      表の合計 {(e.totals || []).map((t: any) => `${Number(t.value).toLocaleString()}${t.unit}`).join(' ／ ')}
+                                      <span style={{ color: '#90a4ae' }}>（{e.rows}行・ロス込み）</span>
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: 13, color: '#37474f', lineHeight: 1.9, whiteSpace: 'pre-wrap' }}>{e.text}</div>
+                              </div>
+                            ))}
+                            {takeoff.factorsUsed && (
+                              <div style={{ borderTop: '1px dashed #cfdce8', paddingTop: 10 }}>
+                                <div style={{ fontSize: 12, fontWeight: 'bold', color: '#546e7a', marginBottom: 4 }}>この拾い出しで使った御社の設定</div>
+                                <div style={{ fontSize: 12, color: '#607d8b', lineHeight: 1.9 }}>
+                                  開口部の控除：{takeoff.factorsUsed.openingThreshold}㎡以上を引く ／
+                                  幅木：壁の延長 × {takeoff.factorsUsed.baseboardFactor} ／
+                                  ロス率：板もの{takeoff.factorsUsed.lossBoard}％・クロス{takeoff.factorsUsed.lossSheet}％・長尺{takeoff.factorsUsed.lossLinear}％・ケーブル{takeoff.factorsUsed.lossCable}％<br />
+                                  クロス：有効幅{takeoff.factorsUsed.clothWidth}mm・1巻{takeoff.factorsUsed.clothRoll}m・カット代{takeoff.factorsUsed.clothCut}mm ／
+                                  見込みへの巻き込み：{Number(takeoff.factorsUsed.returnDepth) > 0 ? `${takeoff.factorsUsed.returnDepth}mm 巻き込む` : '巻き込まない'} ／
+                                  カーテンボックス内部：{Number(takeoff.factorsUsed.curtainBox) > 0 ? '貼る' : '貼らない'}
+                                </div>
+                                <div style={{ fontSize: 11, color: '#90a4ae', marginTop: 5 }}>
+                                  数え方を変えるときは、設定画面の「拾い出しの係数」で直せます。
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {(takeoff.unreadable || []).length > 0 && (
                       <div style={{ marginTop: 10, background: '#fff8e1', border: '1px solid #f0dfa8', borderRadius: 8, padding: '8px 12px' }}>

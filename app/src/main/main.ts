@@ -7586,13 +7586,38 @@ ${String(data.repeats).trim()}
   "summary": [
     {"label": "主要数量の名前（例: '屋根面積'）", "value": "値と単位（例: '452㎡'）"}
   ],
+  "explanation": [
+    {"topic": "説明の見出し（部位・工種でまとめる。例: '壁クロス'、'床フローリング'、'鉄筋'）",
+     "parts": ["この説明が対象にしている items の part の値（例: '内壁'）。複数可"],
+     "unit": "この説明が対象にしている数量の単位（㎡/m/箇所/台/m3/t 等）。同じ part に単位違いが混ざるとき（内壁のクロス㎡と幅木m）に、どちらの話かを分けるために使う。混ざっていて分けられないなら null",
+     "text": "その数量をどうやって出したかを、日本語の文章で3〜6行。★下の書き方に従え"}
+  ],
   "unreadable": ["拾えなかった項目と、拾うために必要な図面・情報（必ずセットで）"],
   "warnings": ["図面の矛盾・注意点（例: '平面図の寸法合計と全長が120mm合いません'）"],
   "overallConfidence": "高/中/低"
 }
 \`\`\`
 
-items は拾えた分だけでよい（無理に埋めるな）。読めない資料なら items を空配列にし、unreadable に理由を書け。` });
+items は拾えた分だけでよい（無理に埋めるな）。読めない資料なら items を空配列にし、unreadable に理由を書け。
+
+## ★explanation（計算の説明）の書き方★
+見積を出された側は、表の計算式だけでは納得しない。**「どう数えたか」を言葉で説明する欄**だ。
+- **部位・工種ごとに1つ**にまとめろ（壁クロス／床／天井／建具／鉄筋…）。行ごとに書くな。金額の大きい順に3〜8個。
+- 読み手は**積算の専門家ではない**。「延べ」「歩掛」「ちり」のような言葉は、使うなら必ず言い換えを添えろ。
+- 次の順で、**その工種に当てはまるものだけ**を書く：
+  1. どの図面のどこを見たか（例「1階平面図の各室の寸法から」）
+  2. 何を掛け合わせたか（例「壁の延長に天井高2,400を掛けて」）
+  3. **何を引いたか・引かなかったか**（控除の基準も数字で言う。例「1㎡以上の窓とドアは引いています」）
+  4. **御社の設定のうち、この数量に効いたもの**（ロス率・幅木の係数・見込みへの巻き込み・ロールの有効幅と1巻の長さ）。
+     設定どおりに従ったことが分かるように書け。例「見込みへの巻き込みは『巻き込まない』設定のため、加算していません」
+  5. 読めなくて仮定した点があれば、最後に率直に書く（例「天井高が読めないため2,400と仮定しています」）
+- ★★**「合計◯㎡」「計◯m」といった合計値を、本文に書くな。**★★
+  実測したところ、表が785.3mの幅木を本文で「約912m」と書くなど、**途中の計算値を合計として書く事故が起きた。**
+  合計は画面が表から出して、この説明の横に自動で表示する。**お前は数え方だけを説明しろ。**
+  1つの部屋・1枚の寸法のような**個別の数字は書いてよい**（例「厨房63.90㎡」「天井高2,400」）。禁じるのは**足し上げた合計**だ。
+- parts には、この説明が対象にしている items の part の値を**表記のとおり**入れろ（例 ["内壁"]）。ここで合計を紐づける。
+- ★**items に無いことを書くな。**拾っていない工種の説明を作るな。
+- 1つあたり3〜6行。箇条書きにせず、文章で書け。` });
 
     // ★ストリーム＋大きめの上限で受ける。
     //   create + max_tokens 12000 だと、部屋数の多い図面（老人ホーム1階=約55室）で出力が上限に当たり、
@@ -7660,6 +7685,41 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
       const fixed = (withLoss > 0 && Math.abs(withLoss - expected) / Math.max(expected, 1) < 0.05) ? withLoss : expected;
       return { ...it, quantity: q, lossRate: loss, quantityWithLoss: fixed };
     });
+
+    // 計算の説明。AIの文章はそのまま通し、**使った設定だけは機械側で付ける**
+    //   （設定値はこちらが確実に知っている。AIに書かせると「10%で見ています」等の言い間違いが混ざる）。
+    //   合計は**表から機械で出す**。AIに書かせると、途中の計算値を合計として書く
+    //   （実測: 表 785.3m の幅木を本文で「約912m」と書いた）。説明と表で数字が違うのが一番まずい。
+    takeoff.explanation = (Array.isArray(takeoff.explanation) ? takeoff.explanation : [])
+      .filter((e: any) => e && String(e.text || '').trim())
+      .map((e: any) => {
+        const parts = (Array.isArray(e.parts) ? e.parts : []).map((p: any) => String(p).trim()).filter(Boolean);
+        // 部位ごとの合計。単位が混ざる場合があるので単位別に足す。
+        const byUnit: Record<string, number> = {};
+        const onlyUnit = String(e.unit || '').trim();
+        let rows = 0;
+        takeoff.items.forEach((it: any) => {
+          if (!parts.includes(String(it.part || '').trim())) return;
+          const u = String(it.unit || '').trim() || '—';
+          // 同じ部位に単位違いが混ざる（内壁＝クロス㎡と幅木m）。単位の指定があるほうだけ足す。
+          if (onlyUnit && u !== onlyUnit) return;
+          byUnit[u] = (byUnit[u] || 0) + (Number(it.quantityWithLoss) || Number(it.quantity) || 0);
+          rows++;
+        });
+        const totals = Object.keys(byUnit).map(u => ({ unit: u, value: roundQty(byUnit[u]) }));
+        return {
+          topic: String(e.topic || '').trim() || 'この拾い出しについて',
+          text: String(e.text).trim(),
+          parts, rows, totals,
+        };
+      });
+    takeoff.factorsUsed = {
+      openingThreshold: F.openingThreshold, baseboardFactor: F.baseboardFactor,
+      lossBoard: F.lossBoard, lossSheet: F.lossSheet, lossLinear: F.lossLinear, lossCable: F.lossCable,
+      clothWidth: F.clothWidth, clothRoll: F.clothRoll, clothCut: F.clothCut,
+      filmWidth: F.filmWidth, filmRoll: F.filmRoll, filmCut: F.filmCut,
+      returnDepth: F.returnDepth, curtainBox: F.curtainBox,
+    };
 
     // 原本を保存して履歴に残す（OCRと同じ ocr_files ディレクトリ。DBにはパスだけ＝DB肥大化を避ける）
     let takeoffLogId: number | null = null;
