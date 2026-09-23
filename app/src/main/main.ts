@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { initDatabase, queryAll, queryOne, runSql, flushSave, vacuum, logAudit, setCurrentTenant, getCurrentTenant, getCredits, useCredits, addCredits, getMonthlyUsage, getTenantPlan, setTenantPlan, PLANS, CREDIT_COSTS, createPlanRequest, listPlanRequests, listAllPlanRequests, approvePlanRequest, rejectPlanRequest, cancelPlanRequest, listFeedbackRequests, listAllFeedbackRequests, createFeedbackRequest, updateFeedbackStatus, listEstimateOutcomes, createEstimateOutcome, updateEstimateOutcome, deleteEstimateOutcome, getOutcomeStats, getSimilarEstimates } from '../database/database';
 import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeHandler, setAutoCreateHandler, setGenerateImageHandler, setAdminHandler, pickLanIp } from './server';
 import { COST_REFERENCE } from './cost-reference';
+import { dropPricelessBreakdownRows, droppedRowWarnings } from './breakdown-rows';
 import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION, fetchLandmarks, OSM_ATTRIBUTION, searchPlaces, MIN_ZOOM, MAX_ZOOM, AddressLevel, isPlaceName } from './aerial';
 import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge, sendTakeoffFeedback, fetchTakeoffKnowledge, fetchMarketReference } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
@@ -1500,19 +1501,7 @@ function describeEstimateProgress(acc: string): { stage: string; items: number }
   return { stage, items };
 }
 
-// ── 金額を持たない内訳行を落とす（出力が途中で切れたときの後始末）──
-// 出力が max_tokens で切れると、最後の行が {"item":"…","category":"材料" のように金額を持たないまま
-// parseLenientJson の括弧補完で生き残る。それを内訳に混ぜると「単価0円・金額0円」の行として
-// 画面にも見積書にも出てしまう（2026-08-23に実際に発生）。金額の無い行は見積の行として
-// 成立していないので落とし、何行落としたかを返して必ず画面に警告を出す。
-function dropPricelessBreakdownRows(result: any): number {
-  if (!result || !Array.isArray(result.breakdown)) return 0;
-  const before = result.breakdown.length;
-  result.breakdown = result.breakdown.filter((b: any) => Number(b?.cost) > 0);
-  const dropped = before - result.breakdown.length;
-  if (dropped > 0) console.warn(`[analyze] 金額の無い内訳 ${dropped} 行を除外（出力が切れた可能性）`);
-  return dropped;
-}
+// 金額を持たない内訳行の除外は breakdown-rows.ts（ハーネスから叩くため分離）。
 
 // ── 内訳1行ごとの整合を直す（2026-08-23に実データ監査で発見）──
 // 直近10件の見積を機械的に検算したところ、次の3種の壊れ方が出ていた。
@@ -7664,6 +7653,11 @@ ${droneInfo}${droneCSVInfo}${industryPrompt}${buildLaborRatePrompt()}
      noteは「数量 × 材料単価」の式にしろ。例: '遮熱シート 600㎡ × @1,600円/㎡'
    - 施工費の行: 人件費はすべてここに集約しろ。職種ごとに「施工費（板金工・葺き師）」等で分けてよい。
      全施工費行の合計は manDaysBreakdown の Σ(人工 × 日額) と一致させろ。
+   - ★相場データの内装単価（クロス・クッションフロア(CF)・フロアタイル・フローリング等の㎡単価）は**材工共**だ。
+     そのまま材料の行に入れるな。材料の行は材料分だけ、施工手間はその工種の数量から歩掛で人工を出し（例: CF 38㎡ ÷ @30㎡/人日 ≒ 1.3人工）、
+     「人工 × 日額」で施工費の行に入れろ。材料＋施工費の合計が相場の材工共単価×数量と大きくずれないか検算しろ。
+   - ★★金額0円の行を出すな。「施工費は材料に含む」「他の施工費行に含む」を 0円 の施工費行で表すのは禁止（お客様に0円の行が見える）。
+     同じ職人が複数の工種（例: クロスとCF）をやるなら、施工費の行は1行にまとめ、note に工種ごとの数量・歩掛・人工を並べて書け。
    - ★足場・養生・仮囲い・仮設トイレ・交通誘導員・重機回送は「仮設工事」の行にだけ入れろ。
      「足場工事」「安全設備」等の別行を立てて足場を二度計上するな。とび工の人工も仮設工事の行に含めろ。
    - 現場管理費・福利厚生費は上記のどの行とも重複させるな（率で算出する経費であり、実費を再計上する行ではない）。
@@ -7849,13 +7843,15 @@ breakdownの書き方例:
 - {"item": "キッチン組立・設置", "cost": 128000, "note": "設備工2人×2日"}
 - {"item": "給排水配管工事", "cost": 67000, "note": "給水13A+給湯15A+排水50A各5m切回し"}
 - {"item": "電気工事", "cost": 22000, "note": "IH用200V配線+照明移設"}
-- {"item": "床フローリング張替", "cost": 50000, "note": "7m²×7,100円/m²（材工共）"}
+- {"item": "床フローリング材", "category": "材料", "cost": 29400, "note": "7m²×4,200円/m²（材料のみ）"}
+- {"item": "施工費（大工 フローリング張り）", "category": "施工費", "cost": 33500, "note": "7m² ÷ @15㎡/人日 ≒ 0.5人工 → 半端は1人工で計上 1人工×25,800円（原価）→ 売価 33,500円（掛率1.30）"}
 
-場所を分ける例（内装改修で廊下・トイレ・洗面所を直す場合）:
-- {"item": "クロス張替", "location": "廊下", "quantity": 28, "unit": "m2", "unitPrice": 1250, "cost": 35000, "note": "量産クロス 材工共 1,250円/㎡（下地パテ処理込）"}
-- {"item": "クロス張替", "location": "トイレ", "quantity": 12, "unit": "m2", "unitPrice": 1250, "cost": 15000, "note": "量産クロス 材工共 1,250円/㎡（下地パテ処理込）"}
-- {"item": "クッションフロア張替", "location": "トイレ", "quantity": 1.6, "unit": "m2", "unitPrice": 4500, "cost": 7200, "note": "CF 材工共 4,500円/㎡"}
-- {"item": "養生・廃材処分・現場管理", "location": "共通", "quantity": 1, "unit": "式", "cost": 18000, "note": "養生12,000＋廃材処分6,000"}
+場所を分ける例（内装改修で廊下・トイレを直す場合。材料と施工費は必ず別の行。相場の材工共単価はここで材料分と手間に割る）:
+- {"item": "量産クロス", "category": "材料", "location": "廊下", "quantity": 28, "unit": "m2", "unitPrice": 450, "cost": 12600, "note": "量産クロス＋糊・パテ 450円/㎡（材料のみ）"}
+- {"item": "量産クロス", "category": "材料", "location": "トイレ", "quantity": 12, "unit": "m2", "unitPrice": 450, "cost": 5400, "note": "量産クロス＋糊・パテ 450円/㎡（材料のみ）"}
+- {"item": "クッションフロア", "category": "材料", "location": "トイレ", "quantity": 1.6, "unit": "m2", "unitPrice": 2000, "cost": 3200, "note": "CF 1.8mm＋接着剤 2,000円/㎡（材料のみ）"}
+- {"item": "施工費（内装工 クロス・CF張り）", "category": "施工費", "location": "共通", "quantity": 1.5, "unit": "人工", "unitPrice": 33800, "costBase": 39000, "cost": 50700, "note": "クロス40㎡ ÷ @30㎡/人日 ≒ 1.3人工 ＋ CF1.6㎡ 0.2人工 → 1.5人工×26,000円＝39,000円（原価）→ 売価 50,700円（掛率1.30）。同じ職人なので1行にまとめる。0円の行は作らない"}
+- {"item": "養生・廃材処分・現場管理", "category": "仮設", "location": "共通", "quantity": 1, "unit": "式", "cost": 18000, "note": "養生12,000＋廃材処分6,000"}
 
 manDaysBreakdownの書き方例:
 - {"trade": "設備工（レベル3）", "workers": 2, "days": 3, "manDays": 6, "dailyRate": 30300}
@@ -7898,20 +7894,19 @@ manDaysBreakdownの書き方例:
     try {
       const parsedResult = parseLenientJson(jsonStr);
       // 切れた行（金額なし）は内訳から落としてから積み直す。0円の行を総額に混ぜない。
-      const droppedRows = dropPricelessBreakdownRows(parsedResult);
+      const dropped = dropPricelessBreakdownRows(parsedResult);
       const estimateResult = reconcileEstimateTotal(
         parsedResult, 'analyze',
         industryType === 'heatshield' ? HEATSHIELD_MARKUP : DEFAULT_MARKUP
       );
       // reconcileEstimateTotal は estimateWarnings を上書きするので、警告はこの後に足す
-      if (droppedRows > 0 || finalMsg.stop_reason === 'max_tokens') {
-        estimateResult.truncatedRows = droppedRows;
-        estimateResult.estimateWarnings = [
-          ...(estimateResult.estimateWarnings || []),
-          droppedRows > 0
-            ? `AIの出力が途中で切れたため、金額が入っていない内訳 ${droppedRows} 行を除きました。総額が想定より小さいときは、もう一度見積もり直してください。`
-            : 'AIの出力が上限で切れました。内訳に抜けが無いかご確認ください。',
-        ];
+      const dropWarns = droppedRowWarnings(dropped);
+      if (dropped.truncated > 0) estimateResult.truncatedRows = dropped.truncated;
+      if (dropped.truncated === 0 && finalMsg.stop_reason === 'max_tokens') {
+        dropWarns.unshift('AIの出力が上限で切れました。内訳に抜けが無いかご確認ください。');
+      }
+      if (dropWarns.length > 0) {
+        estimateResult.estimateWarnings = [...(estimateResult.estimateWarnings || []), ...dropWarns];
       }
       // ★改修・修繕の学習用（2026-07-22）: 築年数・構造を見積結果に持たせ、estimate_log へ実績として残す。
       //   入力があればその値。未入力なら AI が estimatedScale に書いた推定値（例「（推定）築30年前後」）を拾う。
