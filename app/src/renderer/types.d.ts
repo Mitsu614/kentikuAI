@@ -15,9 +15,14 @@ interface Window {
     getCostEdit: (constructionId: number) => Promise<any>;
 
     // 図面からの数量拾い出し（Takeoff）
-    takeoffDrawing: (data: { files: { type?: string; data: string; name?: string }[]; comment?: string; scaleHint?: string; targets?: string; industryOverride?: string }) => Promise<any>;
+    takeoffDrawing: (data: { files: { type?: string; data: string; name?: string }[]; comment?: string; scaleHint?: string; targets?: string; industryOverride?: string; repeats?: string; tiled?: boolean }) => Promise<any>;
     takeoffHistory: () => Promise<any[]>;
     generateTakeoffPDF: (data: { takeoff: any; title?: string; clientName?: string }) => Promise<boolean>;
+
+    // 見積書の様式（お客様からもらったPDFに合わせる）
+    analyzeEstimateTemplate: (data: { file: { type?: string; data: string; name?: string } })
+      => Promise<{ html: string; problems: string[]; placeholders: string[]; truncated: boolean }>;
+    previewEstimateTemplate: (data: { html: string; blankRows?: number }) => Promise<{ ok: boolean; path: string }>;
 
     // 研修モード（THINKING）— 見積を教材に、若手向けの解説を作る
     trainingGuide: (data: { result: any; comment?: string; location?: string; level?: string }) => Promise<any>;

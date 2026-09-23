@@ -10,6 +10,7 @@ import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 import { buildLearningContext, dropSummaryRows } from './learning-context';
+import { templatePrompt, sanitizeTemplate, validateTemplate, renderTemplate, buildTemplateData, usedPlaceholders, PLACEHOLDERS } from './estimate-template';
 import { importOcrResultCore } from './ocr-import';
 
 // ── トライアル用埋め込みキー ──
@@ -280,6 +281,93 @@ function useCreditsSynced(amount: number, operation: string): { success: boolean
   return r;
 }
 
+// ── AIの呼び出しが失敗したときの後始末 ────────────────────────────
+//
+// 2026-09-23、Anthropic側の請求残高が尽き、APIが
+//   "Your credit balance is too low to access the Anthropic API."
+// を返した。このとき起きていたこと:
+//   ① お客様の画面に**英語の請求文がそのまま出る**（自分が払うのかと思わせる、こちらの内情も出る）
+//   ② 単位（AIストック）は呼ぶ前に引いてあるので、**何も出ないのに単位だけ減る**
+//   ③ こちら（提供側）は誰かに言われるまで気づかない
+// この3つを塞ぐ。文言は「お客様のせいではない」と分かる書き方にする。
+
+/** 消費した単位を返す（AIが応答を返せなかったときだけ呼ぶ） */
+function refundCredits(amount: number, reason: string) {
+  if (!(amount > 0)) return;
+  try {
+    addCredits(amount, reason);
+    runSql('UPDATE tenants SET credits = credits + ? WHERE id = ?', [amount, getCurrentTenant()]);
+  } catch (_) { /* 返却に失敗しても、元のエラーを優先して伝える */ }
+}
+
+/** 提供側の都合で止まっている種類のエラーか（請求・認証・過負荷） */
+function isProviderOutage(e: any): boolean {
+  const m = `${e?.message || e || ''}`;
+  const s = Number(e?.status) || 0;
+  return /credit balance is too low|billing|invalid[_ ]?api[_ ]?key|authentication|rate[_ ]?limit|overloaded/i.test(m)
+    || s === 401 || s === 403 || s === 429 || s === 529;
+}
+
+/** お客様に見せてよい日本語のエラーに置き換える */
+function friendlyAiError(e: any): Error {
+  const m = `${e?.message || e || ''}`;
+  if (/credit balance is too low|billing/i.test(m)) {
+    return new Error('ERROR: ただいまAIサービスが一時的にご利用いただけません。復旧作業中ですので、しばらくしてからお試しください。（管理者に通知済みです。お客様の操作に問題はありません）');
+  }
+  if (/invalid[_ ]?api[_ ]?key|authentication/i.test(m) || Number(e?.status) === 401 || Number(e?.status) === 403) {
+    return new Error('ERROR: AIサービスに接続できませんでした。管理者に通知済みですので、復旧までお待ちください。（お客様の操作に問題はありません）');
+  }
+  if (/rate[_ ]?limit/i.test(m) || Number(e?.status) === 429) {
+    return new Error('ERROR: ただいま混み合っています。1〜2分ほどおいて、もう一度お試しください。');
+  }
+  if (/overloaded/i.test(m) || Number(e?.status) === 529) {
+    return new Error('ERROR: AIサービスが混雑しています。少し時間をおいてお試しください。');
+  }
+  return e instanceof Error ? e : new Error(String(m || 'AIの処理に失敗しました'));
+}
+
+/**
+ * AI呼び出しの失敗を受け止める。消費した単位を返し、提供側の障害なら管理者へ知らせ、
+ * お客様には日本語のエラーを投げ直す。**catch の中でこれを呼び、戻り値を throw すること。**
+ */
+function handleAiFailure(e: any, opts: { where: string; credits?: number; operation?: string }): Error {
+  logAiError(opts.where, e);
+  if (opts.credits) refundCredits(opts.credits, `${opts.operation || opts.where}の失敗による返却`);
+  if (isProviderOutage(e)) {
+    notifyProviderOutage(opts.operation || opts.where, e).catch(() => {});
+  }
+  return friendlyAiError(e);
+}
+
+// 同じ障害で何通も送らない（30分に1通まで）
+let lastOutageMailAt = 0;
+async function notifyProviderOutage(operation: string, e: any) {
+  const now = Date.now();
+  if (now - lastOutageMailAt < 30 * 60 * 1000) return;
+  lastOutageMailAt = now;
+  try {
+    const tid = getCurrentTenant();
+    const tenant = queryOne('SELECT name, contact_company FROM tenants WHERE id = ?', [tid]);
+    await sendNotifyMail({
+      subject: '【建築ブースト】★AIサービスが止まっています（要対応）',
+      text: [
+        'AIの呼び出しが、提供側の理由で失敗しました。お客様の画面ではAI機能が使えていません。',
+        '',
+        `■ 起きた操作: ${operation}`,
+        `■ テナント: ${tenant?.contact_company || tenant?.name || 'ID:' + tid}`,
+        `■ 日時: ${new Date().toLocaleString('ja-JP')}`,
+        `■ 内容: ${String(e?.message || e).slice(0, 300)}`,
+        '',
+        '【確認すること】',
+        '・Anthropic の請求残高（console.anthropic.com → Plans & Billing）',
+        '・APIキーが有効か',
+        '',
+        '※お客様の単位（AIストック）は自動で返却しています。',
+      ].join('\n'),
+    });
+  } catch (_) { /* 通知に失敗しても、本体の処理は止めない */ }
+}
+
 // ── 画像メディアタイプ検出 ──
 function detectMediaType(b64: string): 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' {
   // ★base64のマジックバイト（実体）を最優先で判定する。
@@ -322,6 +410,194 @@ function shrinkImageForAI(dataUrl: any, maxDim = 1568, maxBytes = 4_500_000): an
   } catch (_) {
     return dataUrl; // 失敗時は原本のまま（安全側）
   }
+}
+
+// ── 拾い出しの検算（機械側）──────────────────────────────────
+//
+// ★ここでやるのは「確かめて、食い違いを言う」ことだけ。**数量は作らない。**
+//   足りないぶんを機械が勝手に埋めると、根拠のない数字が見積に乗る。
+//   空欄のほうが、嘘の数字よりましだという判断（2026-09-23）。
+//
+// 見ているのは2つ:
+//   ① 各行の「計算式」と「数量」が合っているか（AIが式を書いてから丸め間違いをすることがある）
+//   ② 床の合計が、依頼文や図面に書かれた面積と合っているか
+//      （実測: 老人ホームの図面で、床の合計が記載1,209.35㎡に対し1,127.34㎡＝82㎡不足。
+//        部屋の取りこぼしだが、合計を突き合わせない限り誰も気づかない）
+
+/** 「8.19×6.37=52.17」のような式を計算する。数字と四則演算だけの単純な式に限る */
+function evalSimpleFormula(formula: any): number | null {
+  const raw = String(formula || '');
+  const eq = raw.lastIndexOf('=');
+  if (eq < 0) return null;
+  const lhs = raw.slice(0, eq)
+    .replace(/[,，]/g, '')
+    .replace(/×/g, '*').replace(/÷/g, '/')
+    .replace(/[−–—]/g, '-')
+    .replace(/（/g, '(').replace(/）/g, ')');
+  // 末尾の「数字と四則演算だけ」の並びを式とみなす（前置きの日本語は捨てる）
+  const m = lhs.match(/[-+*/().0-9\s]+$/);
+  if (!m) return null;
+  const expr = m[0].trim();
+  if (!/[0-9]/.test(expr) || !/[-+*/]/.test(expr)) return null;   // ただの数字は検算しない
+  if (expr.length > 200) return null;
+  try {
+    const v = Function('"use strict";return (' + expr + ')')();
+    return typeof v === 'number' && isFinite(v) ? v : null;
+  } catch (_) { return null; }
+}
+
+/** 検算して、食い違いを warnings に書く。items は書き換えない */
+function verifyTakeoffNumbers(takeoff: any, declaredAreas: { label: string; value: number; unit: string }[]) {
+  const items: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
+  const warns: string[] = [];
+
+  // ① 式と数量の食い違い（丸めの範囲＝2%未満は見逃す）
+  const mismatched: string[] = [];
+  for (const it of items) {
+    const v = evalSimpleFormula(it.formula);
+    const q = Number(it.quantity);
+    if (v === null || !(q > 0) || !(v > 0)) continue;
+    if (Math.abs(v - q) / q > 0.02) {
+      mismatched.push(`${it.name || '名称なし'}（式では ${roundQty(v)}、表では ${q}${it.unit || ''}）`);
+    }
+  }
+  if (mismatched.length) {
+    warns.push(`★計算式と数量が合わない行が${mismatched.length}件あります: ${mismatched.slice(0, 5).join(' / ')}${mismatched.length > 5 ? ' ほか' : ''}。式と数量のどちらが正しいかをご確認ください。`);
+  }
+
+  // ② 床の合計と、指定された面積の突き合わせ
+  const floor = declaredAreas.find((a) => a.label === '床面積' && a.unit === '㎡' && a.value > 0);
+  if (floor) {
+    const sum = items
+      .filter((it) => /床/.test(String(it.part || '')) && /^(㎡|m2|m²)$/.test(String(it.unit || '').trim()))
+      .reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+    if (sum > 0) {
+      const diff = Math.round((sum - floor.value) * 100) / 100;
+      const rate = Math.abs(diff) / floor.value;
+      if (rate > 0.01) {
+        warns.push(diff < 0
+          ? `★床の合計が ${roundQty(sum)}㎡ で、指定の ${floor.value}㎡ に **${Math.abs(diff)}㎡ 足りません**（${(rate * 100).toFixed(1)}%）。拾えていない部屋があります。どの部屋が抜けているかをご確認ください（不足分はこちらでは埋めていません）。`
+          : `★床の合計が ${roundQty(sum)}㎡ で、指定の ${floor.value}㎡ を **${diff}㎡ 超えています**（${(rate * 100).toFixed(1)}%）。同じ部屋を二重に拾っている可能性があります。`);
+      }
+    }
+  }
+
+  if (warns.length) {
+    takeoff.warnings = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
+    takeoff.warnings.unshift(...warns);
+  }
+}
+
+// ── 図面を4分割して、それぞれを拡大する（密な図面の拾い出し用）─────────────
+//
+// なぜ要るか: 実物の電気設備図（823×793px）で測ったところ、器具の記号に振ってある
+//   型番コード（A1・B1 等）が潰れて読めず、照明22台を18台と数え落とした。
+//   同じ図面の一部を切り出して4倍に拡大して渡すと、B1×4・A3×2 とコードを読んで
+//   人の計数と一致した。**足りないのはプロンプトではなく画素**だった、という実測にもとづく。
+//
+// 重なりは作らない。重ねると同じ器具が2枚に写り、二重に数える。
+// 境界にまたがる器具は「記号の中心がある側だけが数える」ようプロンプト側で指示する。
+function tileImageForAI(dataUrl: any, cols = 2, targetLong = 2000): { label: string; data: string }[] {
+  try {
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return [];
+    const { nativeImage } = require('electron');
+    const img0 = nativeImage.createFromDataURL(dataUrl);
+    if (img0.isEmpty()) return [];
+    const { width, height } = img0.getSize();
+    if (!width || !height) return [];
+
+    const LABELS: Record<number, string[][]> = { 2: [['左上', '右上'], ['左下', '右下']] };
+    const out: { label: string; data: string }[] = [];
+    for (let r = 0; r < cols; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = Math.floor((width * c) / cols);
+        const y = Math.floor((height * r) / cols);
+        const w = Math.floor((width * (c + 1)) / cols) - x;
+        const h = Math.floor((height * (r + 1)) / cols) - y;
+        let t = img0.crop({ x, y, width: w, height: h });
+        // 拡大は4倍まで。元が大きい図面はそのまま（拡大しても情報は増えない）
+        const scale = Math.max(1, Math.min(4, targetLong / Math.max(w, h)));
+        if (scale > 1.05) {
+          t = w >= h
+            ? t.resize({ width: Math.round(w * scale), quality: 'best' })
+            : t.resize({ height: Math.round(h * scale), quality: 'best' });
+        }
+        // 線画はPNGのほうが崩れない。大きすぎるときだけJPEGに落とす（APIの上限対策）
+        let buf = t.toPNG();
+        let mime = 'image/png';
+        if (buf.length > 4_000_000) { buf = t.toJPEG(88); mime = 'image/jpeg'; }
+        out.push({
+          label: (LABELS[cols] && LABELS[cols][r] && LABELS[cols][r][c]) || `${r + 1}行${c + 1}列`,
+          data: `data:${mime};base64,` + buf.toString('base64'),
+        });
+      }
+    }
+    return out;
+  } catch (_) {
+    return [];   // 失敗したら分割せず、これまでどおり1枚で拾う
+  }
+}
+
+// ── 分割して拾った結果を1つにまとめる ───────────────────────────
+// 同じ部位・同じ名前・同じ単位の行は足し合わせ、計算式は範囲ごとに並べて残す
+// （「左上: 4台 ／ 右下: 2台」と書いておけば、人がその範囲だけ数え直せる）。
+function mergeTakeoffParts(parts: { label: string; takeoff: any }[]): any {
+  const merged: any = {
+    title: null, drawingTypes: [], scale: null, scaleSource: null,
+    building: {}, items: [], summary: [], explanation: [], unreadable: [], warnings: [],
+    overallConfidence: '中',
+  };
+  const byKey = new Map<string, any>();
+  const confRank: Record<string, number> = { 高: 3, 中: 2, 低: 1 };
+
+  for (const { label, takeoff: t } of parts) {
+    if (!t) continue;
+    if (!merged.title && t.title) merged.title = t.title;
+    if (!merged.scale && t.scale) { merged.scale = t.scale; merged.scaleSource = t.scaleSource || null; }
+    for (const d of t.drawingTypes || []) if (!merged.drawingTypes.includes(d)) merged.drawingTypes.push(d);
+    for (const k of ['structure', 'floors', 'totalFloorAreaM2', 'note']) {
+      if (merged.building[k] == null && t.building && t.building[k] != null) merged.building[k] = t.building[k];
+    }
+    for (const s of t.explanation || []) merged.explanation.push(s);
+    for (const u of t.unreadable || []) if (!merged.unreadable.includes(u)) merged.unreadable.push(u);
+    for (const w of t.warnings || []) if (!merged.warnings.includes(w)) merged.warnings.push(w);
+
+    for (const it of t.items || []) {
+      const key = [it.part || '', String(it.name || '').trim(), it.unit || ''].join('|');
+      const prev = byKey.get(key);
+      if (!prev) {
+        byKey.set(key, {
+          ...it,
+          quantity: Number(it.quantity) || 0,
+          quantityWithLoss: Number(it.quantityWithLoss) || Number(it.quantity) || 0,
+          formula: `${label}: ${it.formula || ''}`,
+          source: `${label}: ${it.source || ''}`,
+        });
+      } else {
+        prev.quantity = roundQty((Number(prev.quantity) || 0) + (Number(it.quantity) || 0));
+        prev.quantityWithLoss = roundQty(
+          (Number(prev.quantityWithLoss) || 0) + (Number(it.quantityWithLoss) || Number(it.quantity) || 0));
+        prev.formula = `${prev.formula} ／ ${label}: ${it.formula || ''}`;
+        prev.source = `${prev.source} ／ ${label}: ${it.source || ''}`;
+        // 確度は低いほうに合わせる（1か所でも怪しければ、その行は怪しい）
+        if ((confRank[it.confidence] || 2) < (confRank[prev.confidence] || 2)) prev.confidence = it.confidence;
+      }
+    }
+  }
+  merged.items = [...byKey.values()];
+  // 合計は範囲ごとではなく全体で意味を持つので、重複する見出しは1つにする
+  const seen = new Set<string>();
+  for (const { takeoff: t } of parts) {
+    for (const s of (t && t.summary) || []) {
+      const k = String(s.label || '');
+      if (seen.has(k)) continue;
+      seen.add(k);
+      merged.summary.push(s);
+    }
+  }
+  const confs = parts.map((p) => p.takeoff && p.takeoff.overallConfidence).filter(Boolean);
+  merged.overallConfidence = confs.includes('低') ? '低' : confs.includes('中') ? '中' : (confs[0] || '中');
+  return merged;
 }
 
 // ── 元画像の縦横比から gpt-image-1 の出力サイズを選ぶ（横長の屋根が正方形に潰れるバグ対策）──
@@ -1357,6 +1633,10 @@ const TAKEOFF_FACTOR_DEFAULTS = {
   filmWidth: 900,         // 硝子フィルムの有効幅(mm)
   filmRoll: 30,           // 硝子フィルム1巻の長さ(m)
   filmCut: 40,            // 硝子フィルムのカット代の合計(mm)
+  // 電気。平面図のルート長だけでは足りず、立上り・立下りと機器への余長が必ず乗る。
+  // 会社によって「階高3.0で見る」「余長は5%」等の流儀があるので設定で差し替える。
+  riserHeight: 3.0,       // 立上り・立下り1回ぶんの高さ(m)＝階高
+  cableSlack: 5,          // 機器への引込み余長(%)。ロス率（切り無駄）とは別に加算する
   // 窓まわり。既定は0＝これまでどおり（開口を引くだけ）。
   // 見込みに巻き込む会社、カーテンボックス内部まで貼る会社があるので、入れた会社だけ挙動を変える。
   returnDepth: 0,         // 見込み（ちり）への巻き込み寸法(mm)。0なら巻き込みを拾わない
@@ -1394,6 +1674,8 @@ const TAKEOFF_INDUSTRY_HINT: Record<string, string> = {
   demolition: '解体工事業。構造種別ごとの延床面積、廃材の種類別数量（コンクリート塊・木くず・混合廃棄物）を最優先で拾え。',
   exterior:   '外構・エクステリア業。舗装・土間コン・ブロック・フェンス・植栽の数量を最優先で拾え。',
   equipment:  '設備工事業。電気設備（器具の箇所数・ケーブルのm）、給排水・空調の配管と機器を最優先で拾え。',
+  electrical: '電気工事業。電灯・コンセント（箇所）、照明（台）、幹線・電線管（m）、盤（面）、動力の機器電源（台）、'
+            + '弱電、消防・防災（自火報・誘導灯・非常照明）を系統ごとに分けて最優先で拾え。改修図なら撤去も別行で拾え。',
   plant:      'プラント設備工事業。配管（口径別のm）・機器の台数・架台の鋼材量を最優先で拾え。',
   lease:      '仮設工事リース業。足場・仮囲い・仮設材の掛け面積と部材数量を最優先で拾え。',
 };
@@ -4688,6 +4970,16 @@ app.whenReady().then(async () => {
     return newDbPath;
   });
 
+  // ── 見積書の様式（お客様からもらったPDFに合わせたテンプレート）──
+  // 設定で選ばれていればそれを使い、無ければ null ＝ これまでの標準様式で出す。
+  const pickEstimateTemplate = (cfg: any): { id: string; name: string; html: string; blankRows?: number } | null => {
+    const list = Array.isArray(cfg?.estimateTemplates) ? cfg.estimateTemplates : [];
+    const id = cfg?.estimateTemplateId;
+    if (!id || !list.length) return null;
+    const t = list.find((x: any) => x && x.id === id);
+    return t && t.html ? t : null;
+  };
+
   // ── 見積書PDF ──
 
 
@@ -4977,6 +5269,10 @@ ${unread}${warns}
     let materialTotal = 0;
     let rows = '';
     let num = 1;
+    // ★お客様の様式（テンプレート）に差し込むための明細。表示用の rows と必ず同じ中身にする。
+    const tplItems: { name: string; spec?: string; qty: number | string; unit: string; unitPrice: number; amount: number }[] = [];
+    const pushItem = (name: string, qty: any, unit: string, price: number, amount: number) =>
+      tplItems.push({ name, qty, unit, unitPrice: price, amount });
     if (materials?.length) {
       if (estIsLease) {
         const grouped: Record<string, any[]> = {};
@@ -4995,6 +5291,7 @@ ${unread}${warns}
             const unit = escapeHtml(m.unit || '式');
             const qty = m.quantity || 1; const price = m.unit_price || 0; const sub = Math.round(qty * price);
             materialTotal += sub; groupTotal += sub;
+            pushItem(m.material_name || m.name || '（項目名なし）', qty, m.unit || '式', price, sub);
             const periodNote = (unit === '月' || unit === '日') ? `<span style="color:#888;font-size:9px"> (${qty}${unit})</span>` : '';
             rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td>${name}${periodNote}</td><td style="text-align:center">${qty}</td><td style="text-align:center">${unit}</td><td style="text-align:right">${fmt(price)}</td><td style="text-align:right">${fmt(sub)}</td></tr>`;
           }
@@ -5005,6 +5302,7 @@ ${unread}${warns}
           const unit = escapeHtml(m.unit || '式');
           const qty = m.quantity || 1; const price = m.unit_price || 0; const sub = Math.round(qty * price);
           materialTotal += sub;
+          pushItem(m.material_name || m.name || '（項目名なし）', qty, m.unit || '式', price, sub);
           rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td>${name}</td><td style="text-align:center">${qty}</td><td style="text-align:center">${unit}</td><td style="text-align:right">${fmt(price)}</td><td style="text-align:right">${fmt(sub)}</td></tr>`;
         }
       } else {
@@ -5013,18 +5311,21 @@ ${unread}${warns}
           const unit = escapeHtml(m.unit || '式');
           const qty = m.quantity || 1; const price = m.unit_price || 0; const sub = Math.round(qty * price);
           materialTotal += sub;
+          pushItem(m.material_name || m.name || '（項目名なし）', qty, m.unit || '式', price, sub);
           rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td>${name}</td><td style="text-align:center">${qty}</td><td style="text-align:center">${unit}</td><td style="text-align:right">${fmt(price)}</td><td style="text-align:right">${fmt(sub)}</td></tr>`;
         });
       }
     }
     const laborCost = invoice.labor_cost || 0;
     if (laborCost > 0) {
+      pushItem(estIsLease ? '設置・撤去作業費' : '施工費', 1, '式', laborCost, laborCost);
       rows += `<tr style="border-top:2px solid #ccc"><td style="text-align:center;color:#888">${num++}</td><td><strong>${estIsLease ? '設置・撤去作業費' : '施工費'}</strong></td><td style="text-align:center">1</td><td style="text-align:center">式</td><td style="text-align:right">${fmt(laborCost)}</td><td style="text-align:right">${fmt(laborCost)}</td></tr>`;
     }
     const costTotal = materialTotal + laborCost;
     const taxExcluded = invoice.amount || 0;
     const managementFee = taxExcluded - costTotal;
     if (managementFee > 0) {
+      pushItem(estIsLease ? '現場管理・諸経費' : '設計・工事管理費', 1, '式', managementFee, managementFee);
       rows += `<tr><td style="text-align:center;color:#888">${num++}</td><td><strong>${estIsLease ? '現場管理・諸経費' : '設計・工事管理費'}</strong></td><td style="text-align:center">1</td><td style="text-align:center">式</td><td style="text-align:right">${fmt(managementFee)}</td><td style="text-align:right">${fmt(managementFee)}</td></tr>`;
     }
     const taxRate = invoice.tax_rate || 0.1;
@@ -5033,7 +5334,7 @@ ${unread}${warns}
     const title = escapeHtml(invoice.construction_title || '（未設定）');
     const cfg = estCfg;
 
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    let html = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Yu Gothic','Meiryo',sans-serif;padding:40px 35px;color:#333;font-size:11px}
 h1{text-align:center;font-size:26px;letter-spacing:10px;margin-bottom:24px}
 .header{display:flex;justify-content:space-between;margin-bottom:16px}.client{font-size:16px;font-weight:bold;border-bottom:2px solid #333;padding-bottom:4px}
@@ -5055,6 +5356,29 @@ ${cfg.companyName ? `<div style="margin-top:10px;border-top:1px solid #ccc;paddi
 ${cleanDocNotes(invoice.notes) ? `<div style="margin-top:20px;padding:10px;background:#fafafa;border:1px solid #ddd;border-radius:4px;font-size:10px;white-space:pre-wrap"><strong>備考</strong><br>${escapeHtml(cleanDocNotes(invoice.notes))}</div>` : ''}
 </body></html>`;
 
+    // ★お客様の様式があれば、それで組み直す。
+    //   標準様式は「様式を持っていない会社」向け。差し込みに失敗したら黙って標準に戻す
+    //   （書類が出ないより、いつもの様式で出るほうが現場は困らない）。
+    const estTpl = pickEstimateTemplate(estCfg);
+    if (estTpl) {
+      try {
+        const rawSubject = (() => {
+          const t = String(invoice.construction_title || '').trim() || '（未設定）';
+          const pn = String(invoice.property_name || '').replace(/[（(]s*AI見積(もり|り)?s*[）)]/g, '').trim();
+          return pn && pn !== t ? `${t} / ${pn}` : t;
+        })();
+        const data = buildTemplateData({
+          invoice: { ...invoice, notes_clean: cleanDocNotes(invoice.notes) },
+          items: tplItems, cfg: estCfg,
+          subtotal: taxExcluded, tax: taxAmount, taxRate, totalWithTax, subject: rawSubject,
+        });
+        html = renderTemplate(estTpl.html, data, Number(estTpl.blankRows) || 0);
+      } catch (e: any) {
+        console.error('見積書の様式への差し込みに失敗。標準様式で出します:', e?.message || e);
+        logAiError('estimate-template:render', e?.message || String(e), { id: estTpl.id });
+      }
+    }
+
     const tmpHtml = path.join(app.getPath('temp'), `estimate_${Date.now()}.html`);
     const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
     fs.writeFileSync(tmpHtml, Buffer.concat([bom, Buffer.from(html, 'utf-8')]));
@@ -5066,6 +5390,111 @@ ${cleanDocNotes(invoice.notes) ? `<div style="margin-top:20px;padding:10px;backg
     try { fs.unlinkSync(tmpHtml); } catch(_) {}
     const savePath = await dialog.showSaveDialog({ defaultPath: `見積書_${invoice.client_name}_${invoice.issue_date}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
     if (!savePath.canceled && savePath.filePath) { fs.writeFileSync(savePath.filePath, pdf); shell.openPath(savePath.filePath); }
+  });
+
+  // ── 見積書の様式を、お客様からもらったPDFから作る ────────────────────
+  // 1回だけAIに様式PDFを読ませて「同じ見た目のHTMLテンプレート」を作り、設定に保存する。
+  // 以後の見積書はそのテンプレートに数字を流し込むだけ（AIを毎回呼ばない＝レイアウトが毎回変わらない）。
+  ipcMain.handle('estimateTemplate:analyze', async (_e, data: any) => {
+    const file = data?.file;
+    if (!file || !file.data) throw new Error('ERROR: 見積書の様式（PDFまたは画像）を選んでください。');
+
+    await syncRemoteLicense(false);
+    const credit = useCreditsSynced(1, '見積書の様式の取り込み');
+    if (!credit.success) {
+      if (credit.limitReached) await sendLimitNotification('見積書の様式の取り込み');
+      throw new Error('ERROR: 今月のAIストックの上限に達しました。管理者に連絡済みです。');
+    }
+    syncCreditsToRemote();
+
+    const config = loadApiConfig();
+    if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。サポートにお問い合わせください。');
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: config.anthropicKey });
+
+    const raw = String(file.data);
+    const isPdf = file.type === 'pdf' || raw.startsWith('data:application/pdf');
+    const content: any[] = [{ type: 'text', text: `【この会社の見積書の様式${file.name ? '：' + file.name : ''}】` }];
+    if (isPdf) {
+      content.push({
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: raw.replace(/^data:application\/pdf;base64,/, '') },
+      });
+    } else {
+      const shrunk = shrinkImageForAI(raw, 2000);
+      content.push({
+        type: 'image',
+        source: { type: 'base64', media_type: detectMediaType(shrunk), data: String(shrunk).replace(/^data:image\/\w+;base64,/, '') },
+      });
+    }
+    content.push({ type: 'text', text: templatePrompt() });
+
+    const res = await client.messages.stream({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 16000,
+      temperature: 0,
+      system: 'あなたは日本の建設業の帳票をHTMLで再現するエンジニアです。渡された様式の見た目を、罫線の位置まで含めてそのまま再現します。返すのはHTMLだけです。',
+      messages: [{ role: 'user', content }],
+    }).finalMessage().catch((e: any) => {
+      throw handleAiFailure(e, { where: 'estimateTemplate', credits: 1, operation: '見積書の様式の取り込み' });
+    });
+
+    let out = res.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('');
+    const fenced = out.match(/```(?:html)?\s*([\s\S]*?)```/);   // ```html … ``` で囲ってくることがある
+    if (fenced) out = fenced[1];
+    const start = out.indexOf('<');
+    if (start > 0) out = out.slice(start);
+
+    const html = sanitizeTemplate(out.trim());
+    const check = validateTemplate(html);
+    return {
+      html,
+      problems: check.problems,
+      placeholders: usedPlaceholders(html),
+      truncated: res.stop_reason === 'max_tokens',
+    };
+  });
+
+  // 様式の見え方を、サンプルの数字で確かめる（PDFにして開く）
+  ipcMain.handle('estimateTemplate:preview', async (_e, data: any) => {
+    const tplHtml = String(data?.html || '');
+    if (!tplHtml.trim()) throw new Error('ERROR: 様式がありません。');
+    const cfg = loadApiConfig();
+    const sample = buildTemplateData({
+      invoice: {
+        id: 1,
+        client_name: '株式会社サンプル建設',
+        client_address: '大阪府大阪市中央区1-2-3',
+        issue_date: new Date().toISOString().slice(0, 10),
+        construction_title: '○○ビル 改修工事',
+        property_name: '○○ビル',
+        notes_clean: '・本見積の有効期限は発行日より30日間です。\n・別途工事がある場合はご相談ください。',
+      },
+      items: [
+        { name: '仮設工事', qty: 1, unit: '式', unitPrice: 180000, amount: 180000 },
+        { name: '内装仕上工事（クロス張替）', qty: 320, unit: '㎡', unitPrice: 1250, amount: 400000 },
+        { name: '電気設備工事（照明器具取替）', qty: 24, unit: '台', unitPrice: 17000, amount: 408000 },
+        { name: '施工費', qty: 1, unit: '式', unitPrice: 260000, amount: 260000 },
+        { name: '諸経費', qty: 1, unit: '式', unitPrice: 152000, amount: 152000 },
+      ],
+      cfg,
+      subtotal: 1400000, tax: 140000, taxRate: 0.1, totalWithTax: 1540000,
+      subject: '○○ビル 改修工事 / ○○ビル',
+    });
+    const filled = renderTemplate(sanitizeTemplate(tplHtml), sample, Number(data?.blankRows) || 0);
+
+    const tmpHtml = path.join(app.getPath('temp'), `estimate_template_${Date.now()}.html`);
+    fs.writeFileSync(tmpHtml, Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(filled, 'utf-8')]));
+    const win = new BrowserWindow({ show: false, width: 794, height: 1123, webPreferences: { defaultEncoding: 'utf-8' } });
+    await win.loadURL(`file:///${tmpHtml.replace(/\\/g, '/')}`);
+    await new Promise<void>((r) => setTimeout(r, 600));
+    const pdf = await win.webContents.printToPDF({ printBackground: true, margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 } });
+    win.close();
+    try { fs.unlinkSync(tmpHtml); } catch (_) {}
+    const outPath = path.join(app.getPath('temp'), `見積書の様式プレビュー_${Date.now()}.pdf`);
+    fs.writeFileSync(outPath, pdf);
+    shell.openPath(outPath);
+    return { ok: true, path: outPath };
   });
 
   // ── 作業者管理 ──
@@ -5829,7 +6258,7 @@ ${pages}</body></html>`;
           }
         ]
       }]
-    });
+    }).catch((e: any) => { throw handleAiFailure(e, { where: "ocr", credits: 1, operation: "OCR取込" }); });
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '';
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
@@ -6578,10 +7007,49 @@ ${pages}</body></html>`;
       ? `\n## ★業種: 設備工事業（電気・給排水・空調）★
 この会社は設備工事業です。相場DBの「★ 電気設備工事 相場データ」を必ず参照し、以下を厳守して見積もってください:
 - 設備は「材料費（機器・器具・ケーブル）＋施工費（人工×労務単価）」で構成。**器具・数量ベース**で積算する（コンセント◯箇所・照明◯台・幹線◯m・盤◯面）。図面・現場写真・工事名から数量を拾う。
-- **工種を必ず分けて別項目で計上**する: ①配線器具（コンセント/スイッチ/情報CO）②照明器具 ③幹線・ケーブル・電線管（m単価）④分電盤・動力盤・制御盤 ⑤受変電（キュービクル・高圧受電）⑥弱電・通信・防犯（LAN/カメラ/火報/インターホン）⑦太陽光・EV充電 ⑧給排水・空調。
+- **工種を必ず分けて別項目で計上**する: ①配線器具（コンセント/スイッチ/情報CO）②照明器具 ③幹線・ケーブル・電線管（m単価）④分電盤・動力盤・制御盤 ⑤受変電（キュービクル・高圧受電）⑥弱電・通信・防犯（LAN/カメラ/火報/インターホン）⑦太陽光・EV充電 ⑧給排水・空調 ⑨消防・防災（自火報・非常放送・誘導灯・非常照明。耐熱/耐火電線と届出が要る別工種）⑩動力（三相200V。機器1台ごとの電源工事）⑪改修なら撤去・仮設電源・停電作業の割増。
 - **電気は隠蔽配線が写真に写らない**。写真だけで判断せず「回路数・敷設距離・盤容量・相(単相/三相)・電圧(100/200V)」を確認。不明ならbreakdownで仮定を置きつつrecommendationsに確認事項を明記し、confidenceを下げる。
 - 幹線・ケーブルは**銅価格高騰**の影響が大きい（太径・長距離ほど材料費増）。高圧受電(キュービクル)・動力が絡むと金額桁が変わるので、規模を取り違えない。
 - 施工費は職種別労務単価×人工（電気工 民間27,000〜32,000円/人日、空調設備工 30,300円）。高所のLED交換等は高所作業車/ローリングタワーのリースを別途計上。\n`
+      : industryType === 'electrical'
+      ? `\n## ★業種: 電気工事業（電灯・動力・弱電・消防防災）★
+この会社は**電気工事だけ**を請ける専門工事会社です。相場DBの「★ 電気設備工事 相場データ」を必ず参照し、以下を厳守してください:
+
+【最重要: 建築・設備の他工種を積むな】
+- 積むのは電気だけだ。躯体・内装・外装・給排水・空調は**積むな**（元請やほかの業者の範囲）。
+  それらの金額が要る案件なら、recommendations に「電気以外は別業者の範囲として除いています」と書く。
+- ただし電気工事に付随する**はつり・穴あけ・小口の復旧・ボード開口**は自社の手間なので計上する。
+
+【★系統を必ず分けて別項目で積む（ここを混ぜるのが一番多い事故）】
+① **電灯・コンセント（単相100/200V）**: コンセント（一般/アース付/防水/200V）・スイッチ（片切/3路/調光/人感）・情報コンセント。**種別ごとに行を分ける**（単価が数倍違う）。
+② **照明器具**: 器具種別ごと（ベースライト/ダウンライト/ブラケット/高天井灯/外灯）。台数×材工共単価。高天井・吹抜けは**高所作業車・ローリングタワーのリースを別行**で。
+③ **幹線・ケーブル・電線管**: サイズ別・条数別に行を分ける（VVF/CV/CVT 22・38・60〜100・150sq・バスダクト、PF/CD管・金属管、ケーブルラック、プルボックス）。**m単価×延長**。銅価格高騰の影響が大きい。
+④ **盤**: 分電盤・動力盤・制御盤（面）。制御盤・特注盤は「盤設計＋製作＋据付」を分ける。
+⑤ **受変電（高圧）**: キュービクル・変圧器・PAS/UGS・高圧ケーブルと端末処理・受電試験。**電力側のキャンセル工事負担金、保安管理の委託**も別途で挙げる。
+⑥ **動力（三相200V）**: **機器1台ごとに電源工事を1行**（機器名・容量kW・相・電圧を書く）。電磁開閉器・インバーター・制御線・試運転調整を落とすな。
+⑦ **弱電・通信**: LAN/Wi-Fi・TV共聴・電話・放送・カメラ・インターホン・入退室・ナースコール。
+⑧ **消防・防災**: 自火報（受信機・感知器・総合盤）・非常放送・誘導灯・非常照明。★**耐熱(HP)・耐火(FP)電線**が義務で一般のVVFより高い。**消防への届出（着工届・設置届・完成検査立会）と消防設備士の手間も別項目**で計上する。ここを一般配線で積むと必ず赤字になる。
+⑨ **接地・試験**: 接地工事（A/D種）、竣工試験（絶縁抵抗・接地抵抗・成績書作成）。省略するな。
+⑩ **改修なら撤去と仮設**: 既設器具・既設ケーブル・既設盤の撤去処分、仮設電源、**停電作業の割増（休日・夜間は人工1.25〜1.5倍）**。改修で一番落としやすいのがここだ。
+
+【★人件費は歩掛から積む（AIは電気の手間を過少に出す癖がある）】
+- 器具の材工共単価だけで終わらせず、**歩掛×人工×労務単価**でも計算して、金額が噛み合うか確かめる。
+  コンセント・スイッチ 0.3〜0.5人工/箇所、照明 0.3〜0.5人工/台（ダウンライトは0.6〜0.8）、VVF 0.03〜0.05人工/m、
+  PF管 0.06〜0.10人工/m（金属管は1.5〜2倍）、幹線 0.15〜0.30人工/m、盤据付 1.0〜3.0人工/面、感知器 0.3〜0.5人工/個。
+- 電気工の労務単価は民間27,000〜32,000円/人日。試験・調整・成績書は全体の3〜5%を別途見る。
+- **稼働中の工場・店舗・病院は原則として停電作業＝夜間休日**。割増と警備・仮設照明を忘れるな。
+
+【★出す前に妥当性を当てる】
+- コンセント 1箇所/8〜12㎡（事務所）、照明 1台/6〜10㎡（事務所・店舗）／1台/40〜80㎡（工場の高天井灯）、分岐回路 1回路/50〜70㎡。
+- 配線の総延長 ≒ **延床㎡ × 1.5〜3.0m**（VVF中心の内線）。
+- 電気設備工事費の対建築費比: 事務所ビル新築 8〜12%、工場 5〜10%、病院 15〜20%、住宅 3〜6%。
+- 外れているときは黙って出すな。recommendations に「なぜ外れているか（用途・仕様のため）」を書く。
+
+【★隠蔽配線は見えない。確認事項を必ず書く】
+- 写真・図面で見えない部分（天井内・壁内・地中）を推測で積み切るな。「回路数・敷設距離・盤容量・相・電圧・既設流用の可否」を
+  recommendations の確認事項に挙げ、confidence を下げる。**見えないぶんを安く出すのが失注と赤字の両方の原因になる。**
+- 既設の変圧器・コンデンサ・安定器の撤去があるなら、**1990年頃以前製はPCB含有の可能性**を必ず確認事項に書き、
+  含有・不明なら「含有分析」「PCB処分費」「収集運搬」を別項目で立てる（低濃度PCBの処分期限は2027年3月末）。\n`
       : industryType === 'plant'
       ? `\n## ★業種: プラント設備工事業（配管・機器据付・保温・計装）★
 この会社は工場・化学/食品/エネルギー等のプラント設備工事業です。建築設備とは積算が根本的に異なる。以下を厳守してください:
@@ -7154,7 +7622,11 @@ manDaysBreakdownの書き方例:
       lastProgressAt = now;
       try { mainWindow?.webContents.send('ai:progress', describeEstimateProgress(progressAcc)); } catch (_) {}
     });
-    const finalMsg = await response.finalMessage();
+    // AIが応答を返せなかったとき（請求残高切れ・認証エラー・混雑など）は、
+    // 引いた単位を返し、英語の生エラーではなく日本語の説明をお客様に出す。
+    const finalMsg = await response.finalMessage().catch((e: any) => {
+      throw handleAiFailure(e, { where: 'analyze', credits: creditCost, operation: opName });
+    });
 
     const text = finalMsg.content[0].type === 'text' ? finalMsg.content[0].text : '';
     console.log('AI response text:', text.substring(0, 500));
@@ -7241,14 +7713,28 @@ manDaysBreakdownの書き方例:
   const takeoffDrawingCore = async (data: {
     files?: { type?: 'pdf' | 'image'; data: string; name?: string }[];
     comment?: string; scaleHint?: string; targets?: string; industryOverride?: string; repeats?: string;
+    tiled?: boolean;
   }) => {
     const files = (data?.files || []).filter((f: any) => f && f.data);
     if (files.length === 0) throw new Error('ERROR: 図面または材料一覧表のファイル（PDFまたは画像）を選択してください。');
     if (files.length > 6) throw new Error('ERROR: 図面は一度に6ファイルまでです。分けて拾ってください。');
 
+    // ★分割して拾うか。器具の記号が小さくて読めない図面のための道。
+    //   画像1枚のときだけ。PDFはベクタのまま渡していて細部が保たれているので、分割しても得がない。
+    const wantTiled = !!data?.tiled;
+    const onlyImage = files.length === 1
+      && files[0].type !== 'pdf'
+      && !String(files[0].data).startsWith('data:application/pdf');
+    if (wantTiled && !onlyImage) {
+      throw new Error('ERROR: 分割して拾えるのは、画像1枚のときだけです（PDFは分割しなくても細部まで読めます）。');
+    }
+    const takeoffTiles = wantTiled && onlyImage ? tileImageForAI(String(files[0].data), 2) : [];
+
     // クレジット（拾い出し = 2ストック。図面は入力トークンが写真の数倍かかる）
+    // 4分割は4回AIに投げるので、そのぶん多く要る。
     await syncRemoteLicense(false);
-    const takeoffCredit = useCreditsSynced(2, '図面拾い出し');
+    const takeoffCost = takeoffTiles.length > 1 ? 5 : 2;
+    const takeoffCredit = useCreditsSynced(takeoffCost, takeoffTiles.length > 1 ? '図面拾い出し（4分割）' : '図面拾い出し');
     if (!takeoffCredit.success) {
       if (takeoffCredit.limitReached) await sendLimitNotification('図面拾い出し');
       throw new Error('ERROR: 今月のAIストックの上限に達しました。管理者に連絡済みです。追加ストックについてはご連絡をお待ちください。');
@@ -7273,6 +7759,12 @@ manDaysBreakdownの書き方例:
 - 開口部の控除: 1箇所あたり **${F.openingThreshold}㎡以上** の開口（窓・出入口）を控除する。これ未満は控除しない。
 - 幅木の延長: **壁の延長 × ${F.baseboardFactor}**（開口ぶんを落とす）
 - ロス率: 板もの・断熱 **${F.lossBoard}%** ／ クロス・シート **${F.lossSheet}%** ／ 長尺材 **${F.lossLinear}%** ／ ケーブル・電線管 **${F.lossCable}%**
+
+## ★電気の配線長の出し方（この会社の値）★
+- **立上り・立下り: 1回ぶん ${F.riserHeight}m**（階をまたぐ配線・盤への立上りに、この高さを回数ぶん足す）
+- **機器への引込み余長: ${F.cableSlack}%**（ロス率とは**別**に加算する。二重に掛けるな）
+- 計算の順序: **平面図のルート長 ＋ 立上り${F.riserHeight}m×回数 → 余長${F.cableSlack}% → ロス率${F.lossCable}%**。
+  足した内訳を formula にそのまま書け（例「ルート42.0＋立上り${F.riserHeight}×2＝${(42 + F.riserHeight * 2).toFixed(1)}、余長${F.cableSlack}%で${((42 + F.riserHeight * 2) * (1 + F.cableSlack / 100)).toFixed(1)}」）。
 
 ## ★ロール材（クロス・硝子フィルム）の拾い方★
 面積(㎡)だけでは発注できない。**本数・総延長(m)・巻数**も必ず出し、formula に書け。
@@ -7410,6 +7902,8 @@ ${TAKEOFF_INDUSTRY_HINT[takeoffIndustry]}
 
 ### 電気設備（電気設備図・配線図・器具配置図・分電盤回路表）
 ★**凡例（記号表）を必ず先に読め。**同じ丸印でも凡例で意味が変わる。凡例に無い記号は数えず unreadable に回せ。
+★**凡例に無い記号を、黙って無視するな。**「凡例に無い記号が◯箇所ある（位置：〜）。凡例か器具リストがあれば拾えます」と
+  unreadable に必ず書け。数えずに落とすのと、落としたと報告するのは別のことだ。
 - **箇所数・台数で拾うもの**（面積で出すな）:
   - コンセント（一般／アース付／防水／200V／情報コンセント）
   - スイッチ（片切・3路・4路・調光・自動点滅）
@@ -7417,13 +7911,52 @@ ${TAKEOFF_INDUSTRY_HINT[takeoffIndustry]}
   - 換気扇、分電盤・制御盤（面）、弱電（LAN・TV・インターホン・火災感知器・防犯カメラ）
   ★**記号の種類ごとに行を分けろ。**「コンセント 30箇所」で1行にまとめるな。
     一般とアース付と防水と200Vでは単価が数倍違う。照明も器具種別ごとに分ける。
-- **mで拾うもの**: 幹線・ケーブル（VVF 1.6-2C / 2.0-3C、CVT 22sq・38sq 等）、電線管（PF/CD管・金属管）、ケーブルラック。
+  ★★**記号に型番コードが振ってあるなら、コードごとに数えろ。**★★
+    ハウスメーカー・工務店の電気図は、器具の記号の中に型番コード（A1・A2・B1・D1・E1 等）が
+    書いてあることが多い。**このコードは器具の種類そのもの**なので、コードごとに行を分け、
+    formula に「A1×2＋A2×2＋A3×2…＝◯台」と内訳を書け。コードを無視して「ダウンライト15台」と
+    まとめると、種類の違う器具が混ざり、単価も数量も確かめられなくなる。
+    実測では、コードを見れば数えられる図面で、AIは22台を18台と数え落としていた。
+  ★★**箇所数・台数の行は、formula に「部屋ごとの内訳」を必ず書け。**★★
+    例:「大居室6＋玄関ホール2＋脱衣室2＋洗面3＋キッチン4＋ポーチ1＝18」。図面の室名をそのまま使え。
+    **「目視計数。計約18箇所」のような書き方は禁止**だ。実測したところ、同じ図面を2回拾うと
+    コンセントが22と18、照明が28と27、スイッチが8と10になった。**どこで食い違ったのかを
+    人が追えないのが問題**で、部屋別に書いてあれば、その部屋だけ数え直せば済む。
+    ★**数量に「約」を付けるな。**数えた結果をそのまま書き、数えきれない範囲があるなら
+    その部屋・区画の名前を挙げて unreadable に回せ。
+- **mで拾うもの**: 幹線・ケーブル（VVF 1.6-2C / 2.0-3C、CVT 22sq・38sq 等）、電線管（PF/CD管・金属管）、ケーブルラック、バスダクト。
   - 平面図のルート長を拾い、**立上り・立下り（階高）と機器への引込み余長を必ず加算しろ。**
-    加算した分は formula に書け（例「ルート42m＋立上り3.0m×2＋余長5%」）。
+    加算する高さと余長は、この会社の積算ルールの「電気の配線長の出し方」に従い、加算した分を formula に書け。
   - **サイズ・条数ごとに行を分けろ。**サイズ不明のまま1行にまとめるな。
 - 回路数は**分電盤の回路表があればそれを正とする。**無い場合は図面から数え、confidence を「低」にしろ。
 - ロス率はケーブル・電線管5%、器具は0%。
-- **図面に無い器具を推測で足すな。** 凡例・器具配置図・回路表のどれが足りないのかを unreadable に書け
+
+★★**電気は4系統に分けて拾え。系統をまたいで1行にまとめるな。**★★
+図面も別々に来る（電灯設備図／動力設備図／弱電設備図／消防設備図）。name の頭に系統を書け。
+1. **電灯・コンセント（単相100/200V）**: 上の箇所数・台数のもの、VVF、分岐回路。
+2. **動力（三相200V）**: **機器1台ごとに1行**にしろ（「動力 ― 冷凍機 電源工事」等）。
+   機器表・動力盤系統図から、機器名・容量(kW)・相・電圧を name に入れる。
+   電磁開閉器・インバーター・制御線・試運転調整を落とすな。機器表があるのに拾わないのは拾い落としだ。
+3. **弱電・通信（LAN・TV・電話・放送・カメラ・入退室）**: 端子の箇所数と配線の本数を別行で拾う。
+4. **消防・防災（自火報・非常放送・誘導灯・非常照明）**: ★**一般配線と混ぜるな。**
+   感知器・発信機・総合盤・受信機（P型1級/2級・回線数）・誘導灯（級別）・非常照明・スピーカーを種別ごとに拾い、
+   **配線は耐熱(HP)・耐火(FP)電線として別行**にしろ（VVFで拾うと単価が大きく外れる）。
+   受信機の回線数は**系統図または受信機リストを正**とし、無ければ感知器の警戒区域数から数えて confidence を「低」にしろ。
+
+★★**改修・更新の図面（「撤去」「既設」「新設」の表記があるもの）**★★
+- **撤去する器具・盤・ケーブルを、新設とは別の行で拾え。**name の頭に「撤去 ― 」を付ける。
+  撤去のハッチ・×印・「撤去」凡例・破線の既設表記を見落とすな。**撤去を拾わないのが改修で一番多い抜けだ。**
+- 既設のまま流用する部分は items に入れず、warnings に「◯◯は既設流用の表記あり」と書け。
+
+★★**電気の検算（出す前に必ず当てろ）**★★
+- コンセント 1箇所/8〜12㎡（事務所）、照明器具 1台/6〜10㎡（事務所・店舗）／1台/40〜80㎡（工場の高天井灯）
+- 分岐回路 1回路/50〜70㎡（事務所）。**1回路にコンセント10箇所超・照明1,500W超**を割り付けていたら数え間違い。
+- **配線の総延長 ≒ 延床㎡ × 1.5〜3.0m**（VVF中心の内線）。この範囲を外れたら拾い落としか二重計上を疑え。
+  ★この目安は**全系統を合計した値**に対するものだ。**電線種別・回路系統ごとにこの係数を掛けるな**（VVF1.6・VVF2.0・アース付…と系統別に掛けると3〜4倍になる）。
+  種別ごとに行を分けるなら、**分けた行の合計**がこの範囲に収まるよう按分しろ。ルート長が図面から読めないなら、
+  読めないと unreadable に書くのが先で、概算を出すのはそのあとだ。
+- 目安から外れたまま出してよいが、**外れた事実と理由を warnings に必ず書け**（例「照明が1台/25㎡と少ない。倉庫用途のためか要確認」）。
+- **図面に無い器具を推測で足すな。** 凡例・器具配置図・回路表・機器表・系統図のどれが足りないのかを unreadable に書け
   （例「凡例が無く記号の種別が確定できない。凡例または器具リストがあれば拾えます」）。
 ${takeoffShared}${industrySection}${factorsSection}${takeoffAreaSection}${data?.targets && String(data.targets).trim() ? `\n## ★拾ってほしい対象（これを最優先）★\n${String(data.targets).trim()}\n` : ''}${data?.comment && String(data.comment).trim() ? `\n## 工事内容・条件\n${String(data.comment).trim()}\n` : ''}${data?.scaleHint && String(data.scaleHint).trim() ? `\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n${String(data.scaleHint).trim()}\n` : ''}${data?.repeats && String(data.repeats).trim() ? `
 ## ★クロスの品番・リピート（ユーザー指定）★
@@ -7471,6 +8004,18 @@ ${String(data.repeats).trim()}
 | 天井の下地 | 天井 | 「天井下地 ― <室名>」 | ㎡ |
 | 幅木・巾木 | 内壁 | 「幅木 ― <室名>」 | **m** |
 | 建具・ブラインド等 | 建具 | 「<品名> ― <室名>」 | 箇所 |
+| コンセント・スイッチ | 電気 | 「コンセント ― <種別>」「スイッチ ― <種別>」 | 箇所 |
+| 照明器具 | 電気 | 「照明 ― <器具種別>」 | **台** |
+| 幹線・ケーブル・電線管 | 電気 | 「<種別サイズ> ― <区間>」（例「CVT 38sq ― 受電盤〜動力盤」） | **m** |
+| 分電盤・動力盤・制御盤 | 電気 | 「<盤の種類> ― <設置場所>」 | **面** |
+| 動力の機器電源 | 電気 | 「動力 ― <機器名>（<容量kW>）」 | 台 |
+| 弱電・通信 | 弱電 | 「<品名> ― <室名/系統>」 | 箇所・本 |
+| 消防・防災 | 防災 | 「<品名> ― <階/警戒区域>」 | 個・台 |
+| 撤去 | 同じ部位 | 「撤去 ― <品名>」 | 元と同じ単位 |
+- **電気の単位を間違えるな。**照明は「台」、器具・端子は「箇所」、盤は「面」、ケーブル・管は「m」。
+  器具の箇所数を㎡で出すな（面積で出すと単価が丸ごと違う工種になる）。
+- **消防・防災を part「電気」に混ぜるな。**耐熱・耐火電線と届出が要る別工種なので part は「防災」だ。
+  ここを混ぜると、一般配線の単価で集計されて金額が過少になる。
 - **差引きの行も同じ書き方にしろ。**「廊下・ホール等（差引き）」だけでは何の数量か分からない。
   必ず「床仕上げ ― 廊下・ホール等（差引き）」のように**部位名から書き出せ**。
 - **幅木を part「床」にするな。**幅木は壁の足元なので part は「内壁」、単位は m だ。
@@ -7566,7 +8111,7 @@ ${String(data.repeats).trim()}
   },
   "items": [
     {
-      "part": "部位（屋根/外壁/内壁/床/天井/基礎/建具/設備/電気/外構/仮設 等）",
+      "part": "部位（屋根/外壁/内壁/床/天井/基礎/建具/設備/電気/弱電/防災/外構/仮設 等）",
       "name": "材料・工種名（例: 'ガルバリウム鋼板 折板屋根'、'石膏ボード t12.5'、'アルミサッシ 引違い 16509'）",
       "method": "面積 / 長さ / 個数 / 体積 / 質量 のいずれか",
       "dimensions": "拾いに使った寸法（例: '8,190×6,370'、'H2,800×L14,560'）。寸法が無い行はnull",
@@ -7626,29 +8171,69 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
     //   拾い出しは1行が長い（式・寸法・出典・仮定つき）ので、見積より出力が伸びる。
     //   claude-sonnet-4-6 の出力上限は128K。ストリームならHTTPタイムアウトを気にせず大きく取れるので
     //   64Kまで引き上げて、そもそも切らせない（見積側 analyze が同じ理由でストリーム化済み）。
-    const stream = client.messages.stream({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 64000,
-      temperature: 0,
-      system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
-      messages: [{ role: 'user', content }],
-    });
-    const response = await stream.finalMessage();
+    const askTakeoff = async (msgContent: any[]) => {
+      const stream = client.messages.stream({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 64000,
+        temperature: 0,
+        system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
+        messages: [{ role: 'user', content: msgContent }],
+      });
+      const response = await stream.finalMessage();
 
-    const text = response.content
-      .filter((c: any) => c.type === 'text')
-      .map((c: any) => c.text)
-      .join('');
-    // 64Kでも切れた場合は、結果を捨てずに出す（拾えた分は使えるため）。ただし黙って通さず、
-    // 「途中で切れている」ことを警告として画面に必ず出す（欠けた行に気づけないのが一番危ない）。
-    const truncated = response.stop_reason === 'max_tokens';
-    if (truncated) console.warn(`[takeoff] 出力が上限(64K)に達して切れました（${text.length}文字）`);
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('資料を読み取れませんでした。画像が鮮明か、寸法または数量が写っているかご確認ください。');
+      const text = response.content
+        .filter((c: any) => c.type === 'text')
+        .map((c: any) => c.text)
+        .join('');
+      // 64Kでも切れた場合は、結果を捨てずに出す（拾えた分は使えるため）。ただし黙って通さず、
+      // 「途中で切れている」ことを警告として画面に必ず出す（欠けた行に気づけないのが一番危ない）。
+      const cut = response.stop_reason === 'max_tokens';
+      if (cut) console.warn(`[takeoff] 出力が上限(64K)に達して切れました（${text.length}文字）`);
+      const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('資料を読み取れませんでした。画像が鮮明か、寸法または数量が写っているかご確認ください。');
+      let parsed: any = null;
+      try { parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]); }
+      catch (_) { parsed = parseLenientJson(jsonMatch[1] || jsonMatch[0]); }
+      if (!parsed) throw new Error('図面の読み取り結果を解析できませんでした。');
+      return { takeoff: parsed, cut };
+    };
+
     let takeoff: any = null;
-    try { takeoff = JSON.parse(jsonMatch[1] || jsonMatch[0]); }
-    catch (_) { takeoff = parseLenientJson(jsonMatch[1] || jsonMatch[0]); }
-    if (!takeoff) throw new Error('図面の読み取り結果を解析できませんでした。');
+    let truncated = false;
+    try {
+    if (takeoffTiles.length > 1) {
+      // ★4分割して1枚ずつ拾い、合算する。密な図面は1枚のままだと記号が潰れて読めない
+      //   （実測: 823pxの電気図で型番コードが読めず、照明22台を18台と数え落とした）。
+      //   4つは同時に投げる（順番に投げると4倍待たされる）。
+      const promptPart = content[content.length - 1];
+      const results = await Promise.all(takeoffTiles.map(async (t) => {
+        const tileContent: any[] = [
+          { type: 'text', text: `【資料：図面の「${t.label}」（全体を4分割した1枚を拡大したもの）】` },
+          { type: 'image', source: { type: 'base64', media_type: detectMediaType(t.data), data: String(t.data).replace(/^data:image\/\w+;base64,/, '') } },
+          { type: 'text', text: `## ★この資料は図面の一部（${t.label}）です★
+- **写っている範囲のものだけを拾え。**ほかの範囲は別の担当が拾い、あとで合算する。
+- **境界で切れている器具は、記号の中心がこの範囲にあるものだけ数えろ。**中心が外にあるものは数えるな（二重計上になる）。
+- **「端が切れている」「他の範囲が見えない」ことを unreadable や warnings に書くな。**それは仕様で、他の範囲で拾っている。
+- 建物全体の延床面積・縮尺・構造は、この範囲から読めるものだけ書け。読めなければ null にしろ。
+- 部位名・単位は全体の決まりどおりに書け（合算するので、書き方がぶれると足せなくなる）。` },
+          promptPart,
+        ];
+        const r = await askTakeoff(tileContent);
+        return { label: t.label, takeoff: r.takeoff, cut: r.cut };
+      }));
+      truncated = results.some((r) => r.cut);
+      takeoff = mergeTakeoffParts(results);
+      takeoff.warnings = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
+      takeoff.warnings.unshift('★この拾い出しは、図面を4分割して1つずつ拾い、合算しています。計算式の「左上:」「右下:」は、その範囲で数えた内訳です。数を確かめるときは、その範囲だけを見れば足ります。');
+    } else {
+      const r = await askTakeoff(content);
+      takeoff = r.takeoff;
+      truncated = r.cut;
+    }
+    } catch (e: any) {
+      // AIが答えを返せなかったときは、引いた単位を返してから日本語のエラーにして返す
+      throw handleAiFailure(e, { where: 'takeoff', credits: takeoffCost, operation: '図面拾い出し' });
+    }
     if (truncated) {
       takeoff.warnings = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
       takeoff.warnings.unshift('★この拾い出しは、項目が多く出力の途中で切れています。表の末尾に抜けがあります。「拾ってほしい対象」欄で部位を絞る（例:「床と幅木だけ」）か、図面を分けて拾い直してください。');
@@ -7685,6 +8270,9 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
       const fixed = (withLoss > 0 && Math.abs(withLoss - expected) / Math.max(expected, 1) < 0.05) ? withLoss : expected;
       return { ...it, quantity: q, lossRate: loss, quantityWithLoss: fixed };
     });
+
+    // ★機械側の検算。合わないところを指摘するだけで、数量は作らない。
+    verifyTakeoffNumbers(takeoff, extractAreasFromComment([data?.comment, data?.targets].filter(Boolean).join(' ')));
 
     // 計算の説明。AIの文章はそのまま通し、**使った設定だけは機械側で付ける**
     //   （設定値はこちらが確実に知っている。AIに書かせると「10%で見ています」等の言い間違いが混ざる）。
@@ -9051,7 +9639,7 @@ ${pastWork || 'まだ実績なし'}`;
       temperature: 0.3,
       system: systemPrompt,
       messages,
-    });
+    }).catch((e: any) => { throw handleAiFailure(e, { where: "chatEstimate", credits: 1, operation: "チャット見積" }); });
 
     const text = response.content[0].type === 'text' ? response.content[0].text : '';
 
@@ -9248,7 +9836,7 @@ ${pastWork || 'まだ実績なし'}`;
       n: 1,
       size: '1536x1024',
       quality: 'medium',
-    });
+    }).catch((e: any) => { throw handleAiFailure(e, { where: 'imageGenerate', credits: 3, operation: '画像生成' }); });
 
     const b64 = response.data[0]?.b64_json;
     sendUsageNotification('完成イメージ画像生成', `プロンプト: ${prompt.substring(0, 80)}`, {
@@ -9583,7 +10171,7 @@ ${levelGuide}
         thinking: { type: 'enabled', budget_tokens: 4000 },
         system: sys,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-      });
+      }).catch((e: any) => { throw handleAiFailure(e, { where: "training", credits: 1, operation: "研修モード" }); });
       text = ((response.content as any[]).find((b: any) => b?.type === 'text') || {}).text || '';
     } catch (e: any) {
       // thinking が使えない環境・モデルでも研修文だけは出す（機能ごと落とさない）

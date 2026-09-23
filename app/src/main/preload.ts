@@ -102,6 +102,10 @@ contextBridge.exposeInMainWorld('api', {
   takeoffHistory: () => ipcRenderer.invoke('ai:takeoffHistory'),
   generateTakeoffPDF: (data: any) => ipcRenderer.invoke('takeoff:generatePDF', data),
 
+  // 見積書の様式（お客様からもらったPDFに合わせる）
+  analyzeEstimateTemplate: (data: any) => ipcRenderer.invoke('estimateTemplate:analyze', data),
+  previewEstimateTemplate: (data: any) => ipcRenderer.invoke('estimateTemplate:preview', data),
+
   // 工事写真
   listConstructionPhotos: (cid: number) => ipcRenderer.invoke('constructionPhotos:list', cid),
   addConstructionPhoto: (data: any) => ipcRenderer.invoke('constructionPhotos:add', data),

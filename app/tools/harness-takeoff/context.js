@@ -14,7 +14,17 @@
 const fs = require('fs');
 const path = require('path');
 
+function readIfExists(f) {
+  return fs.existsSync(f) ? fs.readFileSync(f, 'utf-8') : '';
+}
+
 const AREA_SECTION = fs.readFileSync(path.join(__dirname, 'area-section.txt'), 'utf-8');
+
+// 業種ヒントと「この会社の積算ルール（係数）」。本番は毎回この2つも送っている。
+// ハーネスだけ送っていなかったので、本番より弱いプロンプトで測っていた（2026-09-23 に是正）。
+// 中身は main.ts から自動生成する（extract-sections.js / check-prompt-sync.js --write）。
+const FACTORS_SECTION = readIfExists(path.join(__dirname, 'factors-section.txt'));
+const INDUSTRY_SECTIONS = JSON.parse(readIfExists(path.join(__dirname, 'industry-hints.json')) || '{}');
 
 // main.ts の extractAreasFromComment と同じ規則。
 // 「〇〇面積 1,209.35㎡」「延床 120m2」「45坪」など、単位の直前の数値とその手前の見出し語を拾う。
@@ -47,11 +57,26 @@ function buildContext(spec) {
     ? AREA_SECTION.replace('{{AREAS}}', areas.map((a) => '- ' + a.label + ': ' + a.value.toLocaleString() + a.unit).join('\n'))
     : '';
 
+  // 本番(main.ts takeoffDrawingCore)の並び:
+  //   全社の拾い出し実績 → 業種 → この会社の積算ルール → 面積 → 対象 → 工事内容 → 縮尺 → クロスのリピート
+  // 全社の実績だけはハーネスでは送らない（Supabase から取るもので、測る対象でもないため）。
+  const industrySection = (spec.industry && INDUSTRY_SECTIONS[spec.industry]) || '';
+  if (spec.industry && !industrySection) {
+    throw new Error('知らない業種です: ' + spec.industry
+      + '（使えるのは ' + Object.keys(INDUSTRY_SECTIONS).join(' / ') + '）');
+  }
+
   return [
+    industrySection,
+    FACTORS_SECTION,
     areaSection,
     spec.targets ? '\n## ★拾ってほしい対象（これを最優先）★\n' + spec.targets + '\n' : '',
     spec.comment ? '\n## 工事内容・条件\n' + spec.comment + '\n' : '',
     spec.scaleHint ? '\n## ★縮尺（ユーザー指定 — 図面の表記より優先）★\n' + spec.scaleHint + '\n' : '',
+    spec.repeats
+      ? '\n## ★クロスの品番・リピート（ユーザー指定）★\n' + spec.repeats
+        + '\n★ここに書かれた品番のリピート寸法(mm)を使い、1本の長さをリピートの倍数に切り上げて、本数・総延長・巻数を出すこと。\n'
+      : '',
   ].join('');
 }
 

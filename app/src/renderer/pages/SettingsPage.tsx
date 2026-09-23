@@ -249,6 +249,10 @@ export default function SettingsPage() {
           { key: 'lossSheet', label: 'ロス率：クロス・シート', unit: '%', def: 10, hint: '' },
           { key: 'lossLinear', label: 'ロス率：長尺材', unit: '%', def: 5, hint: '' },
           { key: 'lossCable', label: 'ロス率：ケーブル・電線管', unit: '%', def: 5, hint: '' },
+          { key: 'riserHeight', label: '配線の立上り・立下り（1回ぶん）', unit: 'm', def: 3.0,
+            hint: '階をまたぐ配線や盤への立上りに、この高さを回数ぶん足します。階高が3.5mなら3.5と入れてください。' },
+          { key: 'cableSlack', label: '機器への引込み余長', unit: '%', def: 5,
+            hint: 'ケーブルを機器につなぐときの余りぶんです。ロス率（切り無駄）とは別に足します。' },
           { key: 'clothWidth', label: 'クロスの有効幅', unit: 'mm', def: 920,
             hint: 'ここからロール材の計算が始まります。面積だけでなく、本数・総延長・巻数まで出します。' },
           { key: 'clothRoll', label: 'クロス1巻の長さ', unit: 'm', def: 50, hint: '' },
@@ -286,6 +290,8 @@ export default function SettingsPage() {
         </p>
       </div>
 
+      <EstimateTemplateCard config={config} setConfig={setConfig} />
+
       <div className="card" style={{ border: '2px solid #e67e22' }}>
         <h3 style={{ marginBottom: 12 }}>🏗️ 業種設定</h3>
         <p style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>業種を選択すると、AI見積もりの相場データや材料マスタがその業種に最適化されます。</p>
@@ -300,6 +306,7 @@ export default function SettingsPage() {
               <option value="exterior">外構・エクステリア業</option>
               <option value="painting">塗装工事業</option>
               <option value="equipment">設備工事業（水道・電気・空調）</option>
+              <option value="electrical">電気工事業（電灯・動力・弱電・消防防災）</option>
               <option value="plant">プラント設備工事業（配管・機器据付・計装）</option>
               <option value="steel">鉄骨工事業（製作・建方・溶接・本締め）</option>
               <option value="interior">内装仕上工事業（クロス・床・軽天ボード）</option>
@@ -1366,6 +1373,150 @@ function AuditLog() {
 // ── 機密入力の共通UI ──
 // 値は画面に一切出さない（config:load が機密を返さないため、そもそも取得できない）。
 // 空欄のまま保存＝維持、「解除」＝明示削除。
+// 見積書の様式。お客様が普段使っている見積書のPDFを1回読み込ませると、
+// 以後の見積書がその様式（罫線・並び・見出しの言葉・社判の位置）で出るようになる。
+// ★読み取りはAIだが、出力のたびにAIを呼ぶわけではない。1回作った様式を使い回す。
+function EstimateTemplateCard({ config, setConfig }: { config: any; setConfig: (c: any) => void }) {
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [name, setName] = useState('');
+  const templates: any[] = Array.isArray(config.estimateTemplates) ? config.estimateTemplates : [];
+  const currentId = config.estimateTemplateId || '';
+
+  const persist = async (next: any) => {
+    setConfig(next);
+    await (window as any).api.saveConfig(next);
+  };
+
+  const importFile = async () => {
+    setErr(''); setMsg('');
+    try {
+      const picked = await (window as any).api.selectPdf();
+      if (!picked || picked.length === 0) return;
+      const f = picked[0];
+      const label = (name || '').trim() || `見積書の様式${templates.length + 1}`;
+      setBusy('様式を読み取っています…（30秒ほどかかります）');
+      const r = await (window as any).api.analyzeEstimateTemplate({
+        file: { type: f.type || (String(f.data).startsWith('data:application/pdf') ? 'pdf' : 'image'), data: f.data, name: label },
+      });
+      setBusy('');
+      if (!r?.html) { setErr('様式を読み取れませんでした。もう一度お試しください。'); return; }
+      const t = {
+        id: 'tpl_' + Date.now(), name: label, html: r.html, blankRows: 0,
+        createdAt: new Date().toISOString(), problems: r.problems || [],
+      };
+      await persist({ ...config, estimateTemplates: [...templates, t], estimateTemplateId: t.id });
+      setName('');
+      setMsg((r.problems || []).length
+        ? '取り込みました。ただし確認が要ります → ' + r.problems.join(' / ')
+        : '取り込みました。「見え方を確認」で、実物と見比べてください。');
+    } catch (e: any) {
+      setBusy('');
+      setErr(String(e?.message || e).replace(/^Error: ?/, ''));
+    }
+  };
+
+  const preview = async (t: any) => {
+    setErr(''); setMsg('');
+    try {
+      setBusy('プレビューを作っています…');
+      await (window as any).api.previewEstimateTemplate({ html: t.html, blankRows: Number(t.blankRows) || 0 });
+      setBusy('');
+      setMsg('サンプルの数字を入れたPDFを開きました。');
+    } catch (e: any) { setBusy(''); setErr(e?.message || 'プレビューを作れませんでした'); }
+  };
+
+  const update = async (id: string, patch: any) => {
+    await persist({ ...config, estimateTemplates: templates.map(t => (t.id === id ? { ...t, ...patch } : t)) });
+  };
+
+  const remove = async (t: any) => {
+    if (!confirm(`様式「${t.name}」を削除します。よろしいですか？`)) return;
+    const rest = templates.filter(x => x.id !== t.id);
+    await persist({
+      ...config,
+      estimateTemplates: rest,
+      estimateTemplateId: currentId === t.id ? '' : currentId,
+    });
+  };
+
+  return (
+    <div className="card" style={{ border: '2px solid #0ea5e9' }}>
+      <h3 style={{ marginBottom: 12 }}>📄 見積書の様式</h3>
+      <p style={{ fontSize: 13, color: '#666', marginBottom: 12, lineHeight: 1.9 }}>
+        いつもお使いの<strong>見積書のPDF（記入済みのもので結構です）</strong>を1回読み込ませると、
+        以後の見積書が<strong>その様式</strong>で出ます。罫線・項目の並び・見出しの言葉・社判の位置を写し取ります。<br />
+        提出先ごとに様式が違う場合は、複数登録して使い分けられます。読み取りは<strong>1回につきAIストック1単位</strong>です。
+      </p>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <input
+          type="text" value={name} onChange={e => setName(e.target.value)}
+          placeholder="様式の名前（例: 自社の標準様式 / ○○建設様 指定様式）"
+          style={{ flex: '1 1 260px', padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 13 }}
+        />
+        <button className="btn btn-primary" onClick={importFile} disabled={!!busy}>
+          {busy ? '読み取り中…' : '📄 様式のPDFを取り込む'}
+        </button>
+      </div>
+      {busy && <div style={{ fontSize: 13, color: '#0369a1', marginBottom: 8 }}>{busy}</div>}
+      {msg && <div style={{ fontSize: 13, color: '#15803d', marginBottom: 8, whiteSpace: 'pre-wrap' }}>{msg}</div>}
+      {err && <div style={{ fontSize: 13, color: '#c0392b', marginBottom: 8 }}>⚠ {err}</div>}
+
+      <div style={{ borderTop: '1px dashed #ddd', paddingTop: 10 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', fontSize: 14 }}>
+          <input
+            type="radio" name="estTpl" checked={!currentId}
+            onChange={() => persist({ ...config, estimateTemplateId: '' })}
+          />
+          標準様式（建築ブーストの見積書）
+        </label>
+
+        {templates.map(t => (
+          <div key={t.id} style={{ borderTop: '1px solid #f1f5f9', padding: '10px 0' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+              <input
+                type="radio" name="estTpl" checked={currentId === t.id}
+                onChange={() => persist({ ...config, estimateTemplateId: t.id })}
+              />
+              <strong>{t.name}</strong>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>{String(t.createdAt || '').slice(0, 10)}</span>
+            </label>
+            {(t.problems || []).length > 0 && (
+              <div style={{ fontSize: 11, color: '#b45309', margin: '4px 0 0 26px', lineHeight: 1.8 }}>
+                ⚠ {t.problems.join(' / ')}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '8px 0 0 26px' }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => preview(t)} disabled={!!busy}>見え方を確認</button>
+              <label style={{ fontSize: 12, color: '#64748b' }}>
+                明細の行数を固定
+                <input
+                  type="number" min={0} value={t.blankRows ?? 0}
+                  onChange={e => update(t.id, { blankRows: Number(e.target.value) || 0 })}
+                  style={{ width: 64, marginLeft: 6, padding: '4px 6px', textAlign: 'right', fontSize: 13 }}
+                />
+                <span style={{ marginLeft: 4 }}>行</span>
+              </label>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                （罫線が最後まで引いてある様式のとき。0なら明細のぶんだけ）
+              </span>
+              <button className="btn btn-sm" style={{ color: '#c0392b' }} onClick={() => remove(t)}>削除</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <p style={{ fontSize: 12, color: '#888', marginTop: 12, lineHeight: 1.9 }}>
+        ★読み取りは完璧ではありません。<strong>必ず「見え方を確認」で実物と見比べてから</strong>お使いください。
+        うまく写せていないときは、様式のPDFを（枠がはっきり写るように）撮り直して取り込み直すか、標準様式に戻せます。<br />
+        差し込みに失敗した場合は、<strong>黙って標準様式で出力</strong>します（書類が出ないより良いという判断です）。
+      </p>
+    </div>
+  );
+}
+
 function SecretInput({ isSet, value, onChange, onClear, placeholder }: {
   isSet: boolean;
   value: string;

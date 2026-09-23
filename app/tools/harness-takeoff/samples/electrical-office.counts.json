@@ -1,0 +1,18 @@
+{
+  "baseLight": 26,
+  "downLight": 4,
+  "emgLight": 3,
+  "exitLight": 2,
+  "outlet": 16,
+  "outletE": 2,
+  "outletWP": 2,
+  "outlet200": 2,
+  "sw": 6,
+  "sw3": 2,
+  "lan": 10,
+  "smoke": 11,
+  "fireBox": 1,
+  "panel": 1,
+  "removeLight": 18,
+  "unknown": 2
+}

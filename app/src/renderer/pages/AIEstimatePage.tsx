@@ -67,6 +67,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     { v: 'general',    label: '総合建設業',     hint: '工務店・リフォーム。迷ったらこれ' },
     { v: 'building',   label: '建築一式工事業', hint: '新築・増改築を元請で。建物まるごとを科目別に積算' },
     { v: 'equipment',  label: '設備工事業',     hint: '水道・電気・空調。器具や数量ベース' },
+    { v: 'electrical', label: '電気工事業',     hint: '電灯・動力・弱電・消防防災。電気だけを請ける' },
     { v: 'painting',   label: '塗装工事業',     hint: '塗装面積・塗料グレード・足場' },
     { v: 'exterior',   label: '外構・エクステリア業', hint: '駐車場・フェンス・門扉・植栽' },
     { v: 'demolition', label: '解体工事業',     hint: '解体坪単価・産廃処理・重機回送' },
@@ -178,6 +179,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [takeoff, setTakeoff] = useState<any>(null);
   const [takeoffLoading, setTakeoffLoading] = useState(false);
   const [takeoffTargets, setTakeoffTargets] = useState(''); // 拾ってほしい対象（任意）
+  // ★細かい図面は4分割して1つずつ拾い、合算する。記号が小さい電気設備図などで効く
+  //   （実測: 823pxの電気図では型番コードが潰れて読めず、照明22台を18台と数え落とした。
+  //     同じ図面を拡大して渡すとコードを読み取り、人の計数と一致した）。
+  const [takeoffTiled, setTakeoffTiled] = useState(false);
   // クロスの品番・リピート（任意）。柄物は1本の長さをリピートの倍数に切り上げる必要があるため、
   // 「品番が分かれば再計算できます」とAIに言わせている以上、入れる場所を用意しておく。
   const [takeoffRepeats, setTakeoffRepeats] = useState('');
@@ -697,6 +702,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   //   そのまま頂点になり、あとは足す・削る・動かすで形を作る。単位は画像px。
   //   長方形の状態は残しておくので「長方形に戻す」で行き来できる。
   const [aerialPoly, setAerialPoly] = useState<{ x: number; y: number }[] | null>(null);
+  // ★クリックで囲むモード。四角を合わせるより、建物の角を順にクリックするほうが速くて正確。
+  //   null = ふつうの操作（動かす・掴む）。配列 = いま囲んでいる最中（単位は画像px）。
+  //   囲み終わると多角形（aerialPoly）になり、面積の出し方はこれまでと同じ。
+  const [aerialTrace, setAerialTrace] = useState<{ x: number; y: number }[] | null>(null);
   const aerialDrag = useRef<any>(null);
   // 写真の表示位置（CSS px）。広めに読み込んだ画像の、どこを見せているか。
   // ★離すたびに取り直すとカクつくので、読み込んだ範囲の中は通信なしで滑らかに動かす。
@@ -1306,6 +1315,36 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
   };
+  // ── クリックで囲む ──────────────────────────────────────────
+  // 建物の角を順にクリックしていくだけ。3点目から面積が出て、最後は
+  // 最初の点をもう一度クリックするか、ダブルクリックで閉じる。
+  // 掴んで動かした（＝見回した）ときは点を打たない。4px 未満の動きだけをクリックとみなす。
+  const aerialImgPoint = (ev: React.MouseEvent<HTMLImageElement>) => {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const scale = (aerial?.sizePx || 256) / rect.width;
+    return { x: (ev.clientX - rect.left) * scale, y: (ev.clientY - rect.top) * scale };
+  };
+  const traceClickAerial = (ev: React.MouseEvent<HTMLImageElement>) => {
+    if (!aerialTrace || aerialLoading) return;
+    if ((aerialPanRef.current?.moved || 0) >= 4) return;   // 見回しただけ
+    const p = aerialImgPoint(ev);
+    // 最初の点の近くをもう一度押したら、そこで閉じる（地図アプリと同じ操作）
+    const first = aerialTrace[0];
+    const near = first && Math.hypot(p.x - first.x, p.y - first.y) * aerialZoom < 12;
+    if (near && aerialTrace.length >= 3) { finishAerialTrace(aerialTrace); return; }
+    setAerialTrace([...aerialTrace, p]);
+  };
+  const finishAerialTrace = (pts?: { x: number; y: number }[]) => {
+    const p = pts || aerialTrace;
+    if (!p || p.length < 3) return;
+    setAerialPoly(p.map(q => ({ ...q })));
+    setAerialTrace(null);
+  };
+  const startAerialTrace = () => {
+    setAerialTrace([]);
+    setAerialPoly(null);
+  };
+
   // 辺の真ん中の＋をつまむと、そこに頂点が増えてそのまま引っぱれる
   const addPolyVertexAt = (ev: React.MouseEvent, i: number) => {
     if (!aerialPoly) return;
@@ -1484,6 +1523,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         targets: takeoffTargets,
         repeats: takeoffRepeats,
         industryOverride: industryOverride || undefined,
+        tiled: takeoffTiled,
       });
       endBusy();
       setTakeoff(res);
@@ -2380,12 +2420,34 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   </div>
                 )}
 
+                {/* ★記号が小さくて読めない図面のための道。画像1枚のときだけ出す
+                    （PDFは細部が保たれているので分割しても得がない）。 */}
+                {takeoffFiles.length === 1 && takeoffFiles[0].type !== 'pdf' && (
+                  <label
+                    title="図面を4分割して1つずつ拾い、合算します。電気設備図のように記号が小さい図面で効きます。AIに4回投げるため、5単位を使います。"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '8px 10px',
+                      border: `1px solid ${takeoffTiled ? '#86efac' : '#e2e8f0'}`, borderRadius: 8,
+                      background: takeoffTiled ? '#f0fdf4' : '#fafafa', cursor: 'pointer', fontSize: 13,
+                    }}>
+                    <input type="checkbox" checked={takeoffTiled} onChange={e => setTakeoffTiled(e.target.checked)} />
+                    <span>
+                      <strong>細かい図面を4分割して拾う</strong>
+                      <span style={{ color: '#64748b' }}>（記号が小さい電気設備図など）</span>
+                      <span style={{ display: 'block', fontSize: 11, color: '#94a3b8', lineHeight: 1.7 }}>
+                        図面を4つに切って1つずつ拾い、合算します。小さい記号や型番コードが読めるようになります。
+                        <strong>5単位</strong>を使います（通常は2単位）。時間も少し長くなります。
+                      </span>
+                    </span>
+                  </label>
+                )}
+
                 <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
                   <input
                     type="text"
                     value={takeoffTargets}
                     onChange={e => setTakeoffTargets(e.target.value)}
-                    placeholder="拾ってほしい対象（任意）例: 屋根と外壁だけ / 建具の数量"
+                    placeholder="拾ってほしい対象（任意）例: 屋根と外壁だけ / 建具の数量 / 電気（器具と幹線）だけ"
                     style={{ flex: '2 1 220px', padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 13, fontFamily: 'inherit' }}
                   />
                   <input
@@ -3186,7 +3248,9 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       position: 'relative', width: '100%', maxWidth: AERIAL_VIEW, height: AERIAL_VIEW,
                       marginBottom: 6, overflow: 'hidden', borderRadius: 4,
                       border: '1px solid #93c5fd', background: '#0f172a',
-                      cursor: aerialLoading ? 'wait' : aerialGrabbing ? 'grabbing' : 'grab',
+                      cursor: aerialLoading ? 'wait'
+                        : aerialTrace ? (aerialGrabbing ? 'grabbing' : 'crosshair')
+                        : aerialGrabbing ? 'grabbing' : 'grab',
                     }}>
                     <div data-aerial-box
                       style={{
@@ -3199,7 +3263,8 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         1クリックで測ってしまうと、見回そうとしただけで測定が走ってしまう。 */}
                     <img src={aerial.aerialImage} alt="航空写真"
                       onMouseDown={startAerialPan}
-                      onDoubleClick={recenterAerialAt}
+                      onMouseUp={traceClickAerial}
+                      onDoubleClick={aerialTrace ? () => finishAerialTrace() : recenterAerialAt}
                       draggable={false}
                       style={{
                         width: '100%', height: '100%', display: 'block',
@@ -3280,7 +3345,43 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         点の印だけだと「どの建物を、どこまで測ったのか」が分からない。
                         間口×桁行を実寸で描けば、別の建物を測っていないか・隣家まで
                         巻き込んでいないかが一目で分かる。 */}
-                    {aerialRect && !aerialPoly && (() => {
+                    {/* ★クリックで囲んでいる最中。打った点と、いまの形・面積をそのまま出す。
+                        点を打つたびに面積が動くので、囲み終わる前に大きさの見当が付く。 */}
+                    {aerialTrace && aerialTrace.length > 0 && (() => {
+                      const size = aerial.sizePx || 256;
+                      const mpp = Number(aerial.mPerPx) || 0.5;
+                      const pts = aerialTrace;
+                      const area = pts.length >= 3 ? polyAreaPx(pts) * mpp * mpp : 0;
+                      const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+                      const r = 5 / aerialZoom;     // 画面上の見た目の大きさを一定に保つ
+                      const lw = 2 / aerialZoom;
+                      return (
+                        <svg viewBox={`0 0 ${size} ${size}`} width="100%" height="100%"
+                          style={{ position: 'absolute', left: 0, top: 0, zIndex: 3, pointerEvents: 'none' }}>
+                          {pts.length >= 3 && (
+                            <path d={`${d} Z`} fill="rgba(34,197,94,.22)" stroke="none" />
+                          )}
+                          <path d={d} fill="none" stroke="#22c55e" strokeWidth={lw}
+                            strokeLinejoin="round" strokeLinecap="round" />
+                          {pts.map((p, i) => (
+                            <circle key={i} cx={p.x} cy={p.y} r={i === 0 ? r * 1.4 : r}
+                              fill={i === 0 ? '#fff' : '#22c55e'} stroke={i === 0 ? '#22c55e' : '#fff'} strokeWidth={lw} />
+                          ))}
+                          {area > 0 && (() => {
+                            const cx = pts.reduce((t, q) => t + q.x, 0) / pts.length;
+                            const cy = pts.reduce((t, q) => t + q.y, 0) / pts.length;
+                            return (
+                              <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle"
+                                fontSize={16 / aerialZoom} fontWeight="bold" fill="#fff"
+                                stroke="rgba(15,23,42,.85)" strokeWidth={4 / aerialZoom} paintOrder="stroke">
+                                {area.toFixed(1)}㎡
+                              </text>
+                            );
+                          })()}
+                        </svg>
+                      );
+                    })()}
+                    {aerialRect && !aerialPoly && !aerialTrace && (() => {
                       const a = aerialRectArea();
                       const R = aerialRect;
                       const pc = (v: number) => `${v / aerial.sizePx * 100}%`;
@@ -3434,7 +3535,20 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   </div>
                 </>
               )}
-              {(aerialRect || aerialPoly) && (
+              {/* クリックで囲んでいる最中の案内。操作はこの3つだけにする */}
+              {aerialTrace && (
+                <div style={{ fontSize: 12, color: '#14532d', background: '#ecfdf5', border: '1px solid #6ee7b7', borderRadius: 4, padding: '7px 9px', marginBottom: 6, lineHeight: 1.7 }}>
+                  <strong>建物の角を、順番にクリックしてください。</strong>
+                  {aerialTrace.length > 0 && <>（いま <strong>{aerialTrace.length}点</strong>）</>}<br />
+                  3点目から面積が出ます。<strong>最初の点をもう一度クリック</strong>するか、
+                  <strong>ダブルクリック</strong>で囲み終わりです。<br />
+                  <span style={{ color: '#475569' }}>
+                    写真は押したまま動かせば見回せます（動かしたときは点を打ちません）。
+                    ホイールで寄ると角を正確に取れます。AIは使わないので何度でも無料です。
+                  </span>
+                </div>
+              )}
+              {(aerialRect || aerialPoly) && !aerialTrace && (
                 <div style={{ fontSize: 12, color: '#166534', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 4, padding: '7px 9px', marginBottom: 6, lineHeight: 1.7 }}>
                   {aerialPoly ? (
                     <>
@@ -3467,15 +3581,40 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   style={{ fontSize: 12, padding: '6px 12px' }}>
                   ← 広い範囲に戻す
                 </button>
+                {/* ★クリックで囲む。四角を合わせるより速く、L字も一発で囲める */}
+                {!aerialTrace && (
+                  <button className="btn" onClick={startAerialTrace} disabled={aerialLoading}
+                    style={{ fontSize: 12, padding: '6px 12px', background: '#dcfce7', borderColor: '#86efac', fontWeight: 'bold' }}
+                    title="建物の角を順番にクリックして囲みます。3点目から面積が出ます（AIは使いません）">
+                    📐 クリックで囲む
+                  </button>
+                )}
+                {aerialTrace && (
+                  <>
+                    <button className="btn" onClick={() => finishAerialTrace()} disabled={aerialTrace.length < 3}
+                      style={{ fontSize: 12, padding: '6px 12px', background: '#16a34a', color: '#fff', fontWeight: 'bold' }}
+                      title="囲み終わって面積を確定します">
+                      ✓ 囲み終わり（{aerialTrace.length}点）
+                    </button>
+                    <button className="btn" onClick={() => setAerialTrace(aerialTrace.slice(0, -1))}
+                      disabled={aerialTrace.length === 0} style={{ fontSize: 12, padding: '6px 12px' }}>
+                      ↩ 1つ戻す
+                    </button>
+                    <button className="btn" onClick={() => setAerialTrace(null)}
+                      style={{ fontSize: 12, padding: '6px 12px' }}>
+                      やめる
+                    </button>
+                  </>
+                )}
                 {/* 長方形で囲めない建物のための切り替え。行き来しても位置は見失わない */}
-                {aerialRect && !aerialPoly && (
+                {aerialRect && !aerialPoly && !aerialTrace && (
                   <button className="btn" onClick={toAerialPolygon}
                     style={{ fontSize: 12, padding: '6px 12px' }}
                     title="いまの四角の四隅を頂点にして、角を足せる多角形にします（L字・コの字の建物用）">
                     ✏️ 多角形にする（L字など）
                   </button>
                 )}
-                {aerialPoly && (
+                {aerialPoly && !aerialTrace && (
                   <button className="btn" onClick={toAerialRect}
                     style={{ fontSize: 12, padding: '6px 12px' }}
                     title="いまの多角形を囲む長方形に戻します">
@@ -3483,7 +3622,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                   </button>
                 )}
                 {/* AIの推定は任意。1日の上限を使うので、押したときだけ走らせる */}
-                {(aerialRect || aerialPoly) && (
+                {(aerialRect || aerialPoly) && !aerialTrace && (
                   <button className="btn" onClick={measureAerialAt} disabled={aerialLoading}
                     style={{ fontSize: 12, padding: '6px 12px' }}
                     title="画面中央の建物の大きさをAIに推定させます。1日の面積確認の回数を1回使います（AIが返すのは長方形なので、多角形は解除されます）">
@@ -3520,7 +3659,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
               {/* 測れたら、そのまま見積へ。
                   航空写真は縮尺が確定しているので、写真の目測と違い実測値と同じ扱いにしてよい。
                   面積は編集できるようにしておく（勾配や下屋の有無で調整したいことがある）。 */}
-              {(aerialRect || aerialPoly) && (
+              {(aerialRect || aerialPoly) && !aerialTrace && (
                 <div style={{ borderTop: '1px solid #93c5fd', marginTop: 10, paddingTop: 10 }}>
                   {(() => {
                     const a = aerialRectArea();
@@ -3644,6 +3783,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                 <option value="demolition">解体工事業</option>
                 <option value="exterior">外構・エクステリア業</option>
                 <option value="equipment">設備工事業</option>
+                <option value="electrical">電気工事業</option>
                 <option value="plant">プラント設備工事業</option>
                 <option value="lease">仮設工事リース業</option>
               </select>

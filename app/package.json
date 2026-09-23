@@ -17,7 +17,9 @@
     "harness:learning": "node tools/harness-learning/run.js",
     "harness:ocr": "node tools/harness-ocr-import/run.js",
     "harness:learning-all": "npm run harness:learning-context && npm run harness:ocr && npm run harness:market-guard",
-    "harness:market-guard": "node tools/harness-market-prices/run.js"
+    "harness:market-guard": "node tools/harness-market-prices/run.js",
+    "harness:electrical-dry": "node tools/harness-electrical/run.js --dry",
+    "harness:electrical": "node tools/harness-electrical/run.js"
   },
   "keywords": [
     "建築",

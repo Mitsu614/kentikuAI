@@ -221,6 +221,114 @@ const SCENARIOS = [
       { type: 'cable_rack_m', qty: 35 },
     ],
   },
+  {
+    id: 'e16-factory-motor',
+    title: '工場の動力増設（三相200V）',
+    spec: `稼働中の工場に生産設備を増設するのに伴う動力工事（三相200V）。
+- 動力回路 新設 4台分（動力盤から各機器へ。1台あたり20m程度）
+- 電磁開閉器 取付 4台
+- インバーター（11kW）設置 2台
+- モーター結線・試運転調整 4台
+- CVT幹線 38sq級 35m（受電盤〜動力盤）
+- 接地工事（D種）2箇所
+※建築・機械の据付は別業者。電気工事のみの見積。`,
+    items: [
+      { type: 'power_circuit', qty: 4 },
+      { type: 'magnet_switch', qty: 4 },
+      { type: 'inverter', qty: 2 },
+      { type: 'motor_test', qty: 4 },
+      { type: 'cvt38_m', qty: 35 },
+      { type: 'ground_work', qty: 2 },
+    ],
+  },
+  {
+    id: 'e17-fire-alarm',
+    title: '自動火災報知設備の更新（消防）',
+    spec: `事務所ビル（延床1,200㎡・4階）の自動火災報知設備の更新。
+- 自火報 受信機 P型1級（16回線）1台
+- 感知器（煙・熱）48個
+- 総合盤（発信機・表示灯・地区音響）8組
+- 耐熱電線 HP 1.2-2C 配線 420m
+- 消防への届出（着工届・設置届・検査立会）1式
+※★配線は耐熱電線。一般のVVFでは不可。`,
+    items: [
+      { type: 'fire_panel_p1', qty: 1 },
+      { type: 'fire_detector', qty: 48 },
+      { type: 'fire_box', qty: 8 },
+      { type: 'hp_cable_m', qty: 420 },
+      { type: 'fire_filing', qty: 1 },
+    ],
+  },
+  {
+    id: 'e18-emergency-light',
+    title: '誘導灯・非常照明・非常放送の更新（防災）',
+    spec: `店舗（延床800㎡）の防災設備更新。
+- 誘導灯（避難口・通路）14台
+- 非常照明（電池内蔵型）22台
+- 非常放送 アンプ 1台
+- 非常放送 スピーカー 16個
+- 耐火電線 FP-C 配線 180m（防災電源回路）
+- 消防への届出 1式`,
+    items: [
+      { type: 'exit_light', qty: 14 },
+      { type: 'emergency_light', qty: 22 },
+      { type: 'emergency_amp', qty: 1 },
+      { type: 'emergency_sp', qty: 16 },
+      { type: 'fp_cable_m', qty: 180 },
+      { type: 'fire_filing', qty: 1 },
+    ],
+  },
+  {
+    id: 'e19-office-renovation',
+    title: '事務所改修（撤去＋仮設＋新設）',
+    spec: `稼働中の事務所（1フロア 300㎡）のレイアウト変更に伴う電気改修。
+【撤去】
+- 既設照明器具 撤去・処分 36台
+- 既設コンセント・スイッチ 撤去 28箇所
+- 既設ケーブル 撤去 260m
+- 既設分電盤 撤去・処分 1面
+【仮設】
+- 工事用仮設電源（仮設分電盤＋引込）1式
+【新設】
+- 照明器具 取付（一般・LED）40台
+- 人感センサースイッチ 6箇所
+- コンセント新設 30箇所
+- VVFケーブル配線 380m
+- 漏電遮断器付分電盤 新設 1面
+- 竣工試験（絶縁抵抗・接地抵抗・成績書）1式
+※★撤去と仮設を必ず別項目で計上すること。`,
+    items: [
+      { type: 'remove_light', qty: 36 },
+      { type: 'remove_outlet', qty: 28 },
+      { type: 'remove_cable_m', qty: 260 },
+      { type: 'remove_panel', qty: 1 },
+      { type: 'temp_power', qty: 1 },
+      { type: 'light_general', qty: 40 },
+      { type: 'sensor_switch', qty: 6 },
+      { type: 'outlet_new', qty: 30 },
+      { type: 'vvf_m', qty: 380 },
+      { type: 'panel_elcb_new', qty: 1 },
+      { type: 'commissioning', qty: 1 },
+    ],
+  },
+  {
+    id: 'e20-highvoltage-extras',
+    title: '高圧受電の付帯（PAS・非常用発電機・竣工試験）',
+    spec: `工場の受電設備更新に伴う付帯工事。
+- 区分開閉器 PAS/UGS 設置 1台（SOG制御装置込）
+- 非常用発電機（ディーゼル 75kVA・屋外キュービクル型）1基（本体・基礎・据付・接続）
+- 発電機 負荷試験（疑似負荷装置）1回
+- CVT幹線 100〜150sq 45m（発電機〜受電盤）
+- 竣工試験 1式
+※キュービクル本体（受変電）はこの見積に含めない。燃料タンクの消防届出は別途。`,
+    items: [
+      { type: 'pas_ugs', qty: 1 },
+      { type: 'generator', qty: 1 },
+      { type: 'generator_test', qty: 1 },
+      { type: 'cvt150_m', qty: 45 },
+      { type: 'commissioning', qty: 1 },
+    ],
+  },
 ];
 
 module.exports = { SCENARIOS };

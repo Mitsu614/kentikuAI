@@ -48,6 +48,11 @@ const SYSTEM_PROMPT = "あなたは建築積算の拾い出し専門家です。
 
 const TARGETS = `内装仕上工事の数量。壁・天井のクロス面積、床の仕上げ面積（部屋別）、
 軽量鉄骨下地(LGS)と石膏ボードの面積、幅木の延長、ブラインドの箇所数。`;
+// 電気の図面を測るとき（--industry=electrical）の既定。器具は箇所数・台数で拾うものなので、
+// 内装の対象文（面積）のままだと、図面と噛み合わずに確度が落ちる。
+const ELEC_TARGETS = `電気設備の数量。器具の箇所数・台数（コンセント・スイッチ・照明・換気扇）、
+弱電（LAN/TV/インターホン）、火災警報器、分電盤の面数、配線・電線管の長さ。`;
+const ELEC_COMMENT = `木造戸建住宅の電気工事。電気設備平面図（電灯・コンセント・弱電・換気）。`;
 const COMMENT = `老人ホーム 新築工事の内装仕上工事。ゼネコン下請け。天井高2.6m想定。`;
 
 function parseJson(text) {
@@ -57,7 +62,7 @@ function parseJson(text) {
 }
 
 // 振れを見たい数量。名前のゆらぎを吸収して拾う
-const PROBES = [
+const INTERIOR_PROBES = [
   ['壁クロス',   /(壁|内壁).*(クロス|仕上)|クロス.*(壁|内壁)/],
   ['天井クロス', /天井.*(クロス|仕上|ボード)/],
   ['床仕上げ',   /床/],
@@ -66,6 +71,19 @@ const PROBES = [
   ['幅木',       /幅木|巾木/],
   ['ブラインド', /ブラインド|カーテン/],
 ];
+
+// 電気で振れを見たいもの。名前の揺れを吸収する
+const ELEC_PROBES = [
+  ['照明器具',     /照明|ダウンライト|シーリング|ベースライト|ブラケット|ペンダント|灯/],
+  ['コンセント',   /コンセント/],
+  ['スイッチ',     /スイッチ/],
+  ['換気扇・フード', /換気扇|レンジフード|パイプファン|ファン/],
+  ['分電盤',       /分電盤|制御盤|盤/],
+  ['弱電・情報',   /LAN|情報|TV|テレビ|インターホン|ルーター|電話/],
+  ['火災警報器',   /感知器|警報器|火災/],
+  ['配線・電線管', /VVF|CVT|CV |ケーブル|電線|配線|PF管/],
+];
+let PROBES = INTERIOR_PROBES;
 
 function probe(items) {
   const out = {};
@@ -79,12 +97,22 @@ function probe(items) {
 }
 
 (async () => {
-  const file = process.argv[2];
-  const runs = Number(process.argv[3] || 3);
-  // 第4引数で「拾ってほしい対象」を差し替えられる（本番のコメント欄と同じ位置に入る）
-  const targets = process.argv[4] || TARGETS;
+  // --industry= / --targets= / --comment= を先に取り出し、残りを位置引数として扱う
+  const flags = {};
+  const pos = [];
+  for (const a of process.argv.slice(2)) {
+    const m = /^--([a-z]+)=([\s\S]*)$/.exec(a);
+    if (m) flags[m[1]] = m[2]; else pos.push(a);
+  }
+  const file = pos[0];
+  const runs = Number(pos[1] || 3);
+  const industry = flags.industry || '';
+  const isElec = industry === 'electrical' || industry === 'equipment';
+  if (isElec) PROBES = ELEC_PROBES;
+  const targets = flags.targets || pos[2] || (isElec ? ELEC_TARGETS : TARGETS);
+  const comment = flags.comment || (isElec ? ELEC_COMMENT : COMMENT);
   if (!file || !fs.existsSync(file)) {
-    console.error('使い方: node app/tools/harness-takeoff/run.js "<図面ファイル>" [試行回数]');
+    console.error('使い方: node app/tools/harness-takeoff/run.js "<図面ファイル>" [試行回数] [--industry=electrical] [--targets=...] [--comment=...]');
     process.exit(1);
   }
   const Anthropic = require(path.join(__dirname, '..', '..', 'node_modules', '@anthropic-ai', 'sdk'));
@@ -108,7 +136,7 @@ function probe(items) {
     : { type: 'image', source: { type: 'base64', media_type: media, data: b64 } });
   content.push({
     type: 'text',
-    text: fillPrompt(TAKEOFF_PROMPT, { targets, comment: COMMENT }),
+    text: fillPrompt(TAKEOFF_PROMPT, { targets, comment, industry }),
   });
 
   const results = [];

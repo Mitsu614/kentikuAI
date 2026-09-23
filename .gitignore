@@ -87,3 +87,11 @@ test_insert.json
 # ハーネスが本番TSをその場でコンパイルする先（実行のたびに作り直す）
 app/.harness-build/
 app/.tsconfig.harness.json
+
+# 様式ハーネスの出力（生成物なので残さない）
+app/tools/harness-estimate-template/out/
+
+# 検証で作った中間ファイル（生成物）
+app/tools/harness-takeoff/samples/tiles/
+app/tools/harness-takeoff/tile*.json
+app/tools/harness-takeoff/raw-*.json

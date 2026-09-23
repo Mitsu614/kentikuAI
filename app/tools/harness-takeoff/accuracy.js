@@ -17,12 +17,16 @@
 //        ]
 //      }
 //      match は省略可（省略時は name を正規表現として使う）。
+//      exclude を書くと、その正規表現に当たる行を除ける。
+//      ★unit は表示だけでなく**絞り込み**にも使う（単位の違う行は数えない）。
+//        単位を問わず合算したいときだけ "anyUnit": true を付ける。
 //      qty は「その項目の合計」。部屋ごとに分かれて出ても合算して比べる。
 //
 //   2) 回す
 //      node app/tools/harness-takeoff/accuracy.js            … truth/ の全件
 //      node app/tools/harness-takeoff/accuracy.js <名前>      … 1件だけ
 //      node app/tools/harness-takeoff/accuracy.js <名前> 3    … 3回ずつ回して平均も見る
+//      node app/tools/harness-takeoff/accuracy.js <名前> --regrade … APIを叩かず、前回の出力を採点し直す（無料）
 //
 // 判定: 誤差 ±5%以内=◎ / ±15%以内=○ / それ以外=×。拾えなかったら「未検出」。
 // 結果は accuracy-result.json に残る。プロンプトを直したら回し直して、悪化していないか見る。
@@ -64,14 +68,24 @@ function parseJson(text) {
   try { return JSON.parse(m ? (m[1] || m[0]) : text); } catch (_) { return null; }
 }
 
-function sumMatching(items, pattern, exclude) {
+// 単位の表記ゆれを揃える（㎡ / m2 / m² は同じ、台 / 個 / 箇所 は別物として扱う）
+function normUnit(u) {
+  return String(u || '').trim().normalize('NFKC').replace(/m2|m²/i, '㎡');
+}
+
+function sumMatching(items, pattern, exclude, unit) {
   const re = new RegExp(pattern, 'i');
   const ex = exclude ? new RegExp(exclude, 'i') : null;
+  const want = normUnit(unit);
   const hit = (items || []).filter((it) => {
     // 名前の書き方は揺れるので、まず部位(part)と単位で絞る。名前は補助にしか使わない。
     const label = String(it.name || '') + ' ' + String(it.part || '') + ' ' + String(it.unit || '');
     if (!re.test(label)) return false;
     if (ex && ex.test(label)) return false;
+    // ★単位が違う行は数えない。電気の実測で「コンセント 防水 2箇所」を探した正規表現が
+    //   「VVF2.0-2C ― 分岐回路（コンセント・防水・200V系統）285m」に当たり、
+    //   +14,000% という無意味な判定が出た。幅木(m)が床(㎡)に混ざる事故と同じ形。
+    if (want && normUnit(it.unit) !== want) return false;
     return Number(it.quantity) > 0;              // 数量が空の行は数えない
   });
   if (!hit.length) return null;
@@ -145,8 +159,17 @@ async function runOnce(client, spec) {
     process.exit(0);
   }
 
-  const Anthropic = require(path.join(DIR, '..', '..', 'node_modules', '@anthropic-ai', 'sdk'));
-  const client = new Anthropic({ apiKey: loadKey() });
+  // --regrade: APIを叩かず、前回保存した raw-*.json を採点し直す（無料）。
+  //   正解の書き方（match / exclude / unit）を直したときに、同じ出力で採点だけやり直すため。
+  const REGRADE = process.argv.includes('--regrade');
+  const loadRaw = (f, i) => {
+    const p = path.join(DIR, `raw-${f.replace(/\.json$/, '')}-${i}.json`);
+    if (!fs.existsSync(p)) throw new Error('前回の出力がありません: ' + p);
+    return { json: JSON.parse(fs.readFileSync(p, 'utf-8')), truncated: false, len: 0 };
+  };
+
+  const Anthropic = REGRADE ? null : require(path.join(DIR, '..', '..', 'node_modules', '@anthropic-ai', 'sdk'));
+  const client = REGRADE ? null : new Anthropic({ apiKey: loadKey() });
 
   const all = [];
   for (const f of files) {
@@ -157,10 +180,11 @@ async function runOnce(client, spec) {
     const perRun = [];
     for (let i = 1; i <= times; i++) {
       process.stdout.write(`  run ${i}/${times} ... `);
-      const { json, truncated, len } = await runOnce(client, spec);
+      const { json, truncated, len } = REGRADE ? loadRaw(f, i) : await runOnce(client, spec);
       if (!json) { console.log(`JSON解析に失敗（${len}文字${truncated ? '・出力上限で切断' : ''}）`); perRun.push(null); continue; }
       const rows = spec.truth.map((t) => {
-        const got = sumMatching(json.items, t.match || t.name, t.exclude);
+        // unit は表示用ではなく**絞り込み**にも使う（anyUnit: true で無効化できる）
+        const got = sumMatching(json.items, t.match || t.name, t.exclude, t.anyUnit ? '' : t.unit);
         const g = grade(got && got.qty, t.qty);
         return { name: t.name, want: t.qty, unit: t.unit || '', got: got && got.qty, rows: got && got.rows, ...g };
       });

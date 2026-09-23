@@ -20,6 +20,10 @@ const MAIN = path.resolve(DIR, "../../src/main/main.ts");
 const PROMPT = path.join(DIR, "prompt.txt");
 const MARK = "";   // 差し込み位置の目印（本文に出てこない文字を使う）
 
+// 本文の外（差し込み側）にある業種ヒントと積算ルールも、main.ts から取り出して照合する。
+// ここが抜けていたせいで、ハーネスは本番より弱いプロンプトで測っていた。
+const { buildExtras, FACTORS_FILE, HINTS_FILE } = require('./extract-sections.js');
+
 // 比較の前に揃えること:
 //   - 改行コード（worktree は CRLF、本体は LF になりうる）と行末の空白
 //   - テンプレートリテラルのエスケープ（main.ts では ``` が \` \` \` になっている）
@@ -95,7 +99,22 @@ function check() {
   const a = norm(got.text);
   const b = norm(rawFile);
 
-  if (a === b && junkLines.length === 0) return { ok: true, why: "一致", chars: a.length };
+  // 係数・業種ヒントのファイルも、main.ts から作り直したものと一致していなければNG
+  const extraDiff = [];
+  try {
+    const ex = buildExtras();
+    const cur = (f) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null);
+    if (norm(cur(FACTORS_FILE) || "") !== norm(ex.factors)) extraDiff.push("factors-section.txt");
+    const hintsNow = cur(HINTS_FILE);
+    if (!hintsNow || JSON.stringify(JSON.parse(hintsNow)) !== JSON.stringify(ex.sections)) extraDiff.push("industry-hints.json");
+  } catch (e) {
+    extraDiff.push("取り出しに失敗: " + e.message);
+  }
+
+  if (a === b && junkLines.length === 0 && extraDiff.length === 0) return { ok: true, why: "一致", chars: a.length };
+  if (a === b && junkLines.length === 0) {
+    return { ok: false, why: "本文は一致しているが、係数・業種ヒントのファイルが main.ts とズレている", extraDiff };
+  }
 
   const la = a.split("\n");
   const lb = b.split("\n");
@@ -109,6 +128,7 @@ function check() {
     onlyMain: la.filter(l => !setB.has(l) && l.trim()),
     onlyFile: lb.filter(l => !setA.has(l) && l.trim()),
     junkLines,
+    extraDiff,
   };
 }
 
@@ -127,6 +147,9 @@ function write() {
   const TMP = "CTX";
   const body = norm(got.text.replace(runRe, TMP)).split(TMP).join(CONTEXT_MARK);
   fs.writeFileSync(PROMPT, body + "\n", "utf8");
+  const ex = buildExtras();
+  fs.writeFileSync(FACTORS_FILE, ex.factors, "utf8");
+  fs.writeFileSync(HINTS_FILE, JSON.stringify(ex.sections, null, 2) + String.fromCharCode(10), "utf8");
   return { ok: true, why: "prompt.txt を書き出した", chars: body.length };
 }
 
@@ -153,6 +176,10 @@ if (require.main === module) {
   if (r.onlyFile && r.onlyFile.length) {
     console.log(`\n  prompt.txt にだけある行（${r.onlyFile.length}）:`);
     r.onlyFile.slice(0, 12).forEach(l => console.log("    - " + l.slice(0, 100)));
+  }
+  if (r.extraDiff && r.extraDiff.length) {
+    console.log(String.fromCharCode(10) + "  " + C.r + "main.ts とズレているファイル:" + C.x + " " + r.extraDiff.join(", "));
+    console.log("  " + C.d + "node check-prompt-sync.js --write で作り直すこと。" + C.x);
   }
   if (r.junkLines && r.junkLines.length) {
     console.log(`\n  ${C.r}prompt.txt に残ったテンプレート構文（コピペ事故・${r.junkLines.length}行）:${C.x}`);
