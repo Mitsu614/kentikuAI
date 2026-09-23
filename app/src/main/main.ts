@@ -424,6 +424,76 @@ function shrinkImageForAI(dataUrl: any, maxDim = 1568, maxBytes = 4_500_000): an
 //      （実測: 老人ホームの図面で、床の合計が記載1,209.35㎡に対し1,127.34㎡＝82㎡不足。
 //        部屋の取りこぼしだが、合計を突き合わせない限り誰も気づかない）
 
+// ── 幅木の長さは、アプリが計算する ──────────────────────────────
+//
+// なぜ機械でやるか: 「幅木＝壁の延長 × 係数」「壁の延長＝壁面積 ÷ 天井高」は、
+//   御社が決めた計算ルールであって、読み取りではない。AIに毎回やらせると、
+//   同じ図面でも 765m／897m／974m（1.27倍）とぶれた（2026-09-23 実測）。
+//   機械が一度だけ計算すれば、**壁の面積と幅木の長さが必ず辻褄の合う数字**になる。
+//
+// ★壁の面積そのものが揺れる分は、ここでは直らない（それは読み取りの問題）。
+//   直るのは「壁と幅木がバラバラに動く」ことだけ。
+
+/** 依頼文や図面の注記から天井高(m)を拾う。「天井高2,400」「CH=2450」「天井高2.6m」 */
+function extractCeilingHeight(text: string): number | null {
+  const s = String(text || '').normalize('NFKC');
+  const m = s.match(/(?:天井高|CH)\s*[=＝:：]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(mm|m|ｍ)?/i);
+  if (!m) return null;
+  let v = Number(String(m[1]).replace(/,/g, ''));
+  if (!(v > 0)) return null;
+  if (v > 100) v = v / 1000;            // 2,400 のようなmm表記
+  return v >= 1.8 && v <= 6 ? v : null; // 現実的な範囲だけ信じる
+}
+
+/** 室名を取り出す（「幅木 ― 居室1」→「居室1」）。取れなければ null */
+function roomOf(name: any): string | null {
+  const s = String(name || '');
+  const i = s.search(/[―—−\-]\s*/);
+  if (i < 0) return null;
+  const r = s.slice(i).replace(/^[―—−\-]\s*/, '').trim();
+  return r || null;
+}
+
+/**
+ * 幅木の行を、壁の面積から計算し直す。
+ * 室名が突き合う行だけを直し、**対応する壁が見つからない行は触らない**（推測しない）。
+ */
+function recomputeBaseboards(takeoff: any, ceilingHeight: number, factor: number): number {
+  const items: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
+  if (!(ceilingHeight > 0) || !(factor > 0)) return 0;
+
+  // 室ごとの壁の面積（仕上げの㎡）
+  const wallByRoom = new Map<string, number>();
+  for (const it of items) {
+    if (!/壁仕上げ/.test(String(it.name || ''))) continue;
+    if (!/^(㎡|m2|m²)$/.test(String(it.unit || '').trim())) continue;
+    const room = roomOf(it.name);
+    if (!room) continue;
+    wallByRoom.set(room, (wallByRoom.get(room) || 0) + (Number(it.quantity) || 0));
+  }
+  if (wallByRoom.size === 0) return 0;
+
+  let fixed = 0;
+  for (const it of items) {
+    if (!/幅木|巾木/.test(String(it.name || ''))) continue;
+    if (!/^m$/.test(String(it.unit || '').trim())) continue;
+    const room = roomOf(it.name);
+    const wall = room ? wallByRoom.get(room) : undefined;
+    if (!(wall! > 0)) continue;                   // 対応する壁が無い行は触らない
+    const length = roundQty((wall as number) / ceilingHeight * factor);
+    if (!(length > 0)) continue;
+    const before = Number(it.quantity) || 0;
+    if (Math.abs(before - length) / Math.max(length, 1) < 0.001) continue;  // すでに一致
+    it.quantity = length;
+    it.lossRate = Number(it.lossRate) || 0;
+    it.quantityWithLoss = roundQty(length * (1 + it.lossRate));
+    it.formula = `壁 ${roundQty(wall as number)}㎡ ÷ 天井高 ${ceilingHeight}m × ${factor} = ${length}m（アプリが計算）`;
+    it.note = `${it.note ? it.note + ' / ' : ''}幅木の長さはアプリが計算しています（AIの読み取り値 ${roundQty(before)}m は使っていません）`;
+    fixed++;
+  }
+  return fixed;
+}
+
 /** 「8.19×6.37=52.17」のような式を計算する。数字と四則演算だけの単純な式に限る */
 function evalSimpleFormula(formula: any): number | null {
   const raw = String(formula || '');
@@ -1622,6 +1692,12 @@ function applyEstimateFix(result: any, fix: any, context: string): any {
 const TAKEOFF_FACTOR_DEFAULTS = {
   openingThreshold: 1,    // 開口部の控除をする最小面積（㎡/箇所）
   baseboardFactor: 0.9,   // 幅木＝壁の延長 × この係数（開口ぶんを落とす）
+  // ★幅木の長さは、この天井高を使って**アプリが計算する**（AIに計算させない）。
+  //   実測: 同じ図面を3回拾うと、幅木が765m／897m／974m（1.27倍）とぶれた。
+  //   「壁の延長 × 0.9」という御社の決めごとをAIが毎回やり直すからで、
+  //   機械が一度だけ計算すれば、壁の面積と必ず辻褄が合う。
+  //   図面や依頼文に天井高が書いてあれば、そちらが優先。
+  ceilingHeight: 2.4,     // 標準の天井高(m)
   lossBoard: 5,           // ロス率%：板もの・断熱（板状/マット）
   lossSheet: 10,          // ロス率%：クロス・シート
   lossLinear: 5,          // ロス率%：長尺材
@@ -7758,6 +7834,8 @@ manDaysBreakdownの書き方例:
 ## ★この会社の積算ルール（本文の標準値より優先）★
 - 開口部の控除: 1箇所あたり **${F.openingThreshold}㎡以上** の開口（窓・出入口）を控除する。これ未満は控除しない。
 - 幅木の延長: **壁の延長 × ${F.baseboardFactor}**（開口ぶんを落とす）
+  ★**幅木の長さは、この式でアプリが計算し直す。**天井高は ${F.ceilingHeight}m（図面に書いてあればそちらが優先）。
+  お前が出した幅木の数量は使われないが、**どの室に幅木があるかはお前の行で決まる**ので、室ごとに行は必ず出せ。
 - ロス率: 板もの・断熱 **${F.lossBoard}%** ／ クロス・シート **${F.lossSheet}%** ／ 長尺材 **${F.lossLinear}%** ／ ケーブル・電線管 **${F.lossCable}%**
 
 ## ★電気の配線長の出し方（この会社の値）★
@@ -8272,6 +8350,16 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
     });
 
     // ★機械側の検算。合わないところを指摘するだけで、数量は作らない。
+    // ★幅木は御社の決めごと（壁の延長 × 係数）で機械が計算する。AIの計算は使わない。
+    //   天井高は、依頼文・図面注記に書かれていればそれを、無ければ設定値を使う。
+    const ch = extractCeilingHeight([data?.comment, data?.targets].filter(Boolean).join(' '))
+      || (Number(F.ceilingHeight) > 0 ? Number(F.ceilingHeight) : 2.4);
+    const fixedBaseboards = recomputeBaseboards(takeoff, ch, Number(F.baseboardFactor) || 0.9);
+    if (fixedBaseboards > 0) {
+      takeoff.warnings = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
+      takeoff.warnings.push(`幅木 ${fixedBaseboards}行は、壁の面積 ÷ 天井高${ch}m × ${Number(F.baseboardFactor) || 0.9} でアプリが計算し直しました（AIに計算させると同じ図面でも数字が動くため）。天井高と係数は設定から変えられます。`);
+    }
+
     verifyTakeoffNumbers(takeoff, extractAreasFromComment([data?.comment, data?.targets].filter(Boolean).join(' ')));
 
     // 計算の説明。AIの文章はそのまま通し、**使った設定だけは機械側で付ける**
