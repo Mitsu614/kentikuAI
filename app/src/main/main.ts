@@ -10,7 +10,7 @@ import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 import { buildLearningContext, dropSummaryRows } from './learning-context';
-import { estimateManDaysFromBreakdown } from './labor-yield';
+import { estimateManDaysFromBreakdown, yieldsWithConfig } from './labor-yield';
 import { templatePrompt, sanitizeTemplate, validateTemplate, renderTemplate, buildTemplateData, usedPlaceholders, PLACEHOLDERS } from './estimate-template';
 import { importOcrResultCore } from './ocr-import';
 
@@ -1268,7 +1268,7 @@ function checkManDaysAgainstYield(result: any, context: string): string | null {
   const total = Number(result?.totalManDays) || 0;
   if (!(total > 0)) return null;
 
-  const check = estimateManDaysFromBreakdown(result?.breakdown || []);
+  const check = estimateManDaysFromBreakdown(result?.breakdown || [], yieldsWithConfig(loadApiConfig()));
   if (check.rows.length === 0) return null;         // 歩掛を当てられる行が無い
   if (!(check.low > 0)) return null;
 

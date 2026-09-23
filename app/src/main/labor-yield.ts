@@ -62,6 +62,32 @@ export const LABOR_YIELDS: YieldRule[] = [
   { match: /感知器|警報器/, unit: '個', perManDayLow: 2, perManDayHigh: 3.3, label: '感知器取付' },
 ];
 
+/**
+ * 会社が自分で足した歩掛を、組み込みの前に差し込む。
+ * 業種固有のもの（遮熱シートの㎡/人日など）は、こちらに入れてもらう。
+ * 組み込みと同じ品名に当たる場合は、**会社の値が勝つ**（先に評価されるため）。
+ *
+ * cfg.laborYields = [{ keyword: '遮熱シート', unit: '㎡', low: 40, high: 60, label: '遮熱シート施工' }]
+ *   low/high は「1人日あたりの数量」。low が遅い側、high が早い側。
+ */
+export function yieldsWithConfig(cfg: any): YieldRule[] {
+  const custom: YieldRule[] = [];
+  for (const r of Array.isArray(cfg?.laborYields) ? cfg.laborYields : []) {
+    const kw = String(r?.keyword || '').trim();
+    const unit = String(r?.unit || '').trim();
+    const low = Number(r?.low), high = Number(r?.high);
+    if (!kw || !unit || !(low > 0) || !(high > 0)) continue;
+    let match: RegExp;
+    try { match = new RegExp(kw); } catch (_) { continue; }   // 正規表現として壊れていたら無視
+    custom.push({
+      match, unit: unit as YieldRule['unit'],
+      perManDayLow: Math.min(low, high), perManDayHigh: Math.max(low, high),
+      label: String(r?.label || kw),
+    });
+  }
+  return [...custom, ...LABOR_YIELDS];
+}
+
 export type LaborCheck = {
   /** 歩掛から出した必要人工の下限・上限 */
   low: number;
@@ -76,7 +102,7 @@ export type LaborCheck = {
  * 内訳（breakdown）から、必要な人工の目安レンジを出す。
  * 歩掛が分かる行だけを足すので、**これは下限の目安**（全部は見られない）。
  */
-export function estimateManDaysFromBreakdown(breakdown: any[]): LaborCheck {
+export function estimateManDaysFromBreakdown(breakdown: any[], rules: YieldRule[] = LABOR_YIELDS): LaborCheck {
   const rows: LaborCheck['rows'] = [];
   let low = 0, high = 0, skipped = 0;
 
@@ -86,7 +112,7 @@ export function estimateManDaysFromBreakdown(breakdown: any[]): LaborCheck {
     const unit = String(b?.unit || '').trim().replace(/m2|m²/i, '㎡');
     if (!name || !(qty > 0) || !unit) { skipped++; continue; }
 
-    const rule = LABOR_YIELDS.find((r) =>
+    const rule = rules.find((r) =>
       r.unit === unit && r.match.test(name) && !(r.exclude && r.exclude.test(name)));
     if (!rule) { skipped++; continue; }
 

@@ -296,6 +296,8 @@ export default function SettingsPage() {
         </p>
       </div>
 
+      <LaborYieldCard config={config} setConfig={setConfig} />
+
       <EstimateTemplateCard config={config} setConfig={setConfig} />
 
       <div className="card" style={{ border: '2px solid #e67e22' }}>
@@ -1379,6 +1381,79 @@ function AuditLog() {
 // ── 機密入力の共通UI ──
 // 値は画面に一切出さない（config:load が機密を返さないため、そもそも取得できない）。
 // 空欄のまま保存＝維持、「解除」＝明示削除。
+// 歩掛（この数量なら何人工か）。御社の実際の速さを入れてもらうための欄。
+// 組み込みの歩掛（クロス25〜35㎡/人日など）は業界の標準値で、会社ごとの速さは入っていない。
+// ここに入れた行は組み込みより優先される。遮熱シートのような業種固有の工種もここで足せる。
+function LaborYieldCard({ config, setConfig }: { config: any; setConfig: (c: any) => void }) {
+  const rows: any[] = Array.isArray(config.laborYields) ? config.laborYields : [];
+  const [msg, setMsg] = useState('');
+
+  const persist = async (next: any[]) => {
+    const cfg = { ...config, laborYields: next };
+    setConfig(cfg);
+    await (window as any).api.saveConfig(cfg);
+    setMsg('保存しました');
+    setTimeout(() => setMsg(''), 2000);
+  };
+  const update = (i: number, patch: any) => persist(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const add = () => persist([...rows, { keyword: '', unit: '㎡', low: 0, high: 0, label: '' }]);
+  const remove = (i: number) => persist(rows.filter((_, j) => j !== i));
+
+  return (
+    <div className="card" style={{ border: '2px solid #c2410c' }}>
+      <h3 style={{ marginBottom: 12 }}>👷 歩掛（人工の目安）</h3>
+      <p style={{ fontSize: 13, color: '#666', marginBottom: 12, lineHeight: 1.9 }}>
+        「この数量なら何人工か」の目安です。AIが出した人工がここから大きく外れると、<strong>見積の画面で注意が出ます</strong>
+        （数字を勝手に書き換えることはしません）。<br />
+        クロス・ボード・塗装・足場・解体・電気などは<strong>業界の標準値が最初から入っています</strong>が、
+        <strong>御社の実際の速さ</strong>や、標準値に無い工種（遮熱シート等）はここに足してください。<strong>ここに入れた行が優先されます。</strong>
+      </p>
+
+      {rows.length === 0 && (
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>
+          まだ登録がありません。組み込みの標準値だけで見ています。
+        </div>
+      )}
+
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: '8px 0', borderBottom: '1px dashed #eee' }}>
+          <input
+            type="text" value={r.keyword || ''} placeholder="品名（例: 遮熱シート）"
+            onChange={e => update(i, { keyword: e.target.value })}
+            style={{ flex: '1 1 10rem', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: 13 }}
+          />
+          <select value={r.unit || '㎡'} onChange={e => update(i, { unit: e.target.value })}
+            style={{ padding: '6px 8px', fontSize: 13 }}>
+            {['㎡', 'm', '箇所', '台', '個', 'm3', '坪'].map(u => <option key={u} value={u}>{u}</option>)}
+          </select>
+          <span style={{ fontSize: 12, color: '#64748b' }}>1人日あたり</span>
+          <input type="number" min={0} step="0.1" value={r.low ?? ''} placeholder="遅い"
+            onChange={e => update(i, { low: Number(e.target.value) || 0 })}
+            style={{ width: 70, padding: '6px 8px', textAlign: 'right', fontSize: 13 }} />
+          <span style={{ fontSize: 12, color: '#64748b' }}>〜</span>
+          <input type="number" min={0} step="0.1" value={r.high ?? ''} placeholder="速い"
+            onChange={e => update(i, { high: Number(e.target.value) || 0 })}
+            style={{ width: 70, padding: '6px 8px', textAlign: 'right', fontSize: 13 }} />
+          <span style={{ fontSize: 12, color: '#64748b' }}>{r.unit || '㎡'}</span>
+          <button className="btn btn-sm" style={{ color: '#c0392b' }} onClick={() => remove(i)}>削除</button>
+        </div>
+      ))}
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 12 }}>
+        <button className="btn btn-secondary btn-sm" onClick={add}>＋ 工種を足す</button>
+        {msg && <span style={{ color: '#27ae60', fontSize: 13 }}>✓ {msg}</span>}
+      </div>
+
+      <p style={{ fontSize: 12, color: '#888', marginTop: 12, lineHeight: 1.9 }}>
+        例：「遮熱シート ㎡ 40〜60」と入れると、500㎡の工事で <strong>8.3〜12.5人工</strong> が目安になり、
+        見積の人工がそれを大きく下回ると注意が出ます。<br />
+        <strong>職人さんに「この量なら何人で何日？」と聞いた数字をそのまま入れてください。</strong>
+        品名は、見積の内訳に出てくる言葉と一致していれば拾えます。
+      </p>
+    </div>
+  );
+}
+
 // 見積書の様式。お客様が普段使っている見積書のPDFを1回読み込ませると、
 // 以後の見積書がその様式（罫線・並び・見出しの言葉・社判の位置）で出るようになる。
 // ★読み取りはAIだが、出力のたびにAIを呼ぶわけではない。1回作った様式を使い回す。
