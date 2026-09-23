@@ -545,6 +545,59 @@ function recomputeBaseboards(takeoff: any, corridorWidth: number, factor: number
   return fixed;
 }
 
+// ── 寸法から面積を出す（読むのはAI、掛け算は機械）────────────────────
+//
+// 図面に面積が印字されていない室でも、**寸法線と縮尺があれば面積は計算で出せる**。
+// 実測（老人ホーム S=1/200）では、AIが「解像度の関係で読めない」として
+// 脱衣室・機械浴室・玄関を落としていたが、通り芯の寸法は図面に入っている。
+// 読み取り（寸法）と計算（掛け算）を分ければ、計算のぶんは必ず合う。
+
+/** 「2,850×4,575」「2.85 × 4.575m」のような寸法を [幅m, 奥行m] にする */
+function parseDims(text: any): [number, number] | null {
+  const s = String(text || '').replace(/[,，]/g, '').normalize('NFKC');
+  const m = s.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:mm|m)?\s*[×xX*]\s*([0-9]+(?:\.[0-9]+)?)\s*(?:mm|m)?/);
+  if (!m) return null;
+  let w = Number(m[1]), d = Number(m[2]);
+  if (!(w > 0) || !(d > 0)) return null;
+  if (w > 100) w = w / 1000;            // mm表記
+  if (d > 100) d = d / 1000;
+  if (w > 200 || d > 200) return null;  // 桁違いは信じない
+  return [w, d];
+}
+
+/**
+ * 床の行のうち、
+ *   ① 数量が空で、寸法が読めている行 → 機械が面積を計算して埋める（事実からの計算＝推測ではない）
+ *   ② 数量も寸法もある行 → 機械計算と1%以上ずれていたら警告（どちらが正しいかは人が決める）
+ * を処理する。寸法が無い行には触らない。
+ */
+function fillAreasFromDims(takeoff: any): { filled: number; mismatches: string[] } {
+  const items: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
+  const mismatches: string[] = [];
+  let filled = 0;
+
+  for (const it of items) {
+    if (!/^(㎡|m2|m²)$/.test(String(it.unit || '').trim())) continue;
+    const dims = parseDims(it.dimensions) || parseDims(it.formula);
+    if (!dims) continue;
+    const area = roundQty(dims[0] * dims[1]);
+    if (!(area > 0)) continue;
+
+    const q = Number(it.quantity);
+    if (!(q > 0)) {
+      it.quantity = area;
+      it.lossRate = Number(it.lossRate) || 0;
+      it.quantityWithLoss = roundQty(area * (1 + it.lossRate));
+      it.formula = `${dims[0]}×${dims[1]}=${area}㎡（寸法から アプリが計算）`;
+      it.confidence = it.confidence || '中';
+      filled++;
+    } else if (Math.abs(area - q) / q > 0.01) {
+      mismatches.push(`${it.name || '名称なし'}（寸法 ${dims[0]}×${dims[1]}＝${area}㎡ に対し、表は ${q}㎡）`);
+    }
+  }
+  return { filled, mismatches };
+}
+
 /** 「8.19×6.37=52.17」のような式を計算する。数字と四則演算だけの単純な式に限る */
 function evalSimpleFormula(formula: any): number | null {
   const raw = String(formula || '');
@@ -8102,6 +8155,14 @@ ${String(data.repeats).trim()}
 3. **単位はmm表記が基本**。8,190 は 8.19m。桁を間違えるな（拾い出しで一番多い事故）。
 4. **すべての行に formula（計算式）を数字で書け**。人が電卓で追える式でなければ、その行は出すな。
    例: "8.19×6.37=52.17"、"(8.19+6.37)×2×2.8=81.5"、"1F 12箇所+2F 8箇所=20"
+4-2. ★★**面積が印字されていない室は、寸法を読め。面積を諦めるな。**★★
+   縮尺と寸法線がある図面なら、面積は計算で出せる。**掛け算はアプリがやる**ので、お前は
+   **dimensions に「幅×奥行」を図面の表記どおり**（例 "2,850×4,575"）入れろ。単位はmmでもmでもよい。
+   ★面積が印字されている室は、これまでどおり**印字された数字をそのまま使え**（そちらが正）。
+   ★寸法も面積も読めない室だけを unreadable に回せ。「解像度が低い」で諦める前に、
+     通り芯の寸法（例 2,850／4,575）から出せないかを必ず確かめろ。
+   ★**建物の外形（通り芯の総寸法）も必ず読んで building に書け。**延床が分からないと
+     差引きが出せず、実測では「47.28−265.17＝マイナス」という壊れた差引きが出た。
 5. **推測で数量を作るな**。図面に写っていない・寸法が無い・別図が要る場合は items に入れず、必ず unreadable に
    「何が読めないか」と「どの図面があれば拾えるか」をセットで書け（例: "屋根勾配が断面図に無い。矩計図があれば実面積を出せます"）。
 6. **二重計上の禁止**。同じ部位を平面図と立面図の両方から拾って2行にするな。1部位1行にまとめ、source に両方書け。
@@ -8406,6 +8467,19 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
     });
 
     // ★機械側の検算。合わないところを指摘するだけで、数量は作らない。
+    // ★面積が印字されていない室でも、寸法が読めていれば機械が面積を計算する
+    //   （読むのはAI、掛け算は機械。実測で「読めない」と落とされた室を救うため）。
+    const dimResult = fillAreasFromDims(takeoff);
+    if (dimResult.filled > 0 || dimResult.mismatches.length > 0) {
+      takeoff.warnings = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
+      if (dimResult.filled > 0) {
+        takeoff.warnings.push(`${dimResult.filled}行は、数量が空でしたが図面の寸法が読めていたので、アプリが面積を計算して埋めました（例: 2.85×4.575=13.03㎡）。`);
+      }
+      if (dimResult.mismatches.length > 0) {
+        takeoff.warnings.unshift(`★寸法から計算した面積と、表の数量が食い違う行が${dimResult.mismatches.length}件あります: ${dimResult.mismatches.slice(0, 4).join(' / ')}${dimResult.mismatches.length > 4 ? ' ほか' : ''}。どちらが正しいかご確認ください。`);
+      }
+    }
+
     // ★幅木は御社の決めごと（壁の延長 × 係数）で機械が計算する。AIの計算は使わない。
     //   天井高は、依頼文・図面注記に書かれていればそれを、無ければ設定値を使う。
     const cw = Number(F.corridorWidth) > 0 ? Number(F.corridorWidth) : 1.8;

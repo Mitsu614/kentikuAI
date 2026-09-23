@@ -109,9 +109,15 @@ function buildContent(spec) {
   const isPdf = path.extname(spec.file).toLowerCase() === '.pdf';
   const b64 = buf.toString('base64');
   const content = [{ type: 'text', text: `【資料：${path.basename(spec.file)}】` }];
+  // ★中身（マジックバイト）で判定する。本番 main.ts の detectMediaType と同じ考え方。
+  //   拡張子は嘘をつく（.jpg という名前のWebPが実際にあり、APIが400を返した）。
+  const media = buf[0] === 0x89 ? 'image/png'
+    : buf[0] === 0x47 ? 'image/gif'
+    : (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') ? 'image/webp'
+    : 'image/jpeg';
   content.push(isPdf
     ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
-    : { type: 'image', source: { type: 'base64', media_type: buf[0] === 0x89 ? 'image/png' : 'image/jpeg', data: b64 } });
+    : { type: 'image', source: { type: 'base64', media_type: media, data: b64 } });
   // 差し込む中身（面積セクション・対象・工事内容・縮尺）の組み立ては context.js に集約。
   // ここで書き写すと本番とズレる（実際にズレていた）。
   content.push({ type: "text", text: fillPrompt(PROMPT, spec) });
@@ -119,13 +125,22 @@ function buildContent(spec) {
   return content;
 }
 
+// モデルと thinking は、試すときだけ差し替える（既定は本番と同じ sonnet-4-6・thinking なし）。
+//   --model=claude-opus-5   … モデルを変える
+//   --thinking=8000         … 考える時間を与える（temperature は送れないので外す）
+const MODEL = (process.argv.find((a) => a.startsWith('--model=')) || '').split('=')[1] || 'claude-sonnet-4-6';
+const THINK = Number((process.argv.find((a) => a.startsWith('--thinking=')) || '').split('=')[1] || 0);
+
 async function runOnce(client, spec) {
   const content = buildContent(spec);
-  const res = await client.messages.stream({
-    model: 'claude-sonnet-4-6', max_tokens: 64000, temperature: 0,
+  const params = {
+    model: MODEL, max_tokens: 64000,
     system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
     messages: [{ role: 'user', content }],
-  }).finalMessage();
+  };
+  if (THINK > 0) params.thinking = { type: 'enabled', budget_tokens: THINK };
+  else params.temperature = 0;
+  const res = await client.messages.stream(params).finalMessage();
   const text = res.content.filter((c) => c.type === 'text').map((c) => c.text).join('');
   return { json: parseJson(text), truncated: res.stop_reason === 'max_tokens', len: text.length };
 }
