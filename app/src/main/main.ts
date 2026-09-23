@@ -10,6 +10,7 @@ import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 import { buildLearningContext, dropSummaryRows } from './learning-context';
+import { estimateManDaysFromBreakdown } from './labor-yield';
 import { templatePrompt, sanitizeTemplate, validateTemplate, renderTemplate, buildTemplateData, usedPlaceholders, PLACEHOLDERS } from './estimate-template';
 import { importOcrResultCore } from './ocr-import';
 
@@ -1252,6 +1253,40 @@ function enforceHeatshieldQuantity(result: any, context: string): string[] {
 //   本当に人件費が妥当かは、歩掛（㎡/人日）の正解データが貯まるまで機械では判定できない。
 // ±10%。現場条件のブレを許すための値ではない。人件費も人工もAI自身が出した数字なので、
 // 本来は一致するはず。丸め誤差ぶんだけ見る。±30%だと139万円の不足を素通りした（実測）。
+/**
+ * 人工そのものが妥当かを、歩掛（数量→人工）から見る。
+ *
+ * ★checkLaborAgainstManDays の限界を埋めるための検算。
+ *   あちらは「人件費 ＝ Σ(人工×日額)」の辻褄しか見ないので、
+ *   **AIが人工のほうも小さく書けば一致してすり抜ける**（実例: 約200万円の過少）。
+ *   こちらは内訳の数量から「この量なら何人工か」を機械が出して突き合わせる。
+ *
+ * ★指摘だけで、人工も金額も書き換えない。歩掛は現場条件で1.5倍くらい平気で動くため、
+ *   機械が正解を名乗るべきではない（[[推測で数量を作らない]]と同じ線引き）。
+ */
+function checkManDaysAgainstYield(result: any, context: string): string | null {
+  const total = Number(result?.totalManDays) || 0;
+  if (!(total > 0)) return null;
+
+  const check = estimateManDaysFromBreakdown(result?.breakdown || []);
+  if (check.rows.length === 0) return null;         // 歩掛を当てられる行が無い
+  if (!(check.low > 0)) return null;
+
+  // 歩掛で見られたのは一部の行だけ。**下限を割っているときだけ**言う
+  //   （見られない行のぶん、実際の人工は必ずこれより多くなるため、
+  //     「多すぎる」の判定はできない）。2割の余裕を見てから鳴らす。
+  if (total >= check.low * 0.8) return null;
+
+  const worst = [...check.rows].sort((a, b) => b.low - a.low).slice(0, 3)
+    .map((r) => `${r.label} ${r.quantity}${r.unit}→${r.low}〜${r.high}人工`)
+    .join(' / ');
+  const msg = `人工が少なすぎる可能性があります。内訳の数量から歩掛で見ると **${check.low}〜${check.high}人工**`
+    + `（内訳の一部${check.rows.length}行ぶんだけの計算）に対し、見積は **${total}人工** です。`
+    + `内訳の目安: ${worst}。人件費が過少だと、そのまま利益が消えます。${NO_CHANGE_NOTE}`;
+  console.warn(`[${context}] 人工が歩掛の下限を下回る → ${msg}`);
+  return msg;
+}
+
 const LABOR_TOLERANCE = 0.1;
 function checkLaborAgainstManDays(result: any, context: string): string | null {
   const rows = Array.isArray(result?.manDaysBreakdown) ? result.manDaysBreakdown : [];
@@ -1708,6 +1743,9 @@ function reconcileEstimateTotal(result: any, context: string, fallbackMarkup = D
 
   const laborWarn = checkLaborAgainstManDays(result, context);
   if (laborWarn) (result.estimateWarnings = result.estimateWarnings || []).push(laborWarn);
+
+  const yieldWarn = checkManDaysAgainstYield(result, context);
+  if (yieldWarn) (result.estimateWarnings = result.estimateWarnings || []).push(yieldWarn);
 
   // 画面の説明文が実態とズレないように、「実際に直した警告」と「見つけただけの警告」を分けて持たせる。
   // 以前は『金額が過大になる誤りは自動で下げました』が無条件で出ており、
