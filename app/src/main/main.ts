@@ -1254,6 +1254,43 @@ function enforceHeatshieldQuantity(result: any, context: string): string[] {
 // ±10%。現場条件のブレを許すための値ではない。人件費も人工もAI自身が出した数字なので、
 // 本来は一致するはず。丸め誤差ぶんだけ見る。±30%だと139万円の不足を素通りした（実測）。
 /**
+ * 登録されている職人の日当を、見積のプロンプトに渡す。
+ *
+ * なぜ要るか: 人件費は「人工 × 日額」で決まる。人工は予測だが、**日額は事実**なので、
+ *   会社が実際に払っている額を使えば、そこはビタ当てになる。
+ *   ところが職人マスタ（workers）に日当が登録されていても、これまで見積に渡っていなかった。
+ *   公的単価（電気工27,000〜32,000円/人日 等）のまま積んでいたので、
+ *   「登録したのに自社の額にならない」状態だった。
+ *
+ * 登録が無ければ空文字を返す（これまでどおり公的単価で積む）。
+ */
+function buildLaborRatePrompt(): string {
+  try {
+    const rows = queryAll(
+      `SELECT role, COUNT(*) AS n, ROUND(AVG(daily_rate)) AS rate, MIN(daily_rate) AS lo, MAX(daily_rate) AS hi
+         FROM workers WHERE tenant_id = ? AND daily_rate > 0 GROUP BY role ORDER BY n DESC`,
+      [getCurrentTenant()],
+    ) as any[];
+    if (!rows || rows.length === 0) return '';
+
+    const lines = rows.map((r) => {
+      const spread = Number(r.lo) !== Number(r.hi)
+        ? `（${Number(r.lo).toLocaleString()}〜${Number(r.hi).toLocaleString()}円・${r.n}名）`
+        : `（${r.n}名）`;
+      return `- ${r.role || '作業員'}: **${Number(r.rate).toLocaleString()}円/人日** ${spread}`;
+    });
+
+    return `\n## ★この会社が実際に払っている日当（公的単価より優先）★\n`
+      + lines.join('\n')
+      + `\n★人件費は「人工 × この日額」で積め。**相場データの労務単価ではなく、ここの金額を使え。**\n`
+      + `★ここに無い職種だけ、相場データの公的単価を使ってよい。その場合は note にどの単価を使ったか書け。\n`
+      + `★manDaysBreakdown の dailyRate にも、ここの金額をそのまま入れろ。\n`;
+  } catch (_) {
+    return '';   // 読めなければ、これまでどおり
+  }
+}
+
+/**
  * 人工そのものが妥当かを、歩掛（数量→人工）から見る。
  *
  * ★checkLaborAgainstManDays の限界を埋めるための検算。
@@ -7588,7 +7625,7 @@ ${(desiredDeadline && String(desiredDeadline).trim()) ? `## ★希望納期・�
   ・詰められる場合: 増員（例 職人◯人→◯人）・残業・応援・材料の急ぎ手配などで「△日に短縮可能」と示し、それに伴う割増費用の概算（応援日当・残業手当・特急手配料等の内訳と合計 約◯円）を書け。
   ・物理的に厳しい場合: 「最短◯日を推奨。1日は乾燥待ち・検査・段取り・安全確保の点で無理」と正直に相談し、無理な短縮が品質不良・事故・赤字につながる旨を職人目線で伝えろ。
 ★本体の見積金額（breakdown・estimatedTotal）は変えるな。短縮に伴う割増は scheduleProposal 内の"別途"提案として書き、本体には混ぜるな。` : ''}
-${droneInfo}${droneCSVInfo}${industryPrompt}
+${droneInfo}${droneCSVInfo}${industryPrompt}${buildLaborRatePrompt()}
 ## ★★★ 最重要ルール（絶対に守れ）★★★
 1. breakdownには「ユーザーが依頼した工事内容」に直接関係する項目だけを入れろ
 2. ユーザーが「キッチン交換」としか書いていないなら、キッチン関連の材料・施工費だけをbreakdownに入れろ。外壁・屋根・耐震・浴室など依頼されていない工事は絶対にbreakdownに入れるな
