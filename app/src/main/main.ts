@@ -454,13 +454,26 @@ function roomOf(name: any): string | null {
   const s = String(name || '').normalize('NFKC');
   const i = s.search(/[―—−\-]\s*/);
   if (i < 0) return null;
-  const r = s.slice(i)
-    .replace(/^[―—−\-]\s*/, '')
-    .replace(/[（(][^）)]*[）)]/g, '')      // （ユニットA 10室）などの補足
-    .replace(/[×x]\s*[0-9]+\s*室?/g, '')   // ×2室
-    .replace(/\s+/g, '')
-    .trim();
+  // ★括弧書きを落とすな。「トイレ（廊下横②）」「トイレ（休憩横）」は別の部屋で、
+  //   落とすと全部「トイレ」になり、複数室の床面積が1室に足し込まれる（実測で発生）。
+  const r = s.slice(i).replace(/^[―—−\-]\s*/, '').replace(/\s+/g, '').trim();
   return r || null;
+}
+
+/**
+ * その行が何室ぶんか。「居室1〜10（ユニットA 10室）」なら10、「脱衣（UB用）×2室」なら2。
+ * ★これを見ないと、10室ぶんの床面積を1室として周長を出してしまい、幅木が1/3になる
+ *   （実測: 居室1〜10 で AI 128.4m に対し機械が40.6m を出した）。
+ */
+function roomCount(name: any): number {
+  const s = String(name || '').normalize('NFKC');
+  const m1 = s.match(/([0-9]+)\s*室/);
+  if (m1) { const n = Number(m1[1]); if (n >= 1 && n <= 200) return n; }
+  const m2 = s.match(/([0-9]+)\s*[〜~ー−\-]\s*([0-9]+)/);
+  if (m2) { const n = Number(m2[2]) - Number(m2[1]) + 1; if (n >= 1 && n <= 200) return n; }
+  const m3 = s.match(/[×x]\s*([0-9]+)/);
+  if (m3) { const n = Number(m3[1]); if (n >= 1 && n <= 200) return n; }
+  return 1;
 }
 
 /** 細長い空間（廊下・ホール・階段まわり）かどうか。周長の出し方が変わる */
@@ -476,11 +489,14 @@ function isCorridorLike(name: any): boolean {
  *   ★実測でこの按分が一番当たった（全部を÷有効幅にすると幅木が+19%、
  *     全部を4√にすると−27%。按分なら −1%／−7%）。
  */
-function perimeterFromArea(area: number, corridorLike: boolean, corridorWidth: number): number {
+function perimeterFromArea(area: number, corridorLike: boolean, corridorWidth: number, rooms = 1): number {
   if (!(area > 0)) return 0;
-  if (!corridorLike) return 4 * Math.sqrt(area);
-  const w = corridorWidth > 0 ? corridorWidth : 1.8;
-  return ((area / 2) / w) * 2 + 4 * Math.sqrt(area / 2);
+  const n = rooms >= 1 ? Math.floor(rooms) : 1;
+  const a = area / n;                                   // 1室あたりの面積
+  const one = !corridorLike
+    ? 4 * Math.sqrt(a)
+    : ((a / 2) / (corridorWidth > 0 ? corridorWidth : 1.8)) * 2 + 4 * Math.sqrt(a / 2);
+  return one * n;                                       // 部屋数ぶん足す
 }
 
 /**
@@ -511,7 +527,8 @@ function recomputeBaseboards(takeoff: any, corridorWidth: number, factor: number
     const area = room ? floorByRoom.get(room) : undefined;
     if (!(area! > 0)) continue;                   // 対応する床が無い行は触らない
     const corr = isCorridorLike(it.name) || isCorridorLike(room);
-    const peri = perimeterFromArea(area as number, corr, corridorWidth);
+    const rooms = roomCount(it.name);
+    const peri = perimeterFromArea(area as number, corr, corridorWidth, rooms);
     const length = roundQty(peri * factor);
     if (!(length > 0)) continue;
     const before = Number(it.quantity) || 0;
@@ -520,8 +537,8 @@ function recomputeBaseboards(takeoff: any, corridorWidth: number, factor: number
     it.lossRate = Number(it.lossRate) || 0;
     it.quantityWithLoss = roundQty(length * (1 + it.lossRate));
     it.formula = corr
-      ? `床 ${roundQty(area as number)}㎡ → 周長 ${roundQty(peri)}m（半分を幅${corridorWidth}mの通路、半分をまとまった空間として算出）× ${factor} = ${length}m（アプリが計算）`
-      : `床 ${roundQty(area as number)}㎡ → 周長 4×√${roundQty(area as number)} = ${roundQty(peri)}m × ${factor} = ${length}m（アプリが計算）`;
+      ? `床 ${roundQty(area as number)}㎡${rooms > 1 ? '（' + rooms + '室）' : ''} → 周長 ${roundQty(peri)}m（半分を幅${corridorWidth}mの通路、半分をまとまった空間として算出）× ${factor} = ${length}m（アプリが計算）`
+      : `床 ${roundQty(area as number)}㎡${rooms > 1 ? '（' + rooms + '室 → 1室あたり ' + roundQty((area as number) / rooms) + '㎡）' : ''} → 周長 ${roundQty(peri)}m × ${factor} = ${length}m（アプリが計算）`;
     it.note = `${it.note ? it.note + ' / ' : ''}幅木の長さはアプリが床面積から計算しています（AIの値 ${roundQty(before)}m は使っていません）`;
     fixed++;
   }
