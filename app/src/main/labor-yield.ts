@@ -18,7 +18,7 @@ export type YieldRule = {
   /** 内訳の品名がこれに当たれば、この歩掛を使う */
   match: RegExp;
   /** この単位の行だけを見る */
-  unit: '㎡' | 'm' | '箇所' | '台' | '個' | 'm3' | '坪';
+  unit: '㎡' | 'm' | '箇所' | '台' | '個' | 'm3' | '坪' | '式';
   /** 1人工でこなせる数量の範囲（多いほど早い）。例: クロス 25〜35㎡/人日 */
   perManDayLow: number;
   perManDayHigh: number;
@@ -69,6 +69,13 @@ export const LABOR_YIELDS: YieldRule[] = [
  *
  * cfg.laborYields = [{ keyword: '遮熱シート', unit: '㎡', low: 40, high: 60, label: '遮熱シート施工' }]
  *   low/high は「1人日あたりの数量」。low が遅い側、high が早い側。
+ *
+ * 大工のように「1坪あたり◯人工」「1式で◯人工」と数える職種もあるので、
+ * mode: 'perUnit' のときは low/high を「1単位あたりの人工」として受け取り、ここで逆数にする。
+ *   { keyword: '造作、木工事', unit: '式', mode: 'perUnit', low: 5, high: 8 } → 1式あたり5〜8人工
+ *   （perUnit の low/high は少ない＝速い側、多い＝遅い側。どちらの順で入っていても大小で決める）
+ *
+ * keyword は「、」「,」「|」や空白で区切れば複数の言い方に当たる（造作・木工事・下地組 など）。
  */
 export function yieldsWithConfig(cfg: any): YieldRule[] {
   const custom: YieldRule[] = [];
@@ -77,12 +84,19 @@ export function yieldsWithConfig(cfg: any): YieldRule[] {
     const unit = String(r?.unit || '').trim();
     const low = Number(r?.low), high = Number(r?.high);
     if (!kw || !unit || !(low > 0) || !(high > 0)) continue;
-    let match: RegExp;
-    try { match = new RegExp(kw); } catch (_) { continue; }   // 正規表現として壊れていたら無視
+    // 入力は正規表現ではなく「言葉」として扱う（( や + を含む品名でも壊れない）
+    const words = kw.split(/[、,，|｜\s]+/).map((w) => w.trim()).filter(Boolean);
+    if (words.length === 0) continue;
+    const match = new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'));
+
+    // 1人日あたりの数量にそろえる（perUnit は「1単位あたりの人工」なので逆数）
+    const perUnit = r?.mode === 'perUnit';
+    const a = perUnit ? 1 / low : low;
+    const b = perUnit ? 1 / high : high;
     custom.push({
       match, unit: unit as YieldRule['unit'],
-      perManDayLow: Math.min(low, high), perManDayHigh: Math.max(low, high),
-      label: String(r?.label || kw),
+      perManDayLow: Math.min(a, b), perManDayHigh: Math.max(a, b),
+      label: String(r?.label || words.join('・')),
     });
   }
   return [...custom, ...LABOR_YIELDS];
@@ -109,7 +123,7 @@ export function estimateManDaysFromBreakdown(breakdown: any[], rules: YieldRule[
   for (const b of Array.isArray(breakdown) ? breakdown : []) {
     const name = String(b?.item || b?.name || '');
     const qty = Number(b?.quantity) || 0;
-    const unit = String(b?.unit || '').trim().replace(/m2|m²/i, '㎡');
+    const unit = String(b?.unit || '').trim().replace(/m2|m²/i, '㎡').replace(/^一式$/, '式');
     if (!name || !(qty > 0) || !unit) { skipped++; continue; }
 
     const rule = rules.find((r) =>

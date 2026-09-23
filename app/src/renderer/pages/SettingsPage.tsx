@@ -1418,23 +1418,29 @@ function LaborYieldCard({ config, setConfig }: { config: any; setConfig: (c: any
       {rows.map((r, i) => (
         <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', padding: '8px 0', borderBottom: '1px dashed #eee' }}>
           <input
-            type="text" value={r.keyword || ''} placeholder="品名（例: 遮熱シート）"
+            type="text" value={r.keyword || ''} placeholder="品名（例: 遮熱シート / 造作、木工事）"
             onChange={e => update(i, { keyword: e.target.value })}
             style={{ flex: '1 1 10rem', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: 13 }}
           />
           <select value={r.unit || '㎡'} onChange={e => update(i, { unit: e.target.value })}
             style={{ padding: '6px 8px', fontSize: 13 }}>
-            {['㎡', 'm', '箇所', '台', '個', 'm3', '坪'].map(u => <option key={u} value={u}>{u}</option>)}
+            {['㎡', 'm', '箇所', '台', '個', 'm3', '坪', '式'].map(u => <option key={u} value={u}>{u}</option>)}
           </select>
-          <span style={{ fontSize: 12, color: '#64748b' }}>1人日あたり</span>
-          <input type="number" min={0} step="0.1" value={r.low ?? ''} placeholder="遅い"
+          {/* 大工は「1坪あたり◯人工」「1式で◯人工」と数えるので、数え方を選べるようにする */}
+          <select value={r.mode === 'perUnit' ? 'perUnit' : 'perManDay'}
+            onChange={e => update(i, { mode: e.target.value })}
+            style={{ padding: '6px 8px', fontSize: 13 }}>
+            <option value="perManDay">1人日で◯{r.unit || '㎡'}</option>
+            <option value="perUnit">1{r.unit || '㎡'}あたり◯人工</option>
+          </select>
+          <input type="number" min={0} step="0.1" value={r.low ?? ''} placeholder={r.mode === 'perUnit' ? '少ない' : '遅い'}
             onChange={e => update(i, { low: Number(e.target.value) || 0 })}
             style={{ width: 70, padding: '6px 8px', textAlign: 'right', fontSize: 13 }} />
           <span style={{ fontSize: 12, color: '#64748b' }}>〜</span>
-          <input type="number" min={0} step="0.1" value={r.high ?? ''} placeholder="速い"
+          <input type="number" min={0} step="0.1" value={r.high ?? ''} placeholder={r.mode === 'perUnit' ? '多い' : '速い'}
             onChange={e => update(i, { high: Number(e.target.value) || 0 })}
             style={{ width: 70, padding: '6px 8px', textAlign: 'right', fontSize: 13 }} />
-          <span style={{ fontSize: 12, color: '#64748b' }}>{r.unit || '㎡'}</span>
+          <span style={{ fontSize: 12, color: '#64748b' }}>{r.mode === 'perUnit' ? '人工' : (r.unit || '㎡')}</span>
           <button className="btn btn-sm" style={{ color: '#c0392b' }} onClick={() => remove(i)}>削除</button>
         </div>
       ))}
@@ -1447,6 +1453,8 @@ function LaborYieldCard({ config, setConfig }: { config: any; setConfig: (c: any
       <p style={{ fontSize: 12, color: '#888', marginTop: 12, lineHeight: 1.9 }}>
         例：「遮熱シート ㎡ 40〜60」と入れると、500㎡の工事で <strong>8.3〜12.5人工</strong> が目安になり、
         見積の人工がそれを大きく下回ると注意が出ます。<br />
+        大工のように「1坪あたり何人工」「一式で何人工」と数える場合は、数え方を<strong>「1◯あたり◯人工」</strong>に切り替えてください
+        （例：「造作、木工事、下地組 ／ 式 ／ 1式あたり 5〜8人工」）。品名は「、」で区切ると複数の言い方に当たります。<br />
         <strong>職人さんに「この量なら何人で何日？」と聞いた数字をそのまま入れてください。</strong>
         品名は、見積の内訳に出てくる言葉と一致していれば拾えます。
       </p>
