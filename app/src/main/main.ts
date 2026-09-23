@@ -445,50 +445,84 @@ function extractCeilingHeight(text: string): number | null {
   return v >= 1.8 && v <= 6 ? v : null; // 現実的な範囲だけ信じる
 }
 
-/** 室名を取り出す（「幅木 ― 居室1」→「居室1」）。取れなければ null */
+/**
+ * 室名を取り出して、突き合わせ用にそろえる（「幅木 ― 居室1〜10（ユニットA 10室）」→「居室1〜10」）。
+ * 床の行と幅木の行で、同じ室が違う書き方になることがあるので、括弧書き・空白・
+ * 「×2室」のような数え書きを落としてから比べる。取れなければ null。
+ */
 function roomOf(name: any): string | null {
-  const s = String(name || '');
+  const s = String(name || '').normalize('NFKC');
   const i = s.search(/[―—−\-]\s*/);
   if (i < 0) return null;
-  const r = s.slice(i).replace(/^[―—−\-]\s*/, '').trim();
+  const r = s.slice(i)
+    .replace(/^[―—−\-]\s*/, '')
+    .replace(/[（(][^）)]*[）)]/g, '')      // （ユニットA 10室）などの補足
+    .replace(/[×x]\s*[0-9]+\s*室?/g, '')   // ×2室
+    .replace(/\s+/g, '')
+    .trim();
   return r || null;
 }
 
-/**
- * 幅木の行を、壁の面積から計算し直す。
- * 室名が突き合う行だけを直し、**対応する壁が見つからない行は触らない**（推測しない）。
- */
-function recomputeBaseboards(takeoff: any, ceilingHeight: number, factor: number): number {
-  const items: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
-  if (!(ceilingHeight > 0) || !(factor > 0)) return 0;
+/** 細長い空間（廊下・ホール・階段まわり）かどうか。周長の出し方が変わる */
+function isCorridorLike(name: any): boolean {
+  return /廊下|ホール|通路|階段|EV|エレベータ|玄関/.test(String(name || ''));
+}
 
-  // 室ごとの壁の面積（仕上げの㎡）
-  const wallByRoom = new Map<string, number>();
+/**
+ * 室の床面積から、その室の壁の延長（周長）を機械的に出す。
+ * - まとまった部屋: 4 × √床面積（正方形に近いとみなす）
+ * - 細長い部分（廊下等）: 半分を「延長 × 2面」（＝面積 ÷ 有効幅 × 2）、
+ *   残り半分をまとまった空間として計算し、足す。
+ *   ★実測でこの按分が一番当たった（全部を÷有効幅にすると幅木が+19%、
+ *     全部を4√にすると−27%。按分なら −1%／−7%）。
+ */
+function perimeterFromArea(area: number, corridorLike: boolean, corridorWidth: number): number {
+  if (!(area > 0)) return 0;
+  if (!corridorLike) return 4 * Math.sqrt(area);
+  const w = corridorWidth > 0 ? corridorWidth : 1.8;
+  return ((area / 2) / w) * 2 + 4 * Math.sqrt(area / 2);
+}
+
+/**
+ * 幅木の行を、**床の面積から**計算し直す。
+ * 壁の面積は使わない（壁自体がAIの概算で、幅木より大きくぶれるため）。
+ * 室名が突き合う行だけを直し、**対応する床が見つからない行は触らない**（推測しない）。
+ */
+function recomputeBaseboards(takeoff: any, corridorWidth: number, factor: number): number {
+  const items: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
+  if (!(factor > 0)) return 0;
+
+  // 室ごとの床面積
+  const floorByRoom = new Map<string, number>();
   for (const it of items) {
-    if (!/壁仕上げ/.test(String(it.name || ''))) continue;
+    if (!/床仕上げ/.test(String(it.name || ''))) continue;
     if (!/^(㎡|m2|m²)$/.test(String(it.unit || '').trim())) continue;
     const room = roomOf(it.name);
     if (!room) continue;
-    wallByRoom.set(room, (wallByRoom.get(room) || 0) + (Number(it.quantity) || 0));
+    floorByRoom.set(room, (floorByRoom.get(room) || 0) + (Number(it.quantity) || 0));
   }
-  if (wallByRoom.size === 0) return 0;
+  if (floorByRoom.size === 0) return 0;
 
   let fixed = 0;
   for (const it of items) {
     if (!/幅木|巾木/.test(String(it.name || ''))) continue;
     if (!/^m$/.test(String(it.unit || '').trim())) continue;
     const room = roomOf(it.name);
-    const wall = room ? wallByRoom.get(room) : undefined;
-    if (!(wall! > 0)) continue;                   // 対応する壁が無い行は触らない
-    const length = roundQty((wall as number) / ceilingHeight * factor);
+    const area = room ? floorByRoom.get(room) : undefined;
+    if (!(area! > 0)) continue;                   // 対応する床が無い行は触らない
+    const corr = isCorridorLike(it.name) || isCorridorLike(room);
+    const peri = perimeterFromArea(area as number, corr, corridorWidth);
+    const length = roundQty(peri * factor);
     if (!(length > 0)) continue;
     const before = Number(it.quantity) || 0;
     if (Math.abs(before - length) / Math.max(length, 1) < 0.001) continue;  // すでに一致
     it.quantity = length;
     it.lossRate = Number(it.lossRate) || 0;
     it.quantityWithLoss = roundQty(length * (1 + it.lossRate));
-    it.formula = `壁 ${roundQty(wall as number)}㎡ ÷ 天井高 ${ceilingHeight}m × ${factor} = ${length}m（アプリが計算）`;
-    it.note = `${it.note ? it.note + ' / ' : ''}幅木の長さはアプリが計算しています（AIの読み取り値 ${roundQty(before)}m は使っていません）`;
+    it.formula = corr
+      ? `床 ${roundQty(area as number)}㎡ → 周長 ${roundQty(peri)}m（半分を幅${corridorWidth}mの通路、半分をまとまった空間として算出）× ${factor} = ${length}m（アプリが計算）`
+      : `床 ${roundQty(area as number)}㎡ → 周長 4×√${roundQty(area as number)} = ${roundQty(peri)}m × ${factor} = ${length}m（アプリが計算）`;
+    it.note = `${it.note ? it.note + ' / ' : ''}幅木の長さはアプリが床面積から計算しています（AIの値 ${roundQty(before)}m は使っていません）`;
     fixed++;
   }
   return fixed;
@@ -1698,6 +1732,7 @@ const TAKEOFF_FACTOR_DEFAULTS = {
   //   機械が一度だけ計算すれば、壁の面積と必ず辻褄が合う。
   //   図面や依頼文に天井高が書いてあれば、そちらが優先。
   ceilingHeight: 2.4,     // 標準の天井高(m)
+  corridorWidth: 1.8,     // 廊下・通路の有効幅(m)。幅木の周長を出すのに使う
   lossBoard: 5,           // ロス率%：板もの・断熱（板状/マット）
   lossSheet: 10,          // ロス率%：クロス・シート
   lossLinear: 5,          // ロス率%：長尺材
@@ -8096,6 +8131,10 @@ ${String(data.repeats).trim()}
   ここを混ぜると、一般配線の単価で集計されて金額が過少になる。
 - **差引きの行も同じ書き方にしろ。**「廊下・ホール等（差引き）」だけでは何の数量か分からない。
   必ず「床仕上げ ― 廊下・ホール等（差引き）」のように**部位名から書き出せ**。
+★★**床・壁・天井・幅木は、同じ室に対して「まったく同じ室名の文字列」を使え。**★★
+  床が「床仕上げ ― 居室1〜10（ユニットA 10室）」なら、幅木も「幅木 ― 居室1〜10（ユニットA 10室）」にしろ。
+  **幅木の長さはアプリが床面積から計算する**ので、室名が食い違うと計算できず、お前の数字がそのまま残る。
+  実測では36行のうち10行しか突き合わず、残りは計算し直せなかった。室名は1字も変えるな。
 - **幅木を part「床」にするな。**幅木は壁の足元なので part は「内壁」、単位は m だ。
   ここを間違えると、幅木の延長(m)が床面積(㎡)に足し込まれて、床が何百㎡も水増しされる。
 11. **同じ数量を二重に出すな。**「居室1〜10」を1行にまとめるのは構わないが、
@@ -8352,12 +8391,11 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
     // ★機械側の検算。合わないところを指摘するだけで、数量は作らない。
     // ★幅木は御社の決めごと（壁の延長 × 係数）で機械が計算する。AIの計算は使わない。
     //   天井高は、依頼文・図面注記に書かれていればそれを、無ければ設定値を使う。
-    const ch = extractCeilingHeight([data?.comment, data?.targets].filter(Boolean).join(' '))
-      || (Number(F.ceilingHeight) > 0 ? Number(F.ceilingHeight) : 2.4);
-    const fixedBaseboards = recomputeBaseboards(takeoff, ch, Number(F.baseboardFactor) || 0.9);
+    const cw = Number(F.corridorWidth) > 0 ? Number(F.corridorWidth) : 1.8;
+    const fixedBaseboards = recomputeBaseboards(takeoff, cw, Number(F.baseboardFactor) || 0.9);
     if (fixedBaseboards > 0) {
       takeoff.warnings = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
-      takeoff.warnings.push(`幅木 ${fixedBaseboards}行は、壁の面積 ÷ 天井高${ch}m × ${Number(F.baseboardFactor) || 0.9} でアプリが計算し直しました（AIに計算させると同じ図面でも数字が動くため）。天井高と係数は設定から変えられます。`);
+      takeoff.warnings.push(`幅木 ${fixedBaseboards}行は、各室の床面積から周長を出し、× ${Number(F.baseboardFactor) || 0.9} でアプリが計算し直しました（AIに計算させると、同じ図面でも数字が動くため）。廊下の有効幅 ${cw}m と係数は、設定から変えられます。`);
     }
 
     verifyTakeoffNumbers(takeoff, extractAreasFromComment([data?.comment, data?.targets].filter(Boolean).join(' ')));
