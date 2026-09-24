@@ -140,9 +140,9 @@ async function main() {
         const lastRun = new Date(runs[0].run_at);
         const daysSinceLastRun = (Date.now() - lastRun.getTime()) / (1000 * 60 * 60 * 24);
         console.log(`  📊 最終学習実行: ${runs[0].run_at} (${Math.round(daysSinceLastRun)}日前) status=${runs[0].status}`);
-        if (daysSinceLastRun > 14) {
-          alerts.push(`学習ループが${Math.round(daysSinceLastRun)}日間実行されていません。GitHub Actionsを確認してください。`);
-        }
+        // 「◯日間実行されていない」は見ない。学習ループは2026-09-09に定期実行を止めた
+        //   （金額はテナント隔離の方針。learning-loop.yml の冒頭参照）ので、止まっているのが正常。
+        //   手で回したときに失敗していないかだけ見る。
         if (runs[0].status !== 'success') {
           alerts.push(`最終学習ループのステータスが「${runs[0].status}」です。エラーを確認してください。`);
         }
@@ -178,9 +178,9 @@ async function main() {
       '  手順: 上記URLにログイン → 「Upgrade to Pro」→ カード情報入力 → 月$25',
       '  Free: DB 500MB / Pro: DB 8GB',
       '',
-      '■ GitHub Actions（学習ループ停止の場合）',
+      '■ GitHub Actions（学習ループが失敗した場合）',
       '  URL: https://github.com/Mitsu614/kentikuAI/actions/workflows/learning-loop.yml',
-      '  手順: 「Run workflow」ボタンで手動実行。エラーならログを確認',
+      '  手順: ログを確認。※定期実行は2026-09-09に止めてあるので、止まっていること自体は正常',
     ].join('\n');
 
     await sendAlert(`異常検知 ${alerts.length}件`, body);
