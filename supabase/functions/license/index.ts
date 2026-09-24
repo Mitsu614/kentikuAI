@@ -107,6 +107,33 @@ crypto.getRandomValues(b);
 return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+function randomHex(bytes: number): string {
+const b = new Uint8Array(bytes);
+crypto.getRandomValues(b);
+return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256hex(s: string): Promise<string> {
+const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+return Array.from(new Uint8Array(d)).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+// 管理操作の記録。記録に失敗しても操作そのものは止めない（表がまだ無い環境など）。
+async function audit(actor: string, sub: string, company: string | null, detail: unknown) {
+try {
+  await sbInsert({ actor, sub, company_name: company, detail }, "admin_audit");
+} catch (_) { /* noop */ }
+}
+
+// 通知メールに出す操作名
+const ADMIN_SUB_LABEL: Record<string, string> = {
+approve: "承認・プラン設定",
+reject: "却下",
+set_credits: "単位の変更",
+set_active: "利用停止・再開",
+set_seats: "席数の変更",
+};
+
 // 人が読める参加コード（8桁・紛らわしい 0/O/1/I を除外）。中野さんが会社へ伝える用。
 function shortCode(): string {
 const cs = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -653,8 +680,49 @@ try {
 
   // ---- admin: 承認/却下/クレジット設定（管理者シークレット必須） ----
   if (action === "admin") {
-    if (!ADMIN_SECRET || body.admin_secret !== ADMIN_SECRET) return json({ error: "forbidden" }, 403);
+    // 誰の操作かを決める。オーナーは ADMIN_SECRET、それ以外は admin_keys に登録した人ごとの鍵。
+    // 人ごとの鍵は active=false にすれば、その人だけが即座に使えなくなる（オーナーには影響しない）。
     const sub = body.sub;
+    const presented = String(body.admin_secret || "");
+    let actor = "";
+    if (ADMIN_SECRET && presented === ADMIN_SECRET) {
+      actor = "owner";
+    } else if (presented) {
+      try {
+        const keys = await sbGet(`admin_keys?key_hash=eq.${await sha256hex(presented)}&active=eq.true&select=id,name`);
+        if (keys.length) {
+          actor = String(keys[0].name);
+          sbPatch(`admin_keys?id=eq.${keys[0].id}`, { last_used_at: new Date().toISOString() }).catch(() => {});
+        }
+      } catch (_) { /* 表がまだ無い環境では、オーナー以外は通さないだけ */ }
+    }
+    if (!actor) return json({ error: "forbidden" }, 403);
+    const isOwner = actor === "owner";
+
+    // ── 鍵の発行・取消・一覧・操作記録は、オーナーだけ ──
+    if (sub === "issue_key" || sub === "revoke_key" || sub === "list_keys" || sub === "audit") {
+      if (!isOwner) return json({ error: "owner_only" }, 403);
+      if (sub === "issue_key") {
+        const name = String(body.name || "").trim();
+        if (!name || name === "owner") return json({ error: "name required" }, 400);
+        // 鍵は発行したこの1回だけ返す。サーバーにはハッシュしか残らないので、失くしたら取消→再発行。
+        const key = "kbadm_" + randomHex(32);
+        const rows = await sbInsert({ name, key_hash: await sha256hex(key) }, "admin_keys");
+        await audit("owner", "issue_key", null, { name, id: rows[0]?.id });
+        return json({ ok: true, id: rows[0]?.id, name, key });
+      }
+      if (sub === "revoke_key") {
+        const id = Number(body.id);
+        if (!(id > 0)) return json({ error: "id required" }, 400);
+        const rows = await sbPatch(`admin_keys?id=eq.${id}`, { active: false, revoked_at: new Date().toISOString() });
+        await audit("owner", "revoke_key", null, { id, name: rows[0]?.name });
+        return json({ ok: true });
+      }
+      if (sub === "list_keys") {
+        return json({ ok: true, rows: await sbGet("admin_keys?select=id,name,active,created_at,last_used_at,revoked_at&order=created_at.desc") });
+      }
+      return json({ ok: true, rows: await sbGet("admin_audit?select=at,actor,sub,company_name,detail&order=at.desc&limit=200") });
+    }
     // list: 全登録の一覧（company指定不要）。管理ダッシュボード/承認画面用。
     // license_token は返さない（オーナー画面にも不要・漏洩面を最小化）。
     if (sub === "list") {
@@ -679,6 +747,37 @@ try {
     if (!targets.length) return json({ error: "not_found" }, 404);
     if (targets.length > 1) return json({ error: "ambiguous", count: targets.length }, 409);
     const tid = encodeURIComponent(targets[0].id);
+
+    // ここから下は会社の状態を変える操作。必ず記録し、オーナー以外が行ったらオーナーにメールで知らせる。
+    const detail: any = {};
+    for (const k of ["plan", "credits", "max_credits", "max_seats", "active", "message"]) {
+      if (body[k] !== undefined) detail[k] = body[k];
+    }
+    if (!ADMIN_SUB_LABEL[String(sub)]) return json({ error: "unknown sub" }, 400);
+    await audit(actor, String(sub), company, detail);
+    if (!isOwner) {
+      // send-mail は発信者確認に有効なライセンストークンを要る。対象の会社にまだトークンが無い
+      // （承認前の申込み）ときは、有効なライセンスのどれかのトークンで送る（サーバー内だけの受け渡し）。
+      //   ★操作の前に送る。停止・却下のあとだと、そのトークンが通らなくなることがある。
+      let tok = targets[0].license_token;
+      if (!tok) {
+        const any = await sbGet("remote_licenses?active=eq.true&license_token=not.is.null&select=license_token&limit=1").catch(() => []);
+        tok = any[0]?.license_token;
+      }
+      if (tok) await notifyOwner(
+        tok,
+        `【建築ブースト管理】${actor} さんが「${company}」を操作しました（${ADMIN_SUB_LABEL[String(sub)] || sub}）`,
+        [
+          `操作した人：${actor}`,
+          `対象の会社：${company}`,
+          `操作：${ADMIN_SUB_LABEL[String(sub)] || sub}`,
+          `内容：${JSON.stringify(detail)}`,
+          `日時：${new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}`,
+          "",
+          "心当たりが無い場合は、アプリの管理画面からこの人の鍵を取り消してください。",
+        ].join("\n"),
+      );
+    }
     if (sub === "approve") {
       const plan = String(body.plan || "standard");
       const credits = Number(body.credits ?? DEFAULT_CREDITS[plan] ?? 50);

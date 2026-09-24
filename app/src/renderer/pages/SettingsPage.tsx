@@ -202,6 +202,9 @@ export default function SettingsPage() {
         onClear={() => clearSecret('adminSecret', '管理者シークレット')}
       />
 
+      {/* 管理者の鍵（右腕など）。オーナーのシークレットのときだけ表示される */}
+      <AdminKeysCard />
+
       {/* バージョン・アップデート */}
       <UpdateCheck />
 
@@ -1632,6 +1635,107 @@ function SecretInput({ isSet, value, onChange, onClear, placeholder }: {
       <div style={{ fontSize: 11, color: isSet ? '#27ae60' : '#888', marginTop: 4 }}>
         {isSet ? '✓ 保存済み（値は表示されません）。空欄のまま保存すれば維持されます。' : '未設定'}
       </div>
+    </div>
+  );
+}
+
+// ── 管理者の鍵（右腕など）。オーナーのシークレットが入っているPCでだけ出る ──
+// 右腕にはオーナーのシークレットを教えず、ここで本人専用の鍵を発行して渡す。
+// 右腕の操作はすべて記録され、オーナーにメールが届く。「取り消す」でその人だけ即座に止まる。
+function AdminKeysCard() {
+  const api = (window as any).api;
+  const [keys, setKeys] = useState<any[] | null>(null);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [name, setName] = useState('');
+  const [issued, setIssued] = useState<{ name: string; key: string } | null>(null);
+  const [err, setErr] = useState('');
+
+  const load = async () => {
+    const r = await api.adminKeys('list_keys');
+    if (!r?.ok) { setKeys(null); return; }            // オーナー以外・未設定なら欄ごと出さない
+    setKeys(r.rows || []);
+    const a = await api.adminKeys('audit');
+    setLogs(a?.ok ? (a.rows || []).slice(0, 30) : []);
+  };
+  useEffect(() => { load(); }, []);
+  if (keys === null) return null;
+
+  const issue = async () => {
+    setErr(''); setIssued(null);
+    const n = name.trim();
+    if (!n) { setErr('名前を入れてください'); return; }
+    const r = await api.adminKeys('issue_key', { name: n });
+    if (!r?.ok) { setErr(r?.error || '発行できませんでした'); return; }
+    setIssued({ name: n, key: r.key }); setName(''); load();
+  };
+  const revoke = async (k: any) => {
+    const r = await api.adminKeys('revoke_key', { id: k.id });
+    if (!r?.ok) { setErr(r?.error || '取り消せませんでした'); return; }
+    load();
+  };
+  const fmt = (s: string) => (s ? new Date(s).toLocaleString('ja-JP') : '—');
+  const SUB: Record<string, string> = { approve: '承認・プラン', reject: '却下', set_credits: '単位', set_active: '停止・再開', set_seats: '席数', issue_key: '鍵の発行', revoke_key: '鍵の取消' };
+
+  return (
+    <div className="card" style={{ border: '2px solid #7c3aed' }}>
+      <h3 style={{ marginBottom: 8 }}>👥 管理者の鍵（右腕など）</h3>
+      <p style={{ fontSize: 13, color: '#666', lineHeight: 1.9, marginBottom: 12 }}>
+        あなたの管理者シークレットは<strong>人に教えないでください</strong>。代わりに、ここで<strong>本人専用の鍵</strong>を発行して渡します。<br />
+        その人は自分のKBの「管理者シークレット」欄に鍵を入れると、承認・単位・停止・席数の操作ができます。
+        操作は<strong>すべて記録され、あなたにメールが届きます</strong>。「取り消す」を押せば、その人の鍵だけがすぐ使えなくなります。
+      </p>
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+        <input type="text" value={name} placeholder="渡す人の名前（例: 山田）" onChange={e => setName(e.target.value)}
+          style={{ flex: '1 1 12rem', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: 13 }} />
+        <button className="btn btn-primary btn-sm" onClick={issue}>鍵を発行</button>
+      </div>
+      {err && <div style={{ color: '#c0392b', fontSize: 13, marginBottom: 8 }}>{err}</div>}
+
+      {issued && (
+        <div style={{ background: '#fef3c7', border: '1px solid #f59e0b', borderRadius: 6, padding: 10, marginBottom: 12, fontSize: 13 }}>
+          <strong>{issued.name} さんの鍵（この画面を閉じると二度と表示されません）</strong>
+          <div style={{ fontFamily: 'monospace', wordBreak: 'break-all', margin: '6px 0', userSelect: 'all' }}>{issued.key}</div>
+          <button className="btn btn-sm" onClick={() => navigator.clipboard.writeText(issued.key)}>コピー</button>
+          <div style={{ color: '#92400e', marginTop: 6 }}>メールやLINEに貼らず、会って渡すか、パスワード管理アプリで共有してください。</div>
+        </div>
+      )}
+
+      {keys.length > 0 && (
+        <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse', marginBottom: 12 }}>
+          <thead><tr style={{ textAlign: 'left', color: '#64748b' }}><th>名前</th><th>状態</th><th>発行</th><th>最後に使った日時</th><th /></tr></thead>
+          <tbody>
+            {keys.map(k => (
+              <tr key={k.id} style={{ borderTop: '1px solid #eee' }}>
+                <td>{k.name}</td>
+                <td style={{ color: k.active ? '#15803d' : '#94a3b8' }}>{k.active ? '有効' : `取消済（${fmt(k.revoked_at)}）`}</td>
+                <td>{fmt(k.created_at)}</td>
+                <td>{fmt(k.last_used_at)}</td>
+                <td>{k.active && <button className="btn btn-sm" style={{ color: '#c0392b' }} onClick={() => revoke(k)}>取り消す</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <details>
+        <summary style={{ cursor: 'pointer', fontSize: 13 }}>操作の記録（直近30件）</summary>
+        {logs.length === 0 ? <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>まだ記録がありません</div> : (
+          <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse', marginTop: 6 }}>
+            <tbody>
+              {logs.map((l, i) => (
+                <tr key={i} style={{ borderTop: '1px solid #eee' }}>
+                  <td style={{ whiteSpace: 'nowrap' }}>{fmt(l.at)}</td>
+                  <td>{l.actor === 'owner' ? 'あなた' : l.actor}</td>
+                  <td>{SUB[l.sub] || l.sub}</td>
+                  <td>{l.company_name || ''}</td>
+                  <td style={{ color: '#64748b' }}>{l.detail ? JSON.stringify(l.detail) : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </details>
     </div>
   );
 }

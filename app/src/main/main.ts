@@ -2619,6 +2619,17 @@ function setupAutoUpdater() {
     } catch (_) { return []; }
   });
 
+  // ── 管理者の鍵（右腕など）。発行・取消・一覧・操作記録はオーナーの adminSecret でしか通らない ──
+  //   右腕にはオーナーの adminSecret を教えず、ここで発行した本人専用の鍵を
+  //   その人のKBの「管理者シークレット」欄に入れてもらう。取り消せばその人だけ止まる。
+  ipcMain.handle('adminKeys:call', async (_e, sub: string, extra: any = {}) => {
+    if (!['issue_key', 'revoke_key', 'list_keys', 'audit'].includes(sub)) return { ok: false, error: 'unknown' };
+    const adminSecret = loadApiConfig().adminSecret || '';
+    if (!adminSecret) return { ok: false, error: 'adminSecret未設定' };
+    const res = await licenseAdmin(adminSecret, sub, '', extra || {});
+    return res && res.ok ? res : { ok: false, error: res?.error || '失敗しました' };
+  });
+
   ipcMain.handle('remote:approve', async (_e, companyName: string, plan: string) => {
     // STEP3: 承認は管理Edge Function経由（service_role）。要 adminSecret。
     const adminSecret = loadApiConfig().adminSecret || '';
