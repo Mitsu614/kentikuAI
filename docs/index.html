@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>建築ブースト｜写真を入れる。30秒で、見積。</title>
+<title>建築ブースト｜写真を入れる。数分で、見積。</title>
 <style>
   :root{
     --bg:#0b0f1a; --ink:#0e1320; --muted:#5b6577; --line:#e7ebf2;
@@ -140,8 +140,8 @@
 <header class="hero">
   <div class="wrap">
     <span class="eyebrow">建築見積AI ・ 特許審査中</span>
-    <h1>写真を入れる。<br><em>数十秒で、見積。</em></h1>
-    <p class="lead">現場写真や図面を入れるだけで、AIが数十秒で見積もりを作成<sup>※1</sup>。使うほど“御社の金額感”に育つ<sup>※3</sup>、建築業に特化した見積・業務システムです。</p>
+    <h1>写真を入れる。<br><em>数分で、見積。</em></h1>
+    <p class="lead">現場写真や図面を入れるだけで、AIが数分で見積もりを作成<sup>※1</sup>。使うほど“御社の金額感”に育つ<sup>※3</sup>、建築業に特化した見積・業務システムです。</p>
     <div class="cta-row">
       <a class="btn btn-primary" href="#price">無料デモを試す →</a>
       <a class="btn btn-ghost" href="#how">仕組みを見る</a>
@@ -153,7 +153,7 @@
 <!-- STATS -->
 <div class="stats">
   <div class="wrap">
-    <div class="stat"><div class="num">数十秒</div><div class="lab">写真から見積作成<sup>※1</sup></div></div>
+    <div class="stat"><div class="num">数分</div><div class="lab">写真から見積作成<sup>※1</sup></div></div>
     <div class="stat"><div class="num">0円</div><div class="lab">無料デモから開始</div></div>
     <div class="stat"><div class="num">使うほど</div><div class="lab">自社価格に学習</div></div>
     <div class="stat"><div class="num">一式</div><div class="lab">請求・発注・勤怠まで</div></div>
@@ -176,7 +176,7 @@
     <h2>やることは、たった3ステップ。</h2>
     <div class="steps">
       <div class="step"><div class="n">STEP 01</div><h3>写真・図面を入れる</h3><p>現場写真、間取り図、または「外壁塗装したい」の一言でもOK。手書きの書類も読めます。</p></div>
-      <div class="step"><div class="n">STEP 02</div><h3>AIが見積を作る</h3><p>材料・数量・単価・人件費まで、公的統計と全国相場データ<sup>※2</sup>を踏まえて数十秒で自動算出。</p></div>
+      <div class="step"><div class="n">STEP 02</div><h3>AIが見積を作る</h3><p>材料・数量・単価・人件費まで、公的統計と全国相場データ<sup>※2</sup>を踏まえて数分で自動算出。</p></div>
       <div class="step"><div class="n">STEP 03</div><h3>そのまま請求・発注へ</h3><p>見積から請求書・発注書をワンクリック生成。二度手間ゼロ。</p></div>
     </div>
   </div>
@@ -304,10 +304,10 @@
     <h2>数字の根拠・前提</h2>
     <p class="sub">営業時に「その根拠は？」と聞かれたら、ここをそのまま説明できます。誇張ではなく、仕組み・出典に基づく前提です。</p>
     <div style="margin-top:34px;display:grid;gap:14px">
-      <div class="card" style="background:#fff"><h3 style="font-size:16px">※1　「数十秒で見積」</h3><p>見積を生成するAI（Claude）の標準的な応答時間に基づく実測の目安です。工事内容・画像の枚数・通信環境によって変動し、おおむね十数秒〜1分程度です（「○秒」と断定はしていません）。</p></div>
+      <div class="card" style="background:#fff"><h3 style="font-size:16px">※1　「数分で見積」</h3><p>見積を生成するAI（Claude）の標準的な応答時間に基づく実測の目安です。工事内容・画像の枚数・図面の有無・通信環境によって変動し、おおむね1〜3分程度です（「○分」と断定はしていません）。図面から数量を拾う場合は、これより長くかかることがあります。</p></div>
       <div class="card" style="background:#fff"><h3 style="font-size:16px">※2　「搭載データ 約490項目／公的データ3連携」</h3><p><strong>内蔵の相場データベース：</strong>2025-2026年版・<strong>750行／約490項目（数値データ行）／68分類（13大分類×55小分類）</strong>。構造別・用途別の坪単価、アパマン、解体、設備、外構、仮設、各種工事の単価表を収録。<br><strong>公的データ（リアルタイム連携）：</strong>①e-Stat（政府統計）建設工事費デフレーター・建築着工統計　②国土交通省 不動産情報ライブラリ（地価・取引価格）　③国土交通省 公共工事設計労務単価（職種別日額）。<br>※「何件・何行」は実装ファイル（cost-reference.ts＝750行）の実数に基づきます。学習で貯まる実績データは各社ごとに増えていきます。</p></div>
       <div class="card" style="background:#fff"><h3 style="font-size:16px">※3　「使うほど精度が上がる／学習」</h3><p>入力された実績（実際の請求額・原価）から、工種ごとの補正係数を自動で更新する学習機能の“仕組み”によるものです。グラフ（1ヶ月55%→半年94%等）は仕組みを示す<strong>概念イメージ</strong>であり、特定の数値を保証するものではありません。実データが貯まるほど補正が効きます。</p></div>
-      <div class="card" style="background:#fff"><h3 style="font-size:16px">※4　料金・利用単位</h3><p>表示価格は<strong>月額の総額</strong>です。月額とは別に、初回のご契約時のみ<strong>導入費用200,000円（総額）</strong>を申し受けます（初期設定・データ移行・操作レクチャー込み。プラン変更のときはかかりません）。最低利用期間は3ヶ月です。月に使えるAIの単位はプランごとに設定（デモ：月10単位／スタンダード：月50単位／ベター：月150単位／プロ：月300単位）。未使用分は翌月へ繰り越せます（最大3ヶ月）。デモは無料でお試しいただけます。<br>住所からの航空写真による面積測定は<strong>プロプラン以上</strong>で、新しい住所で写真を出すときだけ1回3単位を使います（動かす・拡大縮小・建物の選び直しは無料）。</p></div>
+      <div class="card" style="background:#fff"><h3 style="font-size:16px">※4　料金・利用単位</h3><p>表示価格は<strong>月額の総額</strong>です。月額とは別に、初回のご契約時のみ<strong>導入費用200,000円（総額）</strong>を申し受けます（初期設定・データ移行・操作レクチャー込み。プラン変更のときはかかりません）。最低利用期間は3ヶ月です。月に使えるAIの単位はプランごとに設定（デモ：月10単位／スタンダード：月50単位／ベター：月150単位／プロ：月300単位）。未使用分の繰り越しはできません。デモは無料でお試しいただけます。<br>住所からの航空写真による面積測定は<strong>プロプラン以上</strong>で、新しい住所で写真を出すときだけ1回3単位を使います（動かす・拡大縮小・建物の選び直しは無料）。</p></div>
       <div class="card" style="background:#fff"><h3 style="font-size:16px">※5　「特許審査中」</h3><p>独自の見積・学習の方式について特許を<strong>出願済み・出願審査請求済み＝現在、特許庁にて審査中</strong>です。<br><strong>出願番号：特願2026-100479</strong>／出願人：有限会社中野工務店／発明の名称：建築業務支援システム、建築業務支援方法及びプログラム／請求項13。<br>※審査中であり、登録（特許取得）を確約するものではありません。「特許取得済み（登録済み）」とは表現していません。</p></div>
       <div class="card" style="background:#fff"><h3 style="font-size:16px">機能について</h3><p>AI見積／AI-OCR／請求書／発注書／出面（勤怠）／予実管理／工程表／日報／安全書類／写真台帳／相見積比較 を実装しています（提供プラン・バージョンにより異なる場合があります）。</p></div>
     </div>
