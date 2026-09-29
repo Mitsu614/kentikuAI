@@ -717,12 +717,58 @@ function tileImageForAI(dataUrl: any, cols = 2, targetLong = 2000): { label: str
 // ── 分割して拾った結果を1つにまとめる ───────────────────────────
 // 同じ部位・同じ名前・同じ単位の行は足し合わせ、計算式は範囲ごとに並べて残す
 // （「左上: 4台 ／ 右下: 2台」と書いておけば、人がその範囲だけ数え直せる）。
+// ── 建具表・仕上表と、拾った行の突き合わせ ──
+// AIが schedules に書いた表の中身と items を機械で照らし合わせ、
+//   ・建具表にある符号なのに、どの行にも出てこない（拾い漏れの疑い）
+//   ・建具表の数量欄と、拾った箇所数が合わない
+//   ・仕上表にある室なのに、どの行の room にも出てこない
+// を warnings の先頭に出す。★数量は直さない（どちらが正しいかは人が決める）。
+//   実例: 建具表の WD-7 を見落として木製ドアが14箇所のところ12箇所になった。
+function crossCheckSchedules(takeoff: any): { missing: string[]; mismatched: string[]; missingRooms: string[] } {
+  const out = { missing: [] as string[], mismatched: [] as string[], missingRooms: [] as string[] };
+  const items: any[] = Array.isArray(takeoff?.items) ? takeoff.items : [];
+  const sch: any[] = Array.isArray(takeoff?.schedules) ? takeoff.schedules : [];
+  if (!sch.length || !items.length) return out;
+  const norm = (v: any) => String(v || '').normalize('NFKC').toUpperCase().replace(/[‐‑–—−ー]/g, '-').replace(/\s+/g, '');
+  const COUNT_UNITS = /^(箇所|ヶ所|か所|カ所|台|個|枚|組|基|本|セット)$/;
+  for (const s of sch) {
+    const code = norm(s?.code);
+    if (!code) continue;
+    if (/建具/.test(String(s?.kind || ''))) {
+      // 符号は境界つきで探す（WD-1 が WD-10 に当たらないように）
+      const esc = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(^|[^A-Z0-9])${esc}(?![0-9])`);
+      const hit = items.filter((it) => re.test(norm(it.name)) || re.test(norm(it.formula)) || re.test(norm(it.dimensions)));
+      if (!hit.length) { out.missing.push(String(s.code)); continue; }
+      const n = Number(s.count);
+      if (n > 0) {
+        const got = hit.filter((it) => COUNT_UNITS.test(String(it.unit || '').trim()))
+          .reduce((a, it) => a + (Number(it.quantity) || 0), 0);
+        if (got > 0 && Math.abs(got - n) > 0.001) out.mismatched.push(`${s.code}（表 ${n} / 拾い ${roundQty(got)}）`);
+      }
+    } else if (/仕上/.test(String(s?.kind || ''))) {
+      const rooms = new Set(items.map((it) => norm(it.room)).filter(Boolean));
+      if (rooms.size && !rooms.has(code)) out.missingRooms.push(String(s.code));
+    }
+  }
+  const w: string[] = [];
+  if (out.missing.length) w.push(`★建具表にあるのに、拾い出しに出てこない符号があります: ${out.missing.slice(0, 8).join('、')}${out.missing.length > 8 ? ' ほか' : ''}。拾い漏れでないかご確認ください。`);
+  if (out.mismatched.length) w.push(`★建具表の数量と、拾った箇所数が合わない符号があります: ${out.mismatched.slice(0, 6).join('、')}${out.mismatched.length > 6 ? ' ほか' : ''}。`);
+  if (out.missingRooms.length) w.push(`★仕上表にあるのに、どの行にも出てこない室があります: ${out.missingRooms.slice(0, 8).join('、')}${out.missingRooms.length > 8 ? ' ほか' : ''}。`);
+  if (w.length) {
+    takeoff.warnings = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
+    takeoff.warnings.unshift(...w);
+  }
+  return out;
+}
+
 function mergeTakeoffParts(parts: { label: string; takeoff: any }[]): any {
   const merged: any = {
     title: null, drawingTypes: [], scale: null, scaleSource: null,
-    building: {}, items: [], summary: [], explanation: [], unreadable: [], warnings: [],
+    building: {}, items: [], summary: [], explanation: [], unreadable: [], warnings: [], schedules: [],
     overallConfidence: '中',
   };
+  const schedSeen = new Map<string, any>();
   const byKey = new Map<string, any>();
   const confRank: Record<string, number> = { 高: 3, 中: 2, 低: 1 };
 
@@ -737,9 +783,17 @@ function mergeTakeoffParts(parts: { label: string; takeoff: any }[]): any {
     for (const s of t.explanation || []) merged.explanation.push(s);
     for (const u of t.unreadable || []) if (!merged.unreadable.includes(u)) merged.unreadable.push(u);
     for (const w of t.warnings || []) if (!merged.warnings.includes(w)) merged.warnings.push(w);
+    // 建具表・仕上表は分割した範囲の複数に写り込むことがある。符号ごとに1つにし、数が読めたほうを採る
+    for (const sc of t.schedules || []) {
+      const k = `${sc?.kind || ''}|${String(sc?.code || '').normalize('NFKC').trim().toUpperCase()}`;
+      const prev = schedSeen.get(k);
+      if (!prev) { schedSeen.set(k, { ...sc }); merged.schedules.push(schedSeen.get(k)); }
+      else if (prev.count == null && sc?.count != null) prev.count = sc.count;
+    }
 
     for (const it of t.items || []) {
-      const key = [it.part || '', String(it.name || '').trim(), it.unit || ''].join('|');
+      // 室ごとに拾った行は室ごとに残す（部屋別の数量表で使う）。室の無い行は従来どおり品名でまとめる
+      const key = [it.part || '', String(it.room || '').trim(), String(it.name || '').trim(), it.unit || ''].join('|');
       const prev = byKey.get(key);
       if (!prev) {
         byKey.set(key, {
@@ -5461,6 +5515,94 @@ app.whenReady().then(async () => {
     }
   });
 
+  // 拾い出しを Excel で出す。見積担当はExcelで受け取って自分の表に貼る・確かめるのが普通なので、
+  // 「部屋ごと×部材ごと」の一覧を1枚目にする。★数量は画面の値そのまま（ここで計算し直さない）。
+  ipcMain.handle('takeoff:exportExcel', async (_e, data: any) => {
+    const takeoff = data?.takeoff || {};
+    const items: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
+    if (items.length === 0) return { ok: false, error: '拾い出し明細がありません。' };
+    const title = String(data?.title || takeoff.title || '数量拾い出し').replace(/[\/:*?"<>|]/g, '_').slice(0, 40);
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
+    const { filePath, canceled } = await dialog.showSaveDialog({
+      title: '拾い出しをExcelで保存',
+      defaultPath: path.join(app.getPath('documents'), `${title}_拾い出し_${today}.xlsx`),
+      filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+
+    const ExcelJS = require('exceljs');
+    const wb = new ExcelJS.Workbook();
+    wb.creator = '建築ブースト';
+    const qtyOf = (it: any) => Number(it.quantity) || 0;
+    const roomOf = (it: any) => String(it.room || '').trim() || '（全体・室なし）';
+    const matOf = (it: any) => `${String(it.part || '').trim()}｜${String(it.name || '').trim()}（${String(it.unit || '').trim()}）`;
+    const head = (ws: any) => {
+      const r = ws.getRow(1); r.font = { bold: true }; r.alignment = { vertical: 'middle', wrapText: true };
+      r.eachCell((c: any) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE9EEF3' } }; });
+      ws.views = [{ state: 'frozen', xSplit: 1, ySplit: 1 }];
+    };
+
+    // 1) 部屋 × 部材（行=部屋、列=部材）
+    const rooms = [...new Set(items.map(roomOf))];
+    const mats = [...new Set(items.map(matOf))];
+    const cell = new Map<string, number>();
+    for (const it of items) { const k = roomOf(it) + '\u0000' + matOf(it); cell.set(k, roundQty((cell.get(k) || 0) + qtyOf(it))); }
+    const ws1 = wb.addWorksheet('部屋×部材');
+    ws1.addRow(['部屋・区画', ...mats]);
+    for (const r of rooms) ws1.addRow([r, ...mats.map((m) => cell.get(r + '\u0000' + m) ?? null)]);
+    ws1.addRow(['合計', ...mats.map((m) => roundQty(rooms.reduce((a, r) => a + (cell.get(r + '\u0000' + m) || 0), 0)))]).font = { bold: true };
+    ws1.getColumn(1).width = 18;
+    mats.forEach((_, i) => { ws1.getColumn(i + 2).width = 16; ws1.getColumn(i + 2).numFmt = '#,##0.##'; });
+    ws1.getRow(1).height = 48;
+    head(ws1);
+
+    // 2) 明細
+    const ws2 = wb.addWorksheet('明細');
+    ws2.addRow(['No', '部屋・区画', '部位', '材料・工種', '数量', '単位', 'ロス率', 'ロス込み数量', '計算式（根拠）', '寸法', '控除', '出典', '確度', '仮定']);
+    items.forEach((it, i) => ws2.addRow([
+      i + 1, it.room || '', it.part || '', it.name || '', qtyOf(it), it.unit || '',
+      Number(it.lossRate) || 0, Number(it.quantityWithLoss) || qtyOf(it),
+      it.formula || '', it.dimensions || '', it.deduction || '', it.source || '', it.confidence || '', it.assumption || '',
+    ]));
+    [5, 16, 10, 28, 10, 6, 8, 12, 40, 18, 20, 22, 6, 24].forEach((w, i) => { ws2.getColumn(i + 1).width = w; });
+    ws2.getColumn(5).numFmt = '#,##0.###'; ws2.getColumn(8).numFmt = '#,##0.###'; ws2.getColumn(7).numFmt = '0%';
+    head(ws2);
+
+    // 3) 部材別の合計
+    const ws3 = wb.addWorksheet('部材別の合計');
+    ws3.addRow(['部位', '材料・工種', '単位', '数量の合計', 'ロス込みの合計', '部屋の数']);
+    const agg = new Map<string, any>();
+    for (const it of items) {
+      const k = matOf(it);
+      const a = agg.get(k) || { part: it.part || '', name: it.name || '', unit: it.unit || '', q: 0, ql: 0, rooms: new Set<string>() };
+      a.q += qtyOf(it); a.ql += Number(it.quantityWithLoss) || qtyOf(it); if (it.room) a.rooms.add(String(it.room)); agg.set(k, a);
+    }
+    for (const a of agg.values()) ws3.addRow([a.part, a.name, a.unit, roundQty(a.q), roundQty(a.ql), a.rooms.size || null]);
+    [10, 30, 6, 14, 16, 10].forEach((w, i) => { ws3.getColumn(i + 1).width = w; });
+    ws3.getColumn(4).numFmt = '#,##0.###'; ws3.getColumn(5).numFmt = '#,##0.###';
+    head(ws3);
+
+    // 4) 建具表・仕上表と注意
+    const sch: any[] = Array.isArray(takeoff.schedules) ? takeoff.schedules : [];
+    const warns: string[] = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
+    if (sch.length || warns.length) {
+      const ws4 = wb.addWorksheet('建具表・仕上表と注意');
+      ws4.addRow(['種類', '符号・室名', '仕様', '表の数量']);
+      for (const s of sch) ws4.addRow([s.kind || '', s.code || '', s.spec || '', s.count ?? null]);
+      if (warns.length) {
+        ws4.addRow([]);
+        ws4.addRow(['注意（アプリの検算）']).font = { bold: true };
+        for (const w of warns) ws4.addRow([w]);
+      }
+      [10, 16, 60, 10].forEach((w, i) => { ws4.getColumn(i + 1).width = w; });
+      head(ws4);
+    }
+
+    await wb.xlsx.writeFile(filePath);
+    shell.showItemInFolder(filePath);
+    return { ok: true, filePath };
+  });
+
   ipcMain.handle('takeoff:generatePDF', async (_e, data: any) => {
     const takeoff = data?.takeoff || {};
     const items: any[] = Array.isArray(takeoff.items) ? takeoff.items : [];
@@ -8441,6 +8583,12 @@ ${String(data.repeats).trim()}
   全部を ÷有効幅 にすると壁が3〜4割過大になり、全部を 4×√面積 にすると2〜3割過少になる。
 - **床の行と、壁・天井の行を突き合わせろ。**床にあって壁に無い区画があれば、それは拾い落としだ。
   出す前に「床で挙げた区画名」を並べ、壁・天井・幅木にも同じ区画が入っているか1つずつ確かめろ。
+- **各行の room に、その行がどの室・区画のものかを書け。**室ごとに分けて拾った行は室名（例: '事務室'、'1F廊下'）。
+  建物全体の一式・外部・室に分けられない行だけ null。お客様は「部屋ごと×部材ごと」の表で数量を確かめる。
+- **建具表・仕上表を読んだら、schedules に表の中身を全部書け。**建具表は符号（WD-1 等）ごとに1行、
+  仕上表は室ごとに1行。符号・室を飛ばすな。数を拾った items の name には、その符号（例: 'WD-1'）を必ず入れろ。
+  アプリがこの一覧と items を突き合わせ、表にあるのに拾っていない符号・数の合わない符号を指摘する
+  （実例: 建具表の WD-7 を見落として、木製ドアが14箇所のところ12箇所になった）。
 
 ## 出力形式（必ずこのJSONだけを返す）
 \`\`\`json
@@ -8458,6 +8606,7 @@ ${String(data.repeats).trim()}
   "items": [
     {
       "part": "部位（屋根/外壁/内壁/床/天井/基礎/建具/設備/電気/弱電/防災/外構/仮設 等）",
+      "room": "この行の室・区画名（例: '事務室'、'1F廊下'）。建物全体・外部・室に分けられない行は null",
       "name": "材料・工種名（例: 'ガルバリウム鋼板 折板屋根'、'石膏ボード t12.5'、'アルミサッシ 引違い 16509'）",
       "method": "面積 / 長さ / 個数 / 体積 / 質量 のいずれか",
       "dimensions": "拾いに使った寸法（例: '8,190×6,370'、'H2,800×L14,560'）。寸法が無い行はnull",
@@ -8473,6 +8622,11 @@ ${String(data.repeats).trim()}
       "confidence": "高/中/低",
       "assumption": "この行で仮定した点（例: '天井高2,400と仮定'）。仮定が無ければ null"
     }
+  ],
+  "schedules": [
+    {"kind": "建具表 / 仕上表", "code": "建具表なら符号（例: 'WD-1'）、仕上表なら室名（例: '事務室'）",
+     "spec": "表に書かれた仕様（例: '木製片開き戸 W800×H2000'、'床: タイルカーペット / 壁: PB+クロス / 天井: 岩綿吸音板'）",
+     "count": 建具表の数量欄の数（数値。数量欄が無い・読めないなら null。仕上表は null）}
   ],
   "summary": [
     {"label": "主要数量の名前（例: '屋根面積'）", "value": "値と単位（例: '452㎡'）"}
@@ -8641,6 +8795,7 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
     }
 
     verifyTakeoffNumbers(takeoff, extractAreasFromComment([data?.comment, data?.targets].filter(Boolean).join(' ')));
+    crossCheckSchedules(takeoff);
 
     // 計算の説明。AIの文章はそのまま通し、**使った設定だけは機械側で付ける**
     //   （設定値はこちらが確実に知っている。AIに書かせると「10%で見ています」等の言い間違いが混ざる）。

@@ -26,6 +26,7 @@ module.exports = [
       'express': 'commonjs express',
       'cors': 'commonjs cors',
       'localtunnel': 'commonjs localtunnel',
+      'exceljs': 'commonjs exceljs',
     },
   },
   // Preload

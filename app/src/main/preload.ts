@@ -101,6 +101,7 @@ contextBridge.exposeInMainWorld('api', {
   takeoffDrawing: (data: any) => ipcRenderer.invoke('ai:takeoffDrawing', data),
   takeoffHistory: () => ipcRenderer.invoke('ai:takeoffHistory'),
   generateTakeoffPDF: (data: any) => ipcRenderer.invoke('takeoff:generatePDF', data),
+  exportTakeoffExcel: (data: any) => ipcRenderer.invoke('takeoff:exportExcel', data),
 
   // 見積書の様式（お客様からもらったPDFに合わせる）
   analyzeEstimateTemplate: (data: any) => ipcRenderer.invoke('estimateTemplate:analyze', data),

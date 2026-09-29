@@ -2523,6 +2523,16 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         }}
                       >📄 拾い出し明細をPDFで出す</button>
                       <button
+                        className="btn btn-secondary btn-sm"
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const r = await (window as any).api.exportTakeoffExcel({ takeoff, title: takeoff.title || comment.slice(0, 30) });
+                            if (r && !r.ok && !r.canceled) alert(r.error || 'Excelの保存に失敗しました');
+                          } catch (e: any) { alert('Excelの保存に失敗: ' + (e.message || e)); }
+                        }}
+                      >📊 部屋別の数量表をExcelで出す</button>
+                      <button
                         className="btn btn-sm"
                         type="button"
                         onClick={() => setAnswerOpen(o => !o)}
@@ -2557,7 +2567,10 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                         <tbody>
                           {(takeoff.items || []).map((it: any, i: number) => (
                             <tr key={i}>
-                              <td style={{ color: '#607d8b' }}>{it.part || '—'}</td>
+                              <td style={{ color: '#607d8b' }}>
+                                {it.part || '—'}
+                                {it.room && <div style={{ fontSize: 10, color: '#1565c0' }}>{it.room}</div>}
+                              </td>
                               <td>
                                 <div>
                                   {it.name}
