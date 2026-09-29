@@ -1649,8 +1649,15 @@ function AdminKeysCard() {
   const [name, setName] = useState('');
   const [issued, setIssued] = useState<{ name: string; key: string } | null>(null);
   const [err, setErr] = useState('');
+  // 別のPCからのログイン（オーナーがユーザー名＋パスワードを登録 → 別PCのログイン画面でそのまま入れる）
+  const [loginNames, setLoginNames] = useState<string[]>([]);
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPass, setLoginPass] = useState('');
+  const [loginMsg, setLoginMsg] = useState('');
 
   const load = async () => {
+    const g = await api.adminKeys('get_login');
+    if (g?.ok) setLoginNames(g.usernames || []);
     const r = await api.adminKeys('list_keys');
     if (!r?.ok) { setKeys(null); return; }            // オーナー以外・未設定なら欄ごと出さない
     setKeys(r.rows || []);
@@ -1673,8 +1680,18 @@ function AdminKeysCard() {
     if (!r?.ok) { setErr(r?.error || '取り消せませんでした'); return; }
     load();
   };
+  const saveLogin = async () => {
+    setLoginMsg('');
+    const u = loginUser.trim();
+    if (!u) { setLoginMsg('ユーザー名を入れてください'); return; }
+    if (loginPass.length < 8) { setLoginMsg('パスワードは8文字以上にしてください'); return; }
+    const r = await api.adminKeys('set_login', { username: u, password: loginPass });
+    if (!r?.ok) { setLoginMsg(r?.error || '登録できませんでした'); return; }
+    setLoginPass(''); setLoginMsg(`登録しました。別のPCのログイン画面で「${u}」とこのパスワードを入れると、管理者として入れます。`);
+    load();
+  };
   const fmt = (s: string) => (s ? new Date(s).toLocaleString('ja-JP') : '—');
-  const SUB: Record<string, string> = { approve: '承認・プラン', reject: '却下', set_credits: '単位', set_active: '停止・再開', set_seats: '席数', set_expires: 'デモ期限', issue_key: '鍵の発行', revoke_key: '鍵の取消' };
+  const SUB: Record<string, string> = { set_login: '別PCログインの登録', admin_login: '別PCから管理者ログイン', login_fail: '別PCログイン失敗', approve: '承認・プラン', reject: '却下', set_credits: '単位', set_active: '停止・再開', set_seats: '席数', set_expires: 'デモ期限', issue_key: '鍵の発行', revoke_key: '鍵の取消' };
 
   return (
     <div className="card" style={{ border: '2px solid #7c3aed' }}>
@@ -1684,6 +1701,24 @@ function AdminKeysCard() {
         その人は自分のKBの「管理者シークレット」欄に鍵を入れると、承認・単位・停止・席数の操作ができます。
         操作は<strong>すべて記録され、あなたにメールが届きます</strong>。「取り消す」を押せば、その人の鍵だけがすぐ使えなくなります。
       </p>
+
+      <div style={{ background: '#f5f3ff', borderRadius: 6, padding: 10, marginBottom: 14 }}>
+        <div style={{ fontWeight: 'bold', fontSize: 14, marginBottom: 4 }}>💻 別のPCからのログイン（あなた用）</div>
+        <div style={{ fontSize: 12, color: '#666', lineHeight: 1.8, marginBottom: 8 }}>
+          ここで決めたユーザー名とパスワードを、別のPCのKBのログイン画面に入れると、管理画面が使えます。
+          そのPC専用の鍵が自動で発行され、下の一覧に「ユーザー名（PC名）」で出ます。PCを手放すときはその行を取り消してください。
+          新しいPCから入られると、あなたにメールが届きます。
+          {loginNames.length > 0 && <><br />登録済み：<strong>{loginNames.join('、')}</strong>（登録し直すとパスワードが変わります）</>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input type="text" value={loginUser} placeholder="ユーザー名" onChange={e => setLoginUser(e.target.value)}
+            style={{ flex: '1 1 8rem', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: 13 }} />
+          <input type="password" value={loginPass} placeholder="パスワード（8文字以上）" onChange={e => setLoginPass(e.target.value)}
+            style={{ flex: '1 1 10rem', padding: '6px 8px', border: '1px solid #ddd', borderRadius: 6, fontSize: 13 }} />
+          <button className="btn btn-primary btn-sm" onClick={saveLogin}>登録</button>
+        </div>
+        {loginMsg && <div style={{ fontSize: 12, color: '#5b21b6', marginTop: 6 }}>{loginMsg}</div>}
+      </div>
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
         <input type="text" value={name} placeholder="渡す人の名前（例: 山田）" onChange={e => setName(e.target.value)}
@@ -1707,7 +1742,7 @@ function AdminKeysCard() {
           <tbody>
             {keys.map(k => (
               <tr key={k.id} style={{ borderTop: '1px solid #eee' }}>
-                <td>{k.name}</td>
+                <td>{String(k.name).startsWith('login:') ? `別PCログイン：${String(k.name).slice(6)}` : k.name}</td>
                 <td style={{ color: k.active ? '#15803d' : '#94a3b8' }}>{k.active ? '有効' : `取消済（${fmt(k.revoked_at)}）`}</td>
                 <td>{fmt(k.created_at)}</td>
                 <td>{fmt(k.last_used_at)}</td>

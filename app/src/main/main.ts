@@ -7,7 +7,7 @@ import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeH
 import { COST_REFERENCE } from './cost-reference';
 import { dropPricelessBreakdownRows, droppedRowWarnings } from './breakdown-rows';
 import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION, fetchLandmarks, OSM_ATTRIBUTION, searchPlaces, MIN_ZOOM, MAX_ZOOM, AddressLevel, isPlaceName } from './aerial';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge, sendTakeoffFeedback, fetchTakeoffKnowledge, fetchMarketReference } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseAdminLogin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge, sendTakeoffFeedback, fetchTakeoffKnowledge, fetchMarketReference } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 import { buildLearningContext, dropSummaryRows } from './learning-context';
@@ -2623,7 +2623,7 @@ function setupAutoUpdater() {
   //   右腕にはオーナーの adminSecret を教えず、ここで発行した本人専用の鍵を
   //   その人のKBの「管理者シークレット」欄に入れてもらう。取り消せばその人だけ止まる。
   ipcMain.handle('adminKeys:call', async (_e, sub: string, extra: any = {}) => {
-    if (!['issue_key', 'revoke_key', 'list_keys', 'audit'].includes(sub)) return { ok: false, error: 'unknown' };
+    if (!['issue_key', 'revoke_key', 'list_keys', 'audit', 'set_login', 'get_login'].includes(sub)) return { ok: false, error: 'unknown' };
     const adminSecret = loadApiConfig().adminSecret || '';
     if (!adminSecret) return { ok: false, error: 'adminSecret未設定' };
     const res = await licenseAdmin(adminSecret, sub, '', extra || {});
@@ -4549,11 +4549,40 @@ app.whenReady().then(async () => {
   let currentSession: { username: string; tenantId: number; role: string } | null = null;
 
   ipcMain.handle('auth:login', async (_e, username: string, password: string) => {
-    const user = queryOne('SELECT id, username, role, tenant_id, password_hash FROM users WHERE username = ?', [username]);
-    if (!user) return { ok: false, error: 'ユーザー名またはパスワードが違います' };
-    const [salt, hash] = (user.password_hash || '').split(':');
-    const inputHash = crypto.createHash('sha256').update(salt + password).digest('hex');
-    if (hash !== inputHash) return { ok: false, error: 'ユーザー名またはパスワードが違います' };
+    let user = queryOne('SELECT id, username, role, tenant_id, password_hash FROM users WHERE username = ?', [username]);
+    const [salt, hash] = (user?.password_hash || '').split(':');
+    const localOk = !!user && hash === crypto.createHash('sha256').update(salt + password).digest('hex');
+    const ownerPC = require('os').hostname() === 'DESKTOP-MRETEV6' && require('os').userInfo().username === 'mitsu';
+
+    if (!ownerPC && (!localOk ? (!user || user.tenant_id === 1) : user.tenant_id === 1)) {
+      // ── 別PCで管理者として入る ──
+      // 管理者アカウントはPCごとのDBにしか無い。オーナーのPC以外では、サーバーに登録した
+      // 「別のPCからのログイン」と照合し、合えばこのPC専用の管理者の鍵を受け取って入る。
+      if (!localOk) {
+        const r = await licenseAdminLogin(username, password, require('os').hostname());
+        if (!r) return { ok: false, error: user ? 'ネットにつながらないため、管理者として確認できません' : 'ユーザー名またはパスワードが違います' };
+        if (r.error === 'locked') return { ok: false, error: '続けて間違えたため、15分ほど止めています。しばらくしてからお試しください' };
+        if (!r.ok || !r.key) return { ok: false, error: 'ユーザー名またはパスワードが違います' };
+        const s = crypto.randomBytes(16).toString('hex');
+        const saltedHash = `${s}:${crypto.createHash('sha256').update(s + password).digest('hex')}`;
+        if (user) {
+          runSql('UPDATE users SET password_hash = ? WHERE id = ?', [saltedHash, user.id]);
+        } else {
+          runSql('INSERT INTO users (username, password_hash, role, tenant_id) VALUES (?, ?, ?, ?)', [username, saltedHash, 'admin', 1]);
+          user = queryOne('SELECT id, username, role, tenant_id, password_hash FROM users WHERE username = ?', [username]);
+        }
+        const cfg = loadApiConfig(); cfg.adminSecret = r.key; saveApiConfig(cfg);
+        logAudit('create', 'user', user.id, `${username} 別PCの管理者として登録（${r.name}）`);
+      } else {
+        // 2回目以降: このPCの鍵がまだ有効かを毎回確かめる（「👥 管理者の鍵」で取り消したら入れない）
+        const adminSecret = loadApiConfig().adminSecret || '';
+        const w = adminSecret ? await licenseAdmin(adminSecret, 'whoami', '') : { error: 'forbidden' };
+        if (!w) return { ok: false, error: 'ネットにつながらないため、管理者として確認できません' };
+        if (!w.ok) return { ok: false, error: 'このPCの管理者の鍵が取り消されています。オーナーにご確認ください' };
+      }
+    } else if (!localOk) {
+      return { ok: false, error: 'ユーザー名またはパスワードが違います' };
+    }
     // 承認待ちチェック（Supabaseで承認状態を確認）
     const tenant = queryOne('SELECT plan, contact_company FROM tenants WHERE id = ?', [user.tenant_id]);
     if (tenant?.plan === 'pending') {

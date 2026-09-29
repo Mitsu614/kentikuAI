@@ -118,6 +118,15 @@ const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
 return Array.from(new Uint8Array(d)).map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+// 別PCからの管理者ログイン用のパスワードハッシュ。総当りに耐えるよう PBKDF2（10万回）。
+const LOGIN_ITER = 100_000;
+async function pbkdf2hex(password: string, saltHex: string): Promise<string> {
+const salt = new Uint8Array(saltHex.match(/../g)!.map((h) => parseInt(h, 16)));
+const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: LOGIN_ITER }, base, 256);
+return Array.from(new Uint8Array(bits)).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
 // 管理操作の記録。記録に失敗しても操作そのものは止めない（表がまだ無い環境など）。
 async function audit(actor: string, sub: string, company: string | null, detail: unknown) {
 try {
@@ -660,6 +669,49 @@ try {
   // 注意：これは移行期間限定の経路。会社名だけで本人確認できないため、
   //  ・移行完了後は CLAIM_ENABLED=false で恒久的に閉じる（横取り窓を消す）
   //  ・同名が複数ある場合は自動移行せず管理者対応にまわす（誤対象の防止）
+  // ---- 別PCから管理者としてログイン（ユーザー名＋パスワード） ----
+  //   オーナーがPCで登録したログイン（admin_keys の name="login:<ユーザー名>" の行。key_hash に
+  //   "pbkdf2$<salt>$<hash>" を持つ。sha256の鍵照合には決して一致しない形）と照合し、
+  //   合えばそのPC専用の鍵を発行して返す。以後そのPCはこの鍵で管理操作をする。
+  //   ・PCごとに鍵が分かれるので、「👥 管理者の鍵」で1台ずつ取り消せる
+  //   ・新しいPCから入られたら、オーナーにメールで知らせる
+  //   ・15分に5回まちがえたら、そのユーザー名は15分止める（総当り防止）
+  if (action === "admin_login") {
+    const username = String(body.username || "").trim();
+    const password = String(body.password || "");
+    const device = String(body.device || "").trim().slice(0, 60) || "不明なPC";
+    if (!username || !password) return json({ error: "username and password required" }, 400);
+    const who = `login:${username}`;
+    const since = new Date(Date.now() - 15 * 60_000).toISOString();
+    const fails = await sbGet(`admin_audit?sub=eq.login_fail&actor=eq.${encodeURIComponent(who)}&at=gte.${since}&select=id`).catch(() => []);
+    if (fails.length >= 5) return json({ error: "locked" }, 429);
+    const rows = await sbGet(`admin_keys?name=eq.${encodeURIComponent(who)}&active=eq.true&select=id,key_hash`).catch(() => []);
+    const [kind, salt, hash] = String(rows[0]?.key_hash || "").split("$");
+    const ok = kind === "pbkdf2" && !!salt && (await pbkdf2hex(password, salt)) === hash;
+    if (!ok) {
+      await audit(who, "login_fail", null, { device });
+      return json({ error: "bad_login" }, 401);
+    }
+    const key = "kbadm_" + randomHex(32);
+    const name = `${username}（${device}）`;
+    const ins = await sbInsert({ name, key_hash: await sha256hex(key) }, "admin_keys");
+    await audit(who, "admin_login", null, { device, key_id: ins[0]?.id });
+    const any = await sbGet("remote_licenses?active=eq.true&license_token=not.is.null&select=license_token&limit=1").catch(() => []);
+    if (any[0]?.license_token) await notifyOwner(
+      any[0].license_token,
+      `【建築ブースト管理】別のPCから管理者としてログインがありました（${device}）`,
+      [
+        `ユーザー名：${username}`,
+        `PC：${device}`,
+        `日時：${new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}`,
+        "",
+        "心当たりが無い場合は、アプリの設定「👥 管理者の鍵」で、この PC の鍵を取り消し、",
+        "「別のPCからのログイン」のパスワードを変えてください。",
+      ].join("\n"),
+    );
+    return json({ ok: true, key, name });
+  }
+
   if (action === "claim") {
     if (Deno.env.get("CLAIM_ENABLED") === "false") return json({ error: "claim_disabled" }, 403);
     const company = String(body.company_name || "").trim();
@@ -701,8 +753,30 @@ try {
     const isOwner = actor === "owner";
 
     // ── 鍵の発行・取消・一覧・操作記録は、オーナーだけ ──
-    if (sub === "issue_key" || sub === "revoke_key" || sub === "list_keys" || sub === "audit") {
+    if (sub === "issue_key" || sub === "revoke_key" || sub === "list_keys" || sub === "audit" || sub === "set_login" || sub === "get_login") {
       if (!isOwner) return json({ error: "owner_only" }, 403);
+      // 別PCからのログイン（ユーザー名＋パスワード）の登録・確認。1人1行、登録し直すと上書き。
+      if (sub === "get_login") {
+        const rows = await sbGet("admin_keys?name=like.login:*&active=eq.true&select=name,created_at");
+        return json({ ok: true, usernames: rows.map((r: any) => String(r.name).slice(6)) });
+      }
+      if (sub === "set_login") {
+        const username = String(body.username || "").trim();
+        const password = String(body.password || "");
+        if (!username) return json({ error: "username required" }, 400);
+        if (password.length < 8) return json({ error: "パスワードは8文字以上にしてください" }, 400);
+        const salt = randomHex(16);
+        const key_hash = `pbkdf2$${salt}$${await pbkdf2hex(password, salt)}`;
+        const who = `login:${username}`;
+        const cur = await sbGet(`admin_keys?name=eq.${encodeURIComponent(who)}&select=id`);
+        if (cur.length) {
+          await sbPatch(`admin_keys?id=eq.${cur[0].id}`, { key_hash, active: true, revoked_at: null });
+        } else {
+          await sbInsert({ name: who, key_hash }, "admin_keys");
+        }
+        await audit("owner", "set_login", null, { username });
+        return json({ ok: true });
+      }
       if (sub === "issue_key") {
         const name = String(body.name || "").trim();
         if (!name || name === "owner") return json({ error: "name required" }, 400);
@@ -723,6 +797,12 @@ try {
         return json({ ok: true, rows: await sbGet("admin_keys?select=id,name,active,created_at,last_used_at,revoked_at&order=created_at.desc") });
       }
       return json({ ok: true, rows: await sbGet("admin_audit?select=at,actor,sub,company_name,detail&order=at.desc&limit=200") });
+    }
+    // whoami: 鍵が今も有効かと、誰の鍵かを返すだけ（何も変えない）。
+    //   別PCのKBを管理者用にするとき・そのPCでログインするたびに確かめる。
+    //   鍵を取り消せば、そのPCの管理画面も次のログインから開けなくなる。
+    if (sub === "whoami") {
+      return json({ ok: true, actor, owner: isOwner });
     }
     // list: 全登録の一覧（company指定不要）。管理ダッシュボード/承認画面用。
     // license_token は返さない（オーナー画面にも不要・漏洩面を最小化）。

@@ -75,6 +75,11 @@ export function licenseList(adminSecret: string): Promise<any> {
 export function licenseJoin(companyName: string, joinCode: string, deviceLabel = ''): Promise<any> {
   return licenseRequest({ action: 'join', company_name: companyName, join_code: joinCode, device_label: deviceLabel });
 }
+// 別PCから管理者としてログイン: オーナーが登録したユーザー名＋パスワードで、このPC専用の管理者の鍵を受け取る
+//   { ok, key, name } | { error: 'bad_login' | 'locked' } | null（ネット不通）
+export function licenseAdminLogin(username: string, password: string, device: string): Promise<any> {
+  return licenseRequest({ action: 'admin_login', username, password, device }, 15000);
+}
 // 管理: 承認/却下/クレジット設定（要 adminSecret）
 export function licenseAdmin(adminSecret: string, sub: string, companyName: string, extra: any = {}): Promise<any> {
   return licenseRequest({ action: 'admin', admin_secret: adminSecret, sub, company_name: companyName, ...extra });
