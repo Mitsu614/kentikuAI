@@ -299,14 +299,15 @@ export default function App() {
 
   const currentTenantName = tenants.find(t => t.id === currentTenant)?.name || '';
 
-  const isTrial = tenants.filter(t => t.id > 1).length <= 1;
   const pages: { key: Page; label: string; icon: string }[] = [
     { key: 'dashboard', label: 'ダッシュボード', icon: '📊' },
     { key: 'ai-estimate', label: 'AI 見積もり', icon: '🤖' },
     { key: 'ocr', label: '紙を電子化', icon: '📸' },
     { key: 'image-search', label: '画像検索', icon: '🔍' },
     { key: 'properties', label: '物件管理', icon: '🏠' },
-    ...(!isTrial ? [{ key: 'materials' as Page, label: '材料マスタ', icon: '🧱' }] : []),
+    // 材料マスタ＝御社の単価表。見積の単価をここで確定させるので、会社が1つのPC（＝ふつうのお客様）でも必ず出す。
+    // （以前は「会社が2つ以上あるPC」でしか出ず、お客様が単価表を入れられなかった）
+    { key: 'materials', label: '材料マスタ', icon: '🧱' },
     { key: 'constructions', label: '施工・見積', icon: '🔨' },
     { key: 'invoices', label: '請求書', icon: '📄' },
     { key: 'purchase-orders', label: '発注書', icon: '📝' },
