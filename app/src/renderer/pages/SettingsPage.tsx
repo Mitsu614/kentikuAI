@@ -1674,7 +1674,7 @@ function AdminKeysCard() {
     load();
   };
   const fmt = (s: string) => (s ? new Date(s).toLocaleString('ja-JP') : '—');
-  const SUB: Record<string, string> = { approve: '承認・プラン', reject: '却下', set_credits: '単位', set_active: '停止・再開', set_seats: '席数', issue_key: '鍵の発行', revoke_key: '鍵の取消' };
+  const SUB: Record<string, string> = { approve: '承認・プラン', reject: '却下', set_credits: '単位', set_active: '停止・再開', set_seats: '席数', set_expires: 'デモ期限', issue_key: '鍵の発行', revoke_key: '鍵の取消' };
 
   return (
     <div className="card" style={{ border: '2px solid #7c3aed' }}>

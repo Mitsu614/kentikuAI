@@ -132,6 +132,7 @@ reject: "却下",
 set_credits: "単位の変更",
 set_active: "利用停止・再開",
 set_seats: "席数の変更",
+set_expires: "デモ期限の変更",
 };
 
 // 人が読める参加コード（8桁・紛らわしい 0/O/1/I を除外）。中野さんが会社へ伝える用。
@@ -750,7 +751,7 @@ try {
 
     // ここから下は会社の状態を変える操作。必ず記録し、オーナー以外が行ったらオーナーにメールで知らせる。
     const detail: any = {};
-    for (const k of ["plan", "credits", "max_credits", "max_seats", "active", "message"]) {
+    for (const k of ["plan", "credits", "max_credits", "max_seats", "active", "message", "expires_at"]) {
       if (body[k] !== undefined) detail[k] = body[k];
     }
     if (!ADMIN_SUB_LABEL[String(sub)]) return json({ error: "unknown sub" }, 400);
@@ -830,6 +831,18 @@ try {
         active, updated_at: new Date().toISOString(),
       });
       return json({ ok: true });
+    }
+    // set_expires: デモの期限を延ばす（検討中のお客様の延長用）。
+    //   9/3より前に始まったデモは expires_at が空で、アプリは「開始日＋30日」で止める。
+    //   ここで日付を入れると、次の同期でアプリの plan_expires_at に写り、その日まで使える。
+    //   日付は「その日の終わり（日本時間）」まで有効にする。
+    if (sub === "set_expires") {
+      const d = String(body.expires_at || "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return json({ error: "expires_at は YYYY-MM-DD で指定してください" }, 400);
+      const expires_at = new Date(`${d}T23:59:59+09:00`).toISOString();
+      if (new Date(expires_at).getTime() < Date.now()) return json({ error: "過去の日付は指定できません" }, 400);
+      await sbPatch(`remote_licenses?id=eq.${tid}`, { expires_at, updated_at: new Date().toISOString() });
+      return json({ ok: true, expires_at });
     }
     return json({ error: "unknown sub" }, 400);
   }

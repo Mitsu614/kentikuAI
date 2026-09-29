@@ -2676,6 +2676,17 @@ function setupAutoUpdater() {
     return { ok: true, credits: c, maxCredits: m };
   });
 
+  // デモの期限を延ばす（Edge Function set_expires）。date は 'YYYY-MM-DD'＝その日の終わりまで使える。
+  //   顧客アプリは次の同期（起動時・5分ごと）で plan_expires_at に写して、止まっていれば再び使えるようになる。
+  ipcMain.handle('remote:setExpires', async (_e, companyName: string, date: string) => {
+    const adminSecret = loadApiConfig().adminSecret || '';
+    if (!adminSecret) return { ok: false, error: 'adminSecret未設定（設定画面で管理者シークレットを入力してください）' };
+    const res = await licenseAdmin(adminSecret, 'set_expires', companyName, { expires_at: date });
+    if (!res || res.error) return { ok: false, error: res?.error || '期限の変更に失敗しました' };
+    logAudit('update', 'license', 0, `${companyName} デモ期限: ${date}まで`);
+    return { ok: true, expiresAt: res.expires_at };
+  });
+
   // スマホ承認の「信頼端末」状態を取得（PCの管理画面用）
   ipcMain.handle('admin:getTrustedDevice', async () => {
     try { const cfg = loadApiConfig(); return { trusted: !!cfg.trustedAdminDeviceId, at: cfg.trustedAdminDeviceAt || '' }; }

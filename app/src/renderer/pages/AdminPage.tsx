@@ -270,6 +270,7 @@ export default function AdminPage() {
   const [creditEdits, setCreditEdits] = useState<Record<number, string>>({});
   // リモートライセンスの残/上限（会社名キー）。空欄はその項目を変えない意味。
   const [credEdits, setCredEdits] = useState<Record<string, { credits?: string; max?: string }>>({});
+  const [expEdits, setExpEdits] = useState<Record<string, string>>({});
   const [usageEdits, setUsageEdits] = useState<Record<number, string>>({});
   const [tenantUsages, setTenantUsages] = useState<Record<number, { used: number; limit: number; remaining: number; expiresAt?: string | null; daysLeft?: number | null }>>({});
 
@@ -425,6 +426,24 @@ export default function AdminPage() {
         showToast(res?.error || '変更に失敗しました');
       }
     } catch (e) { console.error(e); showToast('変更に失敗しました'); }
+  };
+
+  // デモ期限の延長。検討中のお客様が期限で止まったとき用（9/3より前のデモは期限がサーバーに無く、
+  // 開始日＋30日で止まっている＝単位を足しても動かない）。
+  const handleSetLicenseExpires = async (r: any) => {
+    const date = expEdits[r.company_name] || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { showToast('延長後の日付を選んでください'); return; }
+    if (!window.confirm(`「${r.company_name}」のデモを ${date} まで使えるようにします。\n\nよろしいですか？`)) return;
+    try {
+      const res = await (window as any).api.setLicenseExpires(r.company_name, date);
+      if (res?.ok) {
+        showToast(`${r.company_name} のデモを ${date} まで延ばしました`);
+        setExpEdits(prev => ({ ...prev, [r.company_name]: '' }));
+        await loadTenants();
+      } else {
+        showToast(res?.error || '期限の変更に失敗しました');
+      }
+    } catch (e) { console.error(e); showToast('期限の変更に失敗しました'); }
   };
 
   const handleToggleActive = async (tenant: Tenant) => {
@@ -640,6 +659,21 @@ export default function AdminPage() {
                                 {days !== null && !dead && (
                                   <div style={{ fontSize: 11, color: days <= 7 ? '#e67e22' : '#888', marginTop: 3 }}>
                                     残り{days}日（{String(r.expires_at).split('T')[0]}まで）
+                                  </div>
+                                )}
+                                {/* 期限が空のデモ（9/3より前の開始）もアプリ側では開始日＋30日で止まるので、デモなら常に出す */}
+                                {r.plan === 'demo' && (
+                                  <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 4, fontSize: 11 }}>
+                                    <input
+                                      type="date"
+                                      value={expEdits[r.company_name] || ''}
+                                      onChange={e => setExpEdits(prev => ({ ...prev, [r.company_name]: e.target.value }))}
+                                      style={{ padding: '1px 4px', border: '1px solid #ddd', borderRadius: 4, fontSize: 11 }}
+                                    />
+                                    <button
+                                      style={{ ...styles.btnSm(COLOR.primary), fontSize: 10, padding: '2px 6px' }}
+                                      onClick={() => handleSetLicenseExpires(r)}
+                                    >期限を延ばす</button>
                                   </div>
                                 )}
                                 {!r.verified_at && r.plan === 'demo' && (
