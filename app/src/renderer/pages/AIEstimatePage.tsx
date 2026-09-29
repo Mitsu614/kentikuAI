@@ -652,6 +652,60 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setResult({ ...result, breakdown: next, estimatedTotal: sum });
   };
 
+  // ── 内訳の行を外す（1行ずつ／場所ごとにまとめて）。外した行は戻せる ──
+  // 「トイレはやめる」と言われたとき、その場で外して金額を見せるため。
+  // 合計だけでなく、材料費・人件費・経費（原価）も外した分を引く。上の欄と内訳が食い違わないように。
+  const [removedRows, setRemovedRows] = useState<{ label: string; rows: { row: any; index: number; base: number }[] }[]>([]);
+  useEffect(() => { setRemovedRows([]); }, [baseline]);   // 新しい見積・別の見積を開いたら、戻す履歴は捨てる
+  const costFieldOf = (b: any): 'estimatedMaterialCost' | 'estimatedLaborCost' | 'estimatedExpenseCost' => {
+    const c = String(b?.category || '');
+    return c === '材料' ? 'estimatedMaterialCost' : c === '施工費' ? 'estimatedLaborCost' : 'estimatedExpenseCost';
+  };
+  // その行の原価。AIが原価(costBase)を書いていればそれ、無ければ見積全体の 原価÷売価 の比率で出す
+  const rowBase = (b: any, res: any) => {
+    const cost = Number(b?.cost) || 0;
+    const cb = Number(b?.costBase) || 0;
+    if (cb > 0 && cb <= cost) return cb;
+    const tot = Number(res.estimatedTotal) || 0;
+    const cs = (Number(res.estimatedMaterialCost) || 0) + (Number(res.estimatedLaborCost) || 0) + (Number(res.estimatedExpenseCost) || 0);
+    return tot > 0 && cs > 0 ? Math.round(cost * cs / tot) : cost;
+  };
+  // 外したときの原価を覚えておき、戻すときも同じ額を足す（比率から出し直すと、戻したときに数百円ずれる）
+  const shiftCosts = (res: any, rows: { row: any; base: number }[], sign: 1 | -1) => {
+    const next: any = { ...res };
+    for (const r of rows) {
+      const f = costFieldOf(r.row);
+      next[f] = Math.max(0, Math.round((Number(next[f]) || 0) + sign * r.base));
+    }
+    return next;
+  };
+  const removeBreakdownRows = (pick: (b: any, i: number) => boolean, label: string) => {
+    if (!result || !Array.isArray(result.breakdown)) return;
+    const taken: { row: any; index: number; base: number }[] = [];
+    const keep: any[] = [];
+    result.breakdown.forEach((b: any, i: number) => (pick(b, i) ? taken.push({ row: b, index: i, base: rowBase(b, result) }) : keep.push(b)));
+    if (!taken.length) return;
+    const next = shiftCosts(result, taken, -1);
+    next.breakdown = keep;
+    next.estimatedTotal = keep.reduce((t: number, r: any) => t + (Number(r.cost) || 0), 0);
+    setOpenBasis(null);
+    setResult(next);
+    setRemovedRows((p) => [...p, { label, rows: taken }]);
+  };
+  const restoreRemovedRows = () => {
+    if (!result || !removedRows.length) return;
+    const last = removedRows[removedRows.length - 1];
+    const rows = [...(result.breakdown || [])];
+    // 元の位置に差し戻す（前から順に入れれば、元の並びに戻る）
+    [...last.rows].sort((a, b) => a.index - b.index).forEach((t) => rows.splice(Math.min(t.index, rows.length), 0, t.row));
+    const next = shiftCosts(result, last.rows, 1);
+    next.breakdown = rows;
+    next.estimatedTotal = rows.reduce((t: number, r: any) => t + (Number(r.cost) || 0), 0);
+    setOpenBasis(null);
+    setResult(next);
+    setRemovedRows((p) => p.slice(0, -1));
+  };
+
   const canAnalyze = mode === 'single'
     ? (!!imageData || comment.trim().length > 0 || hasTakeoff)
     : (!!beforeImage && !!afterImage) || comment.trim().length > 0;
@@ -4251,7 +4305,19 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                       {places.map((k: string) => (
                         <div key={k} style={{ background: '#fff', border: '1px solid #dde7f1', borderRadius: 6, padding: '6px 10px', minWidth: 120 }}>
-                          <div style={{ fontSize: 11, color: '#607d8b' }}>{k}</div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                            <span style={{ fontSize: 11, color: '#607d8b' }}>{k}</span>
+                            {k !== '共通' && (
+                              <button type="button" title={`${k}の行をまとめて見積から外します（あとで戻せます）`}
+                                onClick={() => {
+                                  const n = result.breakdown.filter((b: any) => String(b?.location || '').trim() === k).length;
+                                  if (!window.confirm(`「${k}」の${n}行（${fmt(sums[k])}）を見積から外しますか？\n外したあとでも「↩ 戻す」で元に戻せます。`)) return;
+                                  removeBreakdownRows((b: any) => String(b?.location || '').trim() === k, k);
+                                }}
+                                style={{ border: '1px solid #f3c2bd', background: '#fff5f4', color: '#c0392b', borderRadius: 5, fontSize: 10.5, padding: '0 6px', cursor: 'pointer' }}
+                              >✕ 外す</button>
+                            )}
+                          </div>
                           <div style={{ fontSize: 15, fontWeight: 'bold', color: '#1a2b4a' }}>{fmt(sums[k])}</div>
                         </div>
                       ))}
@@ -4263,11 +4329,21 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       )}
                     </div>
                     <div style={{ fontSize: 11, color: '#78909c', marginTop: 6 }}>
-                      部屋を1つ外すときは、その場所の行を削って小計を引いてください。
+                      部屋を1つやめるときは「✕ 外す」でその場所の行をまとめて外せます。金額はその場で引き直します。
                     </div>
                   </div>
                 );
               })()}
+              {removedRows.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', fontSize: 12, background: '#fff5f4', border: '1px solid #f3c2bd', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+                  <span style={{ color: '#8a2c22' }}>
+                    外した行：{removedRows.map((g) => `${g.label}（${g.rows.length}行）`).join('、')}
+                  </span>
+                  <button type="button" className="btn btn-sm" onClick={restoreRemovedRows}>
+                    ↩ 戻す（{removedRows[removedRows.length - 1].label}）
+                  </button>
+                </div>
+              )}
               {Object.keys(takeoffByName).length > 0 && (
                 <div style={{ fontSize: 11, color: '#2e7d32', background: '#eaf6ee', border: '1px solid #cfe6d6', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
                   📐 のついた行は<strong>図面から拾った数量</strong>です。クリックすると計算式・寸法・出典（どの図面のどこか）が開きます。
@@ -4286,6 +4362,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       <th style={{ width: 130, textAlign: 'right' }}>金額</th>
                       <th style={{ minWidth: 260 }}>備考（単価の内訳・根拠）</th>
                       <th style={{ textAlign: 'center', width: 70 }}>発注書</th>
+                      <th style={{ width: 30 }}></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4379,10 +4456,16 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                                 }}
                               >📄 出力</button>
                             </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button type="button" title="この行を見積から外す（あとで戻せます）"
+                                onClick={() => removeBreakdownRows((_b: any, j: number) => j === i, String(b.item || 'この行').slice(0, 20))}
+                                style={{ border: 'none', background: 'none', color: '#b0bec5', cursor: 'pointer', fontSize: 15, padding: '2px 4px' }}
+                              >✕</button>
+                            </td>
                           </tr>
                           {src && openBasis === i && (
                             <tr>
-                              <td colSpan={9} style={{ background: '#f6fbf7', borderLeft: '3px solid #66bb6a' }}>
+                              <td colSpan={10} style={{ background: '#f6fbf7', borderLeft: '3px solid #66bb6a' }}>
                                 <div style={{ fontSize: 12, color: '#37474f', lineHeight: 1.9, padding: '4px 2px' }}>
                                   <div><strong>拾い出し根拠</strong>（{src.part || '—'} ／ {src.method || '—'}）</div>
                                   <div>計算式: <span style={{ fontFamily: 'monospace', color: '#2e7d32' }}>{src.formula || '—'}</span></div>
