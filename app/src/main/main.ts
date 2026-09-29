@@ -1319,6 +1319,82 @@ function enforceHeatshieldQuantity(result: any, context: string): string[] {
  *
  * 登録が無ければ空文字を返す（これまでどおり公的単価で積む）。
  */
+// ── 御社の単価表（材料マスタ）を見積に効かせる ─────────────────────────
+// 単価は、お客様が単価表として既に持っている。表にある品目は、AIに推測させず表の単価で確定させる。
+//   1) プロンプトに単価表を載せ、該当する行は表の品名・単価をそのまま使わせる
+//   2) AIの出力を受けたあと、表と「品名・単位が一致する行」は機械で単価を表の値に揃える（確実にする）
+//   ★表の単価は「見積に書く単価（売値）」として扱う。原価との比率（粗利率）はAIの原案のまま保つ。
+//   ★品名の一致は表記ゆれ（全角半角・空白）だけ吸収する完全一致。似た名前を勝手に当てない。
+function normPriceName(v: any): string {
+  return String(v ?? '').normalize('NFKC').replace(/[\s　]+/g, '').toLowerCase();
+}
+function normPriceUnit(v: any): string {
+  const u = String(v ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase();
+  if (/^(m2|m²|㎡|平米|平方メートル)$/.test(u)) return '㎡';
+  if (/^(m3|m³|㎥|立米)$/.test(u)) return '㎥';
+  if (/^(箇所|ヶ所|か所|カ所|ケ所|所)$/.test(u)) return '箇所';
+  return u;
+}
+function loadPriceTable(tid: number): { name: string; unit: string; price: number }[] {
+  try {
+    return (queryAll(
+      `SELECT name, unit, unit_price FROM materials
+        WHERE tenant_id = ? AND unit_price > 0 AND COALESCE(category, '') != '値引き'
+        ORDER BY category, name`, [tid]) as any[])
+      .map((r) => ({ name: String(r.name || '').trim(), unit: String(r.unit || '').trim(), price: Number(r.unit_price) || 0 }))
+      .filter((r) => r.name && r.price > 0);
+  } catch (_) { return []; }
+}
+// 見積の指紋に入れる。単価表を変えたら、前回の見積を使い回さずに作り直すため。
+function priceTableKey(tid: number): string {
+  const t = loadPriceTable(tid);
+  if (!t.length) return '';
+  return crypto.createHash('sha256')
+    .update(t.map((r) => `${normPriceName(r.name)}|${normPriceUnit(r.unit)}|${r.price}`).sort().join('\n'))
+    .digest('hex').slice(0, 16);
+}
+function buildMaterialPricePrompt(tid: number): string {
+  const t = loadPriceTable(tid);
+  if (!t.length) return '';
+  const MAX = 300;   // 多すぎるとプロンプトが膨らむ。超えた分は機械の照合だけで当てる
+  const lines = t.slice(0, MAX).map((r) => `- ${r.name}｜${r.unit || '—'}｜${r.price.toLocaleString()}円`);
+  return `\n## ★この会社の単価表（最優先・この単価で見積に書け）★\n`
+    + `品名｜単位｜単価\n${lines.join('\n')}\n`
+    + (t.length > MAX ? `（ほか${t.length - MAX}件）\n` : '')
+    + `★この表にある品目を使うときは、breakdown の item に**表の品名をそのまま**書き、unitPrice は**表の単価**にしろ。相場データより優先。\n`
+    + `★表に無い品目だけ、相場データや実績から出してよい。\n`;
+}
+// AIの内訳を、単価表の単価に揃える（reconcileEstimateTotal の前に呼ぶ）。
+function applyPriceTable(result: any, tid: number): string[] {
+  const rows: any[] = Array.isArray(result?.breakdown) ? result.breakdown : [];
+  const t = loadPriceTable(tid);
+  if (!rows.length || !t.length) return [];
+  const table = new Map<string, number>();
+  for (const r of t) table.set(`${normPriceName(r.name)}|${normPriceUnit(r.unit)}`, r.price);
+  const applied: string[] = [];
+  for (const b of rows) {
+    const price = table.get(`${normPriceName(b?.item)}|${normPriceUnit(b?.unit)}`);
+    const q = Number(b?.quantity) || 0;
+    if (!price || !(q > 0)) continue;
+    const oldUnit = Number(b.unitPrice) || 0;
+    const oldCost = Number(b.cost) || 0;
+    const oldBase = Number(b.costBase) || 0;
+    const newCost = Math.round(q * price);
+    // 原価との比率（粗利率）はAIの原案のまま保つ。原価が無い・おかしいときは消して、既定の掛率に任せる
+    const ratio = oldBase > 0 && oldCost > 0 && oldBase <= oldCost ? oldBase / oldCost : 0;
+    b.unitPrice = price;
+    b.cost = newCost;
+    if (ratio > 0) b.costBase = Math.round(newCost * ratio); else delete b.costBase;
+    b.priceSource = '御社の単価表';
+    if (!/御社の単価表/.test(String(b.note || ''))) b.note = `${b.note ? b.note + ' / ' : ''}御社の単価表の単価`;
+    if (oldUnit !== price) applied.push(`${b.item} ${oldUnit.toLocaleString()}→${price.toLocaleString()}円`);
+    else applied.push(`${b.item}`);
+  }
+  if (!applied.length) return [];
+  const changed = applied.filter((a) => a.includes('→'));
+  return [`御社の単価表の単価を ${applied.length}行に使いました${changed.length ? `（AIの単価から直した行: ${changed.slice(0, 5).join('、')}${changed.length > 5 ? ' ほか' : ''}）` : ''}。`];
+}
+
 function buildLaborRatePrompt(): string {
   try {
     const rows = queryAll(
@@ -1695,7 +1771,7 @@ function estimateFingerprint(input: {
   tenantId: number; industryType: string; comment?: string; location?: string; area?: string;
   structure?: string; buildingAge?: string; roofType?: string; siteConditions?: any;
   clientAttrs?: any; takeoff?: any; imageBase64?: string; beforeImage?: string; afterImage?: string;
-  extraImages?: string[];
+  extraImages?: string[]; priceKey?: string;
 }): string {
   // 画像は中身そのもので照合する（撮り直した写真は別物として扱う＝それが正しい）
   const imgHash = (b64: any) => {
@@ -1727,6 +1803,8 @@ function estimateFingerprint(input: {
     imgHash(input.beforeImage),
     imgHash(input.afterImage),
     (input.extraImages || []).map(imgHash).join(','),
+    // 単価表があるときだけ足す（無い会社の指紋は今までと同じ＝過去の見積の使い回しが効く）
+    ...(input.priceKey ? ['price:' + input.priceKey] : []),
   ];
   return crypto.createHash('sha256').update(parts.join('')).digest('hex');
 }
@@ -4961,6 +5039,77 @@ app.whenReady().then(async () => {
     return newId;
   });
 
+  // ── 単価表の取り込み（Excel / CSV）──
+  // お客様の単価表をそのまま材料マスタに入れる。見出しの行（品名・単価など）を自動で探し、
+  // 同じ品名・単位がすでにあれば単価だけ上書き、無ければ追加する。
+  // ★読めない行は飛ばして数を返す（推測で埋めない）。
+  ipcMain.handle('materials:importPriceTable', async () => {
+    const pick = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '単価表', extensions: ['xlsx', 'csv'] }] });
+    if (pick.canceled || !pick.filePaths.length) return { ok: false, canceled: true };
+    const file = pick.filePaths[0];
+    let grid: string[][] = [];
+    try {
+      if (/\.xlsx$/i.test(file)) {
+        const ExcelJS = require('exceljs');
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.readFile(file);
+        const ws = wb.worksheets[0];
+        ws.eachRow({ includeEmpty: false }, (row: any) => {
+          const vals = (row.values as any[]).slice(1).map((v: any) => {
+            if (v == null) return '';
+            if (typeof v === 'object') return String(v.result ?? v.text ?? (v.richText ? v.richText.map((t: any) => t.text).join('') : ''));
+            return String(v);
+          });
+          grid.push(vals);
+        });
+      } else {
+        let txt = fs.readFileSync(file, 'utf-8').replace(/^\uFEFF/, '');
+        grid = txt.split(/\r?\n/).filter((l) => l.trim()).map((l) => (l.match(/("([^"]|"")*"|[^,]*)(,|$)/g) || [])
+          .map((c) => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim()));
+      }
+    } catch (e: any) {
+      return { ok: false, error: 'ファイルを読めませんでした: ' + (e?.message || e) };
+    }
+    const norm = (v: any) => String(v ?? '').normalize('NFKC').replace(/[\s　]+/g, '');
+    const find = (row: string[], re: RegExp) => row.findIndex((c) => re.test(norm(c)));
+    let h = -1, cName = -1, cPrice = -1, cUnit = -1, cCat = -1, cSpec = -1;
+    for (let i = 0; i < Math.min(grid.length, 15); i++) {
+      const n = find(grid[i], /^(品名|名称|材料名|品目|商品名|項目|工種|名前)$/);
+      const p = find(grid[i], /(単価|価格|金額)/);
+      if (n >= 0 && p >= 0) {
+        h = i; cName = n; cPrice = p;
+        cUnit = find(grid[i], /^(単位)$/);
+        cCat = find(grid[i], /^(区分|分類|カテゴリ|カテゴリー|種別|部位)$/);
+        cSpec = find(grid[i], /^(規格|仕様|品番|型番|寸法)$/);
+        break;
+      }
+    }
+    if (h < 0) return { ok: false, error: '見出しの行が見つかりませんでした。「品名」と「単価」という見出しの列を用意してください。' };
+    const tid = getCurrentTenant();
+    let inserted = 0, updated = 0, skipped = 0;
+    for (const row of grid.slice(h + 1)) {
+      const base = String(row[cName] ?? '').trim();
+      const spec = cSpec >= 0 ? String(row[cSpec] ?? '').trim() : '';
+      const name = spec && !base.includes(spec) ? `${base} ${spec}` : base;
+      const price = Number(norm(row[cPrice]).replace(/[,¥￥円]/g, ''));
+      if (!base || !(price > 0)) { skipped++; continue; }
+      const unit = cUnit >= 0 ? String(row[cUnit] ?? '').trim() || '式' : '式';
+      const cat = cCat >= 0 ? String(row[cCat] ?? '').trim() || 'その他' : 'その他';
+      const existing = (queryAll('SELECT id, name, unit FROM materials WHERE tenant_id = ?', [tid]) as any[])
+        .find((m) => normPriceName(m.name) === normPriceName(name) && normPriceUnit(m.unit) === normPriceUnit(unit));
+      if (existing) {
+        runSql('UPDATE materials SET unit_price = ?, notes = ? WHERE id = ?', [price, '単価表から取り込み', existing.id]);
+        updated++;
+      } else {
+        runSql('INSERT INTO materials (name, category, unit, unit_price, notes, tenant_id) VALUES (?,?,?,?,?,?)',
+          [name, cat, unit, price, '単価表から取り込み', tid]);
+        inserted++;
+      }
+    }
+    logAudit('import', 'materials', 0, `単価表 ${path.basename(file)}: 追加${inserted} 更新${updated} 飛ばし${skipped}`);
+    return { ok: true, inserted, updated, skipped };
+  });
+
   // ── 材料マスタCSVインポート ──
   ipcMain.handle('materials:importCSV', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'CSV', extensions: ['csv'] }] });
@@ -7082,6 +7231,7 @@ ${pages}</body></html>`;
       structure, buildingAge, roofType, siteConditions, clientAttrs, takeoff,
       imageBase64, beforeImage, afterImage,
       extraImages: extraShots,
+      priceKey: priceTableKey(getEstimateTenant()),   // 当てる単価表は見積の参照テナントのもの
     });
     if (!data?.forceFresh) {
       try {
@@ -7162,10 +7312,10 @@ ${pages}</body></html>`;
     if (!config.anthropicKey) throw new Error('AI機能の初期化に失敗しました。サポートにお問い合わせください。設定画面から入力してください。');
 
     // DBの既存施工・材料データを取得
-    const materialCategories = queryAll('SELECT DISTINCT category FROM materials ORDER BY category');
-
     // 見積が参照するテナント（管理者は検証用に切替可）。統計・実績アンカーの両方でこれを使う。
     const estTid = getEstimateTenant();
+    // ★この会社の材料カテゴリだけ。以前はテナントの絞り込みが無く、他社のカテゴリ名がプロンプトに混ざっていた
+    const materialCategories = queryAll('SELECT DISTINCT category FROM materials WHERE tenant_id = ? ORDER BY category', [estTid]);
 
     // 過去の実績を工事タイプ別に統計集約してAIに渡す。
     // ★tenant_id で必ず絞ること。絞らないと他社の平均単価が自社の見積プロンプトに載る。
@@ -7829,7 +7979,7 @@ ${(desiredDeadline && String(desiredDeadline).trim()) ? `## ★希望納期・�
   ・詰められる場合: 増員（例 職人◯人→◯人）・残業・応援・材料の急ぎ手配などで「△日に短縮可能」と示し、それに伴う割増費用の概算（応援日当・残業手当・特急手配料等の内訳と合計 約◯円）を書け。
   ・物理的に厳しい場合: 「最短◯日を推奨。1日は乾燥待ち・検査・段取り・安全確保の点で無理」と正直に相談し、無理な短縮が品質不良・事故・赤字につながる旨を職人目線で伝えろ。
 ★本体の見積金額（breakdown・estimatedTotal）は変えるな。短縮に伴う割増は scheduleProposal 内の"別途"提案として書き、本体には混ぜるな。` : ''}
-${droneInfo}${droneCSVInfo}${industryPrompt}${buildLaborRatePrompt()}
+${droneInfo}${droneCSVInfo}${industryPrompt}${buildLaborRatePrompt()}${buildMaterialPricePrompt(estTid)}
 ## ★★★ 最重要ルール（絶対に守れ）★★★
 1. breakdownには「ユーザーが依頼した工事内容」に直接関係する項目だけを入れろ
 2. ユーザーが「キッチン交換」としか書いていないなら、キッチン関連の材料・施工費だけをbreakdownに入れろ。外壁・屋根・耐震・浴室など依頼されていない工事は絶対にbreakdownに入れるな
@@ -8110,12 +8260,14 @@ manDaysBreakdownの書き方例:
       const parsedResult = parseLenientJson(jsonStr);
       // 切れた行（金額なし）は内訳から落としてから積み直す。0円の行を総額に混ぜない。
       const dropped = dropPricelessBreakdownRows(parsedResult);
+      // 御社の単価表にある品目は、表の単価に揃えてから積み直す（総額・材料費も表の単価で出る）
+      const priceWarns = applyPriceTable(parsedResult, estTid);
       const estimateResult = reconcileEstimateTotal(
         parsedResult, 'analyze',
         industryType === 'heatshield' ? HEATSHIELD_MARKUP : DEFAULT_MARKUP
       );
       // reconcileEstimateTotal は estimateWarnings を上書きするので、警告はこの後に足す
-      const dropWarns = droppedRowWarnings(dropped);
+      const dropWarns = [...priceWarns, ...droppedRowWarnings(dropped)];
       if (dropped.truncated > 0) estimateResult.truncatedRows = dropped.truncated;
       if (dropped.truncated === 0 && finalMsg.stop_reason === 'max_tokens') {
         dropWarns.unshift('AIの出力が上限で切れました。内訳に抜けが無いかご確認ください。');

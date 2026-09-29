@@ -60,6 +60,16 @@ export default function MaterialsPage() {
       <div style={{ marginBottom: 12 }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 材料名・カテゴリで検索..." style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6, width: 300, fontSize: 14 }} />
         <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-primary" title="御社の単価表（Excel・CSV）をそのまま取り込みます。見積では、表にある品目はこの単価で出します" onClick={async () => {
+            const r = await (window as any).api.importPriceTable();
+            if (!r || r.canceled) return;
+            if (!r.ok) { alert(r.error || '取り込めませんでした'); return; }
+            alert(`単価表を取り込みました。
+追加 ${r.inserted}件 ／ 単価を更新 ${r.updated}件${r.skipped ? ` ／ 読めずに飛ばした行 ${r.skipped}件` : ''}
+
+これから作る見積では、表にある品目はこの単価で出します。`);
+            load();
+          }}>📥 単価表を取り込む（Excel・CSV）</button>
           <button className="btn btn-secondary" onClick={async () => { const n = await (window as any).api.importMaterialsCSV(); if (n) { alert(`${n}件インポートしました`); load(); } }}>CSVインポート</button>
           <button className="btn btn-primary" onClick={openCreate}>+ 新規材料</button>
         </div>
