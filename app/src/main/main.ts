@@ -7,7 +7,7 @@ import { startServer, getServerUrl, setConfigLoader, setConfigSaver, setAnalyzeH
 import { COST_REFERENCE } from './cost-reference';
 import { dropPricelessBreakdownRows, droppedRowWarnings } from './breakdown-rows';
 import { geocode, fetchAerial, pickView, pixelToLonLat, metersPerPixel, LEVEL_LABEL, ATTRIBUTION as AERIAL_ATTRIBUTION, fetchLandmarks, OSM_ATTRIBUTION, searchPlaces, MIN_ZOOM, MAX_ZOOM, AddressLevel, isPlaceName } from './aerial';
-import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseAdminLogin, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge, sendTakeoffFeedback, fetchTakeoffKnowledge, fetchMarketReference } from './supabase-sync';
+import { sendFeedbackToSupabase, fetchCostCoefficients, coefficientsToPromptText, analyzeAndUpdateCoefficients, licenseVerify, licenseConsume, licenseClaim, licenseRegister, licenseRegisterPending, licenseList, licenseJoin, licenseAdmin, licenseAdminLogin, licenseNdaAgree, licenseNdaStatus, licenseDemoStart, licenseDemoVerify, normalizeWorkType, sendMailEdge, sendTakeoffFeedback, fetchTakeoffKnowledge, fetchMarketReference } from './supabase-sync';
 import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './external-data';
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 import { buildLearningContext, dropSummaryRows } from './learning-context';
@@ -2674,6 +2674,28 @@ function setupAutoUpdater() {
     } catch (e) { console.error('ローカルの写し更新に失敗:', e); }
     logAudit('update', 'license', 0, `${companyName} クレジット: ${c}/${m}`);
     return { ok: true, credits: c, maxCredits: m };
+  });
+
+  // 秘密保持契約（図面・見積書の受け渡し）。お客様が設定画面でチェックを入れて同意する。
+  //   正はサーバーの記録。ネットが無いときの表示用に、このPCにも写しを持つ（ndaAgreed）。
+  ipcMain.handle('nda:status', async () => {
+    const local = loadApiConfig().ndaAgreed || null;
+    const token = currentLicenseToken || getStoredLicenseToken();
+    if (!token) return { ok: true, agreed: local, company: '' };
+    const r = await licenseNdaStatus(token);
+    if (!r || !r.ok) return { ok: true, agreed: local, company: '', offline: true };
+    const a = r.agreed ? { version: r.agreed.detail?.version, signer: r.agreed.detail?.signer, title: r.agreed.detail?.title, at: r.agreed.at } : null;
+    return { ok: true, agreed: a || local, company: r.company || '' };
+  });
+  ipcMain.handle('nda:agree', async (_e, version: string, signer: string, title: string) => {
+    const token = currentLicenseToken || getStoredLicenseToken();
+    if (!token) return { ok: false, error: 'ご契約の確認ができませんでした。アプリを再起動してからお試しください' };
+    const r = await licenseNdaAgree(token, String(version || ''), String(signer || '').trim(), String(title || '').trim());
+    if (!r) return { ok: false, error: 'ネットにつながらないため、同意を記録できませんでした' };
+    if (!r.ok) return { ok: false, error: r.error || '同意を記録できませんでした' };
+    const cfg = loadApiConfig(); cfg.ndaAgreed = { version, signer, title, at: r.at }; saveApiConfig(cfg);
+    logAudit('create', 'nda', 0, `${r.company} 秘密保持契約に同意（${signer}・${version}）`);
+    return { ok: true, at: r.at, company: r.company };
   });
 
   // デモの期限を延ばす（Edge Function set_expires）。date は 'YYYY-MM-DD'＝その日の終わりまで使える。

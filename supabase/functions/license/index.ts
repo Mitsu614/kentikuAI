@@ -301,6 +301,43 @@ try {
     return json(publicView(lic));
   }
 
+  // ---- 秘密保持契約（図面・見積書の受け渡し）への同意 ----
+  //   お客様がアプリの設定画面でチェックを入れて同意する。記録は admin_audit に残す
+  //   （誰が・いつ・どの版に同意したか。改ざんされないようサーバー側だけが書く）。
+  //   nda_status はその会社の最新の同意を返す。
+  if (action === "nda_agree" || action === "nda_status") {
+    const token = String(body.token || "");
+    if (!token) return json({ error: "token required" }, 400);
+    const lic = await resolveLicense(token);
+    if (!lic) return json({ error: "invalid_token" }, 404);
+    const own = await sbGet(`remote_licenses?id=eq.${encodeURIComponent(lic.id)}&select=company_name`);
+    const company = String(own[0]?.company_name || "");
+    if (action === "nda_status") {
+      const rows = await sbGet(
+        `admin_audit?sub=eq.nda_agree&company_name=eq.${encodeURIComponent(company)}&select=at,detail&order=at.desc&limit=1`,
+      ).catch(() => []);
+      return json({ ok: true, company, agreed: rows[0] || null });
+    }
+    const version = String(body.version || "").slice(0, 40);
+    const signer = String(body.signer || "").trim().slice(0, 60);
+    if (!version || !signer) return json({ error: "version and signer required" }, 400);
+    const at = new Date().toISOString();
+    await sbInsert({ actor: `customer:${company}`, sub: "nda_agree", company_name: company, detail: { version, signer, title: String(body.title || "").slice(0, 60) } }, "admin_audit");
+    await notifyOwner(
+      lic.license_token || token,
+      `【建築ブースト】${company} 様が秘密保持契約に同意しました`,
+      [
+        `会社名：${company}`,
+        `同意した方：${signer}${body.title ? `（${String(body.title).slice(0, 60)}）` : ""}`,
+        `契約書の版：${version}`,
+        `日時：${new Date(at).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })}`,
+        "",
+        "これで、この会社から図面・見積書を受け取れます。",
+      ].join("\n"),
+    );
+    return json({ ok: true, company, at });
+  }
+
   // ---- consume: サーバー側でクレジットを減算（原子更新）----
   // read-modify-write ではなく Postgres 関数(consume_credits)で行ロックしつつ減算する。
   // → 同一トークンの並行 consume でも二重消費(ロストアップデート)が起きない。

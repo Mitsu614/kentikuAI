@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { PageGuide } from '../components/PageGuide';
+import NdaCard from '../components/NdaCard';
 
 // Sub-components are at the bottom of this file
 
@@ -189,6 +190,9 @@ export default function SettingsPage() {
 
       {/* プラン・AIストック管理 */}
       <PlanManagement />
+
+      {/* 秘密保持契約（お客様だけに出る。図面・見積書を預かる前に同意してもらう） */}
+      <NdaCard />
 
       {/* 管理者用: プラン申請管理 */}
       <PlanAdmin />
@@ -1691,7 +1695,7 @@ function AdminKeysCard() {
     load();
   };
   const fmt = (s: string) => (s ? new Date(s).toLocaleString('ja-JP') : '—');
-  const SUB: Record<string, string> = { set_login: '別PCログインの登録', admin_login: '別PCから管理者ログイン', login_fail: '別PCログイン失敗', approve: '承認・プラン', reject: '却下', set_credits: '単位', set_active: '停止・再開', set_seats: '席数', set_expires: 'デモ期限', issue_key: '鍵の発行', revoke_key: '鍵の取消' };
+  const SUB: Record<string, string> = { set_login: '別PCログインの登録', admin_login: '別PCから管理者ログイン', login_fail: '別PCログイン失敗', approve: '承認・プラン', reject: '却下', set_credits: '単位', set_active: '停止・再開', set_seats: '席数', set_expires: 'デモ期限', nda_agree: '秘密保持契約に同意', issue_key: '鍵の発行', revoke_key: '鍵の取消' };
 
   return (
     <div className="card" style={{ border: '2px solid #7c3aed' }}>

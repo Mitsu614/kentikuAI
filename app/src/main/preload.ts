@@ -320,6 +320,9 @@ contextBridge.exposeInMainWorld('api', {
   // 残クレジットと上限を別々に設定（会社名がキー＝ローカルのテナント行が無くても操作できる）
   setLicenseCredits: (companyName: string, credits: number, maxCredits: number) =>
     ipcRenderer.invoke('remote:setCredits', companyName, credits, maxCredits),
+  // 秘密保持契約（図面・見積書の受け渡し）
+  ndaStatus: () => ipcRenderer.invoke('nda:status'),
+  ndaAgree: (version: string, signer: string, title: string) => ipcRenderer.invoke('nda:agree', version, signer, title),
   // デモ期限を延ばす（date = 'YYYY-MM-DD'、その日の終わりまで）
   setLicenseExpires: (companyName: string, date: string) =>
     ipcRenderer.invoke('remote:setExpires', companyName, date),
