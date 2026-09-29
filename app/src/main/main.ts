@@ -5417,7 +5417,7 @@ app.whenReady().then(async () => {
       //   画面側でも止めていない（止められない）ので、必ずここで弾く。
       if (isIsolatedTenant(getCurrentTenant())) {
         console.log('拾い出し学習: 隔離テナントのため共有プールへ送信しません（受け取りは継続）');
-        return { ok: true, sent: 0 };
+        return { ok: true, sent: 0, isolated: true };
       }
       const cfg = loadApiConfig();
       const industry = getTenantProfile(getCurrentTenant()).industryType || cfg.industryType || 'general';

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { PageGuide } from '../components/PageGuide';
 import { startBusy, updateBusy, endBusy, etaText } from '../components/BusyPop';
 import CustomerSchedule from '../components/CustomerSchedule';
+import TakeoffAnswerCheck from '../components/TakeoffAnswerCheck';
 
 // 消費税率。AIが出す金額はすべて税抜（原価・粗利の計算がしやすいため）。表示のときだけ税込を併記する。
 const TAX_RATE = 0.1;
@@ -86,6 +87,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const [clothRedo, setClothRedo] = useState(false);
   // 拾い出しの「計算の説明」を開いているか（表の計算式とは別に、言葉で通しで読める欄）
   const [explainOpen, setExplainOpen] = useState(false);
+  const [answerOpen, setAnswerOpen] = useState(false);   // 図面の答え合わせ（御社の数量と比べる）
   const pendingTakeoff = useRef<null | (() => void)>(null);
   const [industryChoice, setIndustryChoice] = useState('');
   const [industrySaving, setIndustrySaving] = useState(false);
@@ -609,7 +611,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     if (field === 'quantity') {
       // 図面から拾った行の数量を直した＝拾い出しの正解が1つ増えた。全社の学習へ回す。
       const src = row.takeoffRef ? takeoffByName[String(row.takeoffRef).trim()] : null;
-      const aiQty = Number(src?.quantity) || 0;
+      const aiQty = Number(src?.aiQuantity ?? src?.quantity) || 0;
       if (src && aiQty > 0 && n > 0 && Math.abs(n - aiQty) / aiQty > 0.02) {
         queueTakeoffFeedback({
           itemKey: String(src.name || row.item || '').replace(/^【[^】]*】/, '').trim(),
@@ -1526,7 +1528,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         tiled: takeoffTiled,
       });
       endBusy();
-      setTakeoff(res);
+      // AIが最初に出した数量を控えておく。表で直したあとも「AIが何と言ったか」と比べられるように
+      // （学習に送る比較と、答え合わせの両方で使う）。
+      setTakeoff(res && Array.isArray(res.items)
+        ? { ...res, items: res.items.map((it: any) => ({ ...it, aiQuantity: it.quantity })) }
+        : res);
+      setAnswerOpen(false);
       setTakeoffOpen(true);
       // 拾えた主要数量を「実測値」欄にも反映しておく（見積プロンプトの二重の保険）
       const sum = (res?.summary || []).map((x: any) => `${x.label} ${x.value}`).join(' / ');
@@ -1549,6 +1556,21 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   const editTakeoffQty = (i: number, n: number) => {
     if (!takeoff) return;
     const items = [...(takeoff.items || [])];
+    // 拾い出し結果の表で直した数量も、拾い出しの正解として全社の学習へ回す。
+    // （以前は見積の内訳で直したときだけ送っていて、ここで直しても学習に届かなかった）
+    const src = items[i];
+    const aiQ = Number(src?.aiQuantity) || 0;
+    if (src && aiQ > 0 && n > 0 && Math.abs(n - aiQ) / aiQ > 0.02) {
+      queueTakeoffFeedback({
+        itemKey: String(src.name || '').replace(/^【[^】]*】/, '').trim(),
+        unit: src.unit || '',
+        aiQuantity: aiQ,
+        actualQuantity: n,
+        drawingType: Array.isArray(takeoff?.drawingTypes) ? takeoff.drawingTypes[0] : (takeoff?.drawingTypes || ''),
+        scale: takeoff?.scale || '',
+        note: src.formula ? String(src.formula).slice(0, 120) : '',
+      });
+    }
     const loss = Number(items[i]?.lossRate) || 0;
     items[i] = {
       ...items[i],
@@ -2500,6 +2522,12 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                           } catch (e: any) { alert('PDF生成に失敗: ' + (e.message || e)); }
                         }}
                       >📄 拾い出し明細をPDFで出す</button>
+                      <button
+                        className="btn btn-sm"
+                        type="button"
+                        onClick={() => setAnswerOpen(o => !o)}
+                        style={{ border: '1px solid #2e6fbf', color: '#2e6fbf', background: answerOpen ? '#eef4fc' : '#fff' }}
+                      >{answerOpen ? '▲ 答え合わせを閉じる' : '🎯 御社の数量で答え合わせ'}</button>
                     </div>
 
                     {(takeoff.summary || []).length > 0 && (
@@ -2581,6 +2609,20 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                     <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
                       数量は直接直せます。直した行は「人が確定させた数量」として扱われ、見積はその値で積算します。
                     </div>
+
+                    {answerOpen && (
+                      <TakeoffAnswerCheck
+                        items={takeoff.items || []}
+                        onSend={async (rows) => {
+                          const drawingType = Array.isArray(takeoff?.drawingTypes) ? takeoff.drawingTypes[0] : (takeoff?.drawingTypes || '');
+                          const res = await (window as any).api.sendTakeoffFeedback(
+                            rows.map(r => ({ ...r, drawingType, scale: takeoff?.scale || '' })),
+                          );
+                          if (res?.isolated) return -1;   // この会社は数量も共有しない設定
+                          return Number(res?.sent) || 0;
+                        }}
+                      />
+                    )}
 
                     {/* 計算の説明。表の「計算式」は式だけなので、どう数えたかを日本語で通しで読める欄を別に置く。
                         お客様に聞かれたとき、ここをそのまま読めば答えになるのが狙い。 */}

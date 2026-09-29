@@ -38,6 +38,12 @@ const crypto = require('crypto');
 
 const DIR = __dirname;
 const TRUTH_DIR = path.join(DIR, 'truth');
+// お客様から預かった図面の正解は、ここ（リポジトリの外）に置く。
+//   ★このリポジトリは公開。預かった図面の数量・現場名を truth/ に入れると世界に出る。
+//   秘密保持契約で預かったものは必ずこちら。AIの出力（raw-*.json）と結果もこちらに書く。
+//   場所は環境変数 TAKEOFF_TRUTH_DIR で変えられる。
+const PRIVATE_TRUTH_DIR = process.env.TAKEOFF_TRUTH_DIR
+  || path.join(os.homedir(), 'OneDrive', 'Desktop', '会社資産', '拾い出し正解データ');
 
 // ── APIキー（main.ts の decryptField と同じ） ──
 function getEncKey() {
@@ -154,15 +160,24 @@ async function runOnce(client, spec) {
   const argv = process.argv.slice(2).filter((a) => !a.startsWith("--"));
   const only = argv[0];
   const times = Number(argv[1] || 1);
-  const files = fs.readdirSync(TRUTH_DIR).filter((f) => f.endsWith('.json'))
-    .filter((f) => !only || f.replace(/\.json$/, '') === only);
+  // 公開してよい見本（truth/）と、預かった図面（PRIVATE_TRUTH_DIR）の両方を回す。
+  //   --private … 預かった図面だけ / --public … 見本だけ。先頭が _ のファイル（書き方の見本）は回さない
+  const dirs = [];
+  if (!process.argv.includes('--private')) dirs.push(TRUTH_DIR);
+  if (!process.argv.includes('--public') && fs.existsSync(PRIVATE_TRUTH_DIR)) dirs.push(PRIVATE_TRUTH_DIR);
+  const files = dirs.flatMap((d) => fs.readdirSync(d)
+    .filter((f) => f.endsWith('.json') && !f.startsWith('_') && f !== 'accuracy-result.json' && !f.startsWith('raw-'))
+    .filter((f) => !only || f.replace(/\.json$/, '') === only)
+    .map((f) => ({ dir: d, f })));
   if (!files.length) { console.error('対象の正解ファイルがありません'); process.exit(1); }
+  const outDir = (x) => (x.dir === TRUTH_DIR ? DIR : x.dir);   // 預かった図面の出力はリポジトリに書かない
 
   // --dry: API を叩かず、投げる文面だけ確かめる（課金なし）。
   //   本番とズレていないかを回す前に見るためのもの。check-prompt-sync.js と併せて使う。
   if (process.argv.includes("--dry")) {
-    for (const f of files) {
-      const spec = JSON.parse(fs.readFileSync(path.join(TRUTH_DIR, f), "utf-8"));
+    for (const x of files) {
+      const f = x.f;
+      const spec = JSON.parse(fs.readFileSync(path.join(x.dir, f), "utf-8"));
       if (!fs.existsSync(spec.file)) { console.log(f + ": 図面が見つかりません → " + spec.file); continue; }
       const text = buildContent(spec).filter((c) => c.type === "text").map((c) => c.text).join(String.fromCharCode(10));
       console.log("=== " + f + " ===");
@@ -177,8 +192,8 @@ async function runOnce(client, spec) {
   // --regrade: APIを叩かず、前回保存した raw-*.json を採点し直す（無料）。
   //   正解の書き方（match / exclude / unit）を直したときに、同じ出力で採点だけやり直すため。
   const REGRADE = process.argv.includes('--regrade');
-  const loadRaw = (f, i) => {
-    const p = path.join(DIR, `raw-${f.replace(/\.json$/, '')}-${i}.json`);
+  const loadRaw = (x, i) => {
+    const p = path.join(outDir(x), `raw-${x.f.replace(/\.json$/, '')}-${i}.json`);
     if (!fs.existsSync(p)) throw new Error('前回の出力がありません: ' + p);
     return { json: JSON.parse(fs.readFileSync(p, 'utf-8')), truncated: false, len: 0 };
   };
@@ -187,15 +202,16 @@ async function runOnce(client, spec) {
   const client = REGRADE ? null : new Anthropic({ apiKey: loadKey() });
 
   const all = [];
-  for (const f of files) {
-    const spec = JSON.parse(fs.readFileSync(path.join(TRUTH_DIR, f), 'utf-8'));
+  for (const x of files) {
+    const f = x.f;
+    const spec = JSON.parse(fs.readFileSync(path.join(x.dir, f), 'utf-8'));
     if (!fs.existsSync(spec.file)) { console.log(`${f}: 図面が見つかりません → ${spec.file}`); continue; }
     console.log(`\n=== ${f} （${times}回） ===`);
 
     const perRun = [];
     for (let i = 1; i <= times; i++) {
       process.stdout.write(`  run ${i}/${times} ... `);
-      const { json, truncated, len } = REGRADE ? loadRaw(f, i) : await runOnce(client, spec);
+      const { json, truncated, len } = REGRADE ? loadRaw(x, i) : await runOnce(client, spec);
       if (!json) { console.log(`JSON解析に失敗（${len}文字${truncated ? '・出力上限で切断' : ''}）`); perRun.push(null); continue; }
       const rows = spec.truth.map((t) => {
         // unit は表示用ではなく**絞り込み**にも使う（anyUnit: true で無効化できる）
@@ -203,7 +219,7 @@ async function runOnce(client, spec) {
         const g = grade(got && got.qty, t.qty);
         return { name: t.name, want: t.qty, unit: t.unit || '', got: got && got.qty, rows: got && got.rows, ...g };
       });
-      try { fs.writeFileSync(path.join(DIR, `raw-${f.replace(/\.json$/, '')}-${i}.json`), JSON.stringify(json, null, 1)); } catch (_) {}
+      try { fs.writeFileSync(path.join(outDir(x), `raw-${f.replace(/\.json$/, '')}-${i}.json`), JSON.stringify(json, null, 1)); } catch (_) {}
       perRun.push(rows);
       const ok = rows.filter((r) => r.mark === '◎' || r.mark === '○').length;
       console.log(`items=${(json.items || []).length} 合格 ${ok}/${rows.length}${truncated ? ' ※切断' : ''}`);
@@ -226,10 +242,19 @@ async function runOnce(client, spec) {
         + `  ${(g.err * 100 >= 0 ? '+' : '')}${(g.err * 100).toFixed(1)}%`.padEnd(9)
         + g.mark + spread);
     }
-    all.push({ file: f, spec: spec.truth, runs: perRun });
+    all.push({ file: f, private: x.dir !== TRUTH_DIR, spec: spec.truth, runs: perRun });
   }
 
-  fs.writeFileSync(path.join(DIR, 'accuracy-result.json'), JSON.stringify(all, null, 1));
-  console.log('\n判定: ±5%以内=◎ / ±15%以内=○ / それ以外=×');
-  console.log('詳細: ' + path.join(DIR, 'accuracy-result.json'));
+  // 全体の合格率（1回目の結果で数える）。プロンプトを直す前後で、この1行を比べる。
+  const tally = { pass: 0, total: 0, miss: 0 };
+  for (const a of all) {
+    const r = (a.runs || []).find(Boolean) || [];
+    for (const row of r) { tally.total++; if (row.mark === '◎' || row.mark === '○') tally.pass++; if (row.got == null) tally.miss++; }
+  }
+  // 結果ファイルにも項目名が入るので、預かった図面を含む回は外のフォルダに書く
+  const resultPath = path.join(all.some((a) => a.private) ? PRIVATE_TRUTH_DIR : DIR, 'accuracy-result.json');
+  fs.writeFileSync(resultPath, JSON.stringify(all, null, 1));
+  console.log(`\n全体: 合格 ${tally.pass}/${tally.total}（${tally.total ? Math.round(tally.pass / tally.total * 100) : 0}%）・未検出 ${tally.miss}`);
+  console.log('判定: ±5%以内=◎ / ±15%以内=○ / それ以外=×');
+  console.log('詳細: ' + resultPath);
 })().catch((e) => { console.error('失敗:', e.message); process.exit(1); });
