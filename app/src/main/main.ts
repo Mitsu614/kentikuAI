@@ -1323,7 +1323,9 @@ function enforceHeatshieldQuantity(result: any, context: string): string[] {
 // 単価は、お客様が単価表として既に持っている。表にある品目は、AIに推測させず表の単価で確定させる。
 //   1) プロンプトに単価表を載せ、該当する行は表の品名・単価をそのまま使わせる
 //   2) AIの出力を受けたあと、表と「品名・単位が一致する行」は機械で単価を表の値に揃える（確実にする）
-//   ★表の単価は「見積に書く単価（売値）」として扱う。原価との比率（粗利率）はAIの原案のまま保つ。
+//   ★表の単価の種類は会社ごとに選べる（tenants.price_table_basis）。
+//     'sell' … 見積に書く単価（売値）。原価との比率（粗利率）はAIの原案のまま保つ
+//     'cost' … 仕入れ値（原価）。原価＝数量×表の単価、売値はAIの原案の掛率（無ければ既定の掛率）で乗せる
 //   ★品名の一致は表記ゆれ（全角半角・空白）だけ吸収する完全一致。似た名前を勝手に当てない。
 function normPriceName(v: any): string {
   return String(v ?? '').normalize('NFKC').replace(/[\s　]+/g, '').toLowerCase();
@@ -1345,12 +1347,18 @@ function loadPriceTable(tid: number): { name: string; unit: string; price: numbe
       .filter((r) => r.name && r.price > 0);
   } catch (_) { return []; }
 }
-// 見積の指紋に入れる。単価表を変えたら、前回の見積を使い回さずに作り直すため。
+function getPriceTableBasis(tid: number): 'sell' | 'cost' {
+  try {
+    const r = queryOne('SELECT price_table_basis FROM tenants WHERE id = ?', [tid]);
+    return r?.price_table_basis === 'cost' ? 'cost' : 'sell';
+  } catch (_) { return 'sell'; }
+}
+// 見積の指紋に入れる。単価表（や単価の種類）を変えたら、前回の見積を使い回さずに作り直すため。
 function priceTableKey(tid: number): string {
   const t = loadPriceTable(tid);
   if (!t.length) return '';
   return crypto.createHash('sha256')
-    .update(t.map((r) => `${normPriceName(r.name)}|${normPriceUnit(r.unit)}|${r.price}`).sort().join('\n'))
+    .update(getPriceTableBasis(tid) + '|' + t.map((r) => `${normPriceName(r.name)}|${normPriceUnit(r.unit)}|${r.price}`).sort().join('\n'))
     .digest('hex').slice(0, 16);
 }
 function buildMaterialPricePrompt(tid: number): string {
@@ -1358,19 +1366,23 @@ function buildMaterialPricePrompt(tid: number): string {
   if (!t.length) return '';
   const MAX = 300;   // 多すぎるとプロンプトが膨らむ。超えた分は機械の照合だけで当てる
   const lines = t.slice(0, MAX).map((r) => `- ${r.name}｜${r.unit || '—'}｜${r.price.toLocaleString()}円`);
-  return `\n## ★この会社の単価表（最優先・この単価で見積に書け）★\n`
+  const basisCost = getPriceTableBasis(tid) === 'cost';
+  return `\n## ★この会社の単価表（最優先）★ ${basisCost ? '※表の単価は**仕入れ値（原価）**' : '※表の単価は**見積に書く単価（売値）**'}\n`
     + `品名｜単位｜単価\n${lines.join('\n')}\n`
     + (t.length > MAX ? `（ほか${t.length - MAX}件）\n` : '')
-    + `★この表にある品目を使うときは、breakdown の item に**表の品名をそのまま**書き、unitPrice は**表の単価**にしろ。相場データより優先。\n`
+    + (basisCost
+      ? `★この表にある品目を使うときは、breakdown の item に**表の品名をそのまま**書き、costBase に**数量×表の単価**を入れろ。unitPrice・cost は、そこにこの会社の掛率を乗せた売値にしろ。相場データより優先。\n`
+      : `★この表にある品目を使うときは、breakdown の item に**表の品名をそのまま**書き、unitPrice は**表の単価**にしろ。相場データより優先。\n`)
     + `★表に無い品目だけ、相場データや実績から出してよい。\n`;
 }
 // AIの内訳を、単価表の単価に揃える（reconcileEstimateTotal の前に呼ぶ）。
-function applyPriceTable(result: any, tid: number): string[] {
+function applyPriceTable(result: any, tid: number, defaultMarkup: number): string[] {
   const rows: any[] = Array.isArray(result?.breakdown) ? result.breakdown : [];
   const t = loadPriceTable(tid);
   if (!rows.length || !t.length) return [];
   const table = new Map<string, number>();
   for (const r of t) table.set(`${normPriceName(r.name)}|${normPriceUnit(r.unit)}`, r.price);
+  const basisCost = getPriceTableBasis(tid) === 'cost';
   const applied: string[] = [];
   for (const b of rows) {
     const price = table.get(`${normPriceName(b?.item)}|${normPriceUnit(b?.unit)}`);
@@ -1379,18 +1391,30 @@ function applyPriceTable(result: any, tid: number): string[] {
     const oldUnit = Number(b.unitPrice) || 0;
     const oldCost = Number(b.cost) || 0;
     const oldBase = Number(b.costBase) || 0;
-    const newCost = Math.round(q * price);
-    // 原価との比率（粗利率）はAIの原案のまま保つ。原価が無い・おかしいときは消して、既定の掛率に任せる
+    // 原価との比率（粗利率）はAIの原案のまま保つ。原価が無い・おかしいときは既定の掛率に任せる
     const ratio = oldBase > 0 && oldCost > 0 && oldBase <= oldCost ? oldBase / oldCost : 0;
-    b.unitPrice = price;
-    b.cost = newCost;
-    if (ratio > 0) b.costBase = Math.round(newCost * ratio); else delete b.costBase;
-    b.priceSource = '御社の単価表';
-    if (!/御社の単価表/.test(String(b.note || ''))) b.note = `${b.note ? b.note + ' / ' : ''}御社の単価表の単価`;
-    if (oldUnit !== price) applied.push(`${b.item} ${oldUnit.toLocaleString()}→${price.toLocaleString()}円`);
-    else applied.push(`${b.item}`);
+    if (basisCost) {
+      // 表＝仕入れ値。原価は表どおり、売値は掛率で乗せる
+      const base = Math.round(q * price);
+      const markup = ratio > 0 ? 1 / ratio : defaultMarkup;
+      b.costBase = base;
+      b.cost = Math.round(base * markup);
+      b.unitPrice = Math.round(b.cost / q);
+      applied.push(`${b.item} 原価${price.toLocaleString()}円`);
+    } else {
+      const newCost = Math.round(q * price);
+      b.unitPrice = price;
+      b.cost = newCost;
+      if (ratio > 0) b.costBase = Math.round(newCost * ratio); else delete b.costBase;
+      applied.push(oldUnit !== price ? `${b.item} ${oldUnit.toLocaleString()}→${price.toLocaleString()}円` : `${b.item}`);
+    }
+    b.priceSource = basisCost ? '御社の単価表（仕入れ値）' : '御社の単価表';
+    if (!/御社の単価表/.test(String(b.note || ''))) b.note = `${b.note ? b.note + ' / ' : ''}${b.priceSource}`;
   }
   if (!applied.length) return [];
+  if (basisCost) {
+    return [`御社の単価表（仕入れ値）を ${applied.length}行の原価に使い、掛率を乗せて売値にしました（${applied.slice(0, 5).join('、')}${applied.length > 5 ? ' ほか' : ''}）。`];
+  }
   const changed = applied.filter((a) => a.includes('→'));
   return [`御社の単価表の単価を ${applied.length}行に使いました${changed.length ? `（AIの単価から直した行: ${changed.slice(0, 5).join('、')}${changed.length > 5 ? ' ほか' : ''}）` : ''}。`];
 }
@@ -5039,6 +5063,15 @@ app.whenReady().then(async () => {
     return newId;
   });
 
+  // 単価表の単価の種類（売値 / 仕入れ値）。会社ごと。
+  ipcMain.handle('materials:getPriceBasis', () => getPriceTableBasis(getCurrentTenant()));
+  ipcMain.handle('materials:setPriceBasis', (_e, basis: string) => {
+    const v = basis === 'cost' ? 'cost' : 'sell';
+    runSql('UPDATE tenants SET price_table_basis = ? WHERE id = ?', [v, getCurrentTenant()]);
+    logAudit('update', 'tenant', getCurrentTenant(), `単価表の単価の種類: ${v === 'cost' ? '仕入れ値（原価）' : '売値'}`);
+    return v;
+  });
+
   // ── 単価表の取り込み（Excel / CSV）──
   // お客様の単価表をそのまま材料マスタに入れる。見出しの行（品名・単価など）を自動で探し、
   // 同じ品名・単位がすでにあれば単価だけ上書き、無ければ追加する。
@@ -8261,7 +8294,7 @@ manDaysBreakdownの書き方例:
       // 切れた行（金額なし）は内訳から落としてから積み直す。0円の行を総額に混ぜない。
       const dropped = dropPricelessBreakdownRows(parsedResult);
       // 御社の単価表にある品目は、表の単価に揃えてから積み直す（総額・材料費も表の単価で出る）
-      const priceWarns = applyPriceTable(parsedResult, estTid);
+      const priceWarns = applyPriceTable(parsedResult, estTid, industryType === 'heatshield' ? HEATSHIELD_MARKUP : DEFAULT_MARKUP);
       const estimateResult = reconcileEstimateTotal(
         parsedResult, 'analyze',
         industryType === 'heatshield' ? HEATSHIELD_MARKUP : DEFAULT_MARKUP

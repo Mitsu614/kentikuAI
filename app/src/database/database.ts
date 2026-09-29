@@ -758,6 +758,10 @@ function migrate() {
     if (!tenantCols.find((c: any) => c.name === 'isolated_learning')) {
       db.run('ALTER TABLE tenants ADD COLUMN isolated_learning INTEGER DEFAULT 0');
     }
+    // 単価表（材料マスタ）の単価の種類: 'sell'=見積に書く単価（売値） / 'cost'=仕入れ値（原価）
+    if (!tenantCols.find((c: any) => c.name === 'price_table_basis')) {
+      db.run("ALTER TABLE tenants ADD COLUMN price_table_basis TEXT DEFAULT 'sell'");
+    }
     // 学習完了メールの送信済み日（1日1通までの制御用）
     if (!tenantCols.find((c: any) => c.name === 'learning_notified_date')) {
       db.run('ALTER TABLE tenants ADD COLUMN learning_notified_date TEXT');

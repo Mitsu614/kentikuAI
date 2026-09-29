@@ -7,8 +7,16 @@ export default function MaterialsPage() {
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState({ name: '', category: '', unit: '個', unitPrice: 0, notes: '' });
   const [search, setSearch] = useState('');
+  // 単価表の単価の種類（会社ごと）。見積で、表の単価を売値として使うか、仕入れ値（原価）として使うか
+  const [basis, setBasis] = useState<'sell' | 'cost'>('sell');
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    (window as any).api.getPriceBasis?.().then((b: any) => setBasis(b === 'cost' ? 'cost' : 'sell')).catch(() => {});
+  }, []);
+  const changeBasis = async (b: 'sell' | 'cost') => {
+    setBasis(await (window as any).api.setPriceBasis(b));
+  };
 
   const load = async () => {
     setMaterials(await window.api.listMaterials());
@@ -72,6 +80,22 @@ export default function MaterialsPage() {
           }}>📥 単価表を取り込む（Excel・CSV）</button>
           <button className="btn btn-secondary" onClick={async () => { const n = await (window as any).api.importMaterialsCSV(); if (n) { alert(`${n}件インポートしました`); load(); } }}>CSVインポート</button>
           <button className="btn btn-primary" onClick={openCreate}>+ 新規材料</button>
+        </div>
+        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center', fontSize: 13, background: '#f5f8fc', border: '1px solid #dde6f0', borderRadius: 8, padding: '8px 12px' }}>
+          <span style={{ fontWeight: 'bold', color: '#16324f' }}>単価表の単価は：</span>
+          <label style={{ display: 'flex', gap: 5, alignItems: 'center', cursor: 'pointer' }}>
+            <input type="radio" name="price-basis" checked={basis === 'sell'} onChange={() => changeBasis('sell')} />
+            見積に書く単価（売値）
+          </label>
+          <label style={{ display: 'flex', gap: 5, alignItems: 'center', cursor: 'pointer' }}>
+            <input type="radio" name="price-basis" checked={basis === 'cost'} onChange={() => changeBasis('cost')} />
+            仕入れ値（原価）
+          </label>
+          <span style={{ fontSize: 12, color: '#607d8b' }}>
+            {basis === 'cost'
+              ? '見積では、この単価を原価にして、御社の掛率を乗せた金額を出します。'
+              : '見積では、この単価をそのまま見積の単価にします。'}
+          </span>
         </div>
       </div>
 

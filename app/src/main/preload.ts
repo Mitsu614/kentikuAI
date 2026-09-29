@@ -103,6 +103,8 @@ contextBridge.exposeInMainWorld('api', {
   generateTakeoffPDF: (data: any) => ipcRenderer.invoke('takeoff:generatePDF', data),
   exportTakeoffExcel: (data: any) => ipcRenderer.invoke('takeoff:exportExcel', data),
   importPriceTable: () => ipcRenderer.invoke('materials:importPriceTable'),
+  getPriceBasis: () => ipcRenderer.invoke('materials:getPriceBasis'),
+  setPriceBasis: (basis: 'sell' | 'cost') => ipcRenderer.invoke('materials:setPriceBasis', basis),
 
   // 見積書の様式（お客様からもらったPDFに合わせる）
   analyzeEstimateTemplate: (data: any) => ipcRenderer.invoke('estimateTemplate:analyze', data),
