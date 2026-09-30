@@ -12,6 +12,7 @@ import { fetchAllExternalData, fetchRegionalData, setReinfolibApiKey } from './e
 import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './market-insight';
 import { buildLearningContext, dropSummaryRows } from './learning-context';
 import { estimateManDaysFromBreakdown, yieldsWithConfig } from './labor-yield';
+import { parseAnswerGrid, parseAnswerJson, ANSWER_READ_PROMPT, AnswerRow } from './takeoff-answer';
 import { templatePrompt, sanitizeTemplate, validateTemplate, renderTemplate, buildTemplateData, usedPlaceholders, PLACEHOLDERS } from './estimate-template';
 import { importOcrResultCore } from './ocr-import';
 
@@ -5695,6 +5696,97 @@ app.whenReady().then(async () => {
       console.error('拾い出し学習の送信に失敗:', e?.message || e);
       return { ok: false, sent: 0 };
     }
+  });
+
+  // ── 図面の答え合わせ：お客様の「正解」（自社で拾った数量表）を読み込む ──
+  // Excel・CSV はその場で読む（単位は使わない）。PDF・写真はAIに表を書き写させる（1単位）。
+  // ★AIには「写すだけ」をさせる。計算・補完はさせない（takeoff-answer.ts の ANSWER_READ_PROMPT）。
+  // ひも付け・判定は画面側（同じ takeoff-answer.ts）で行い、人が選び直せるようにする。
+  ipcMain.handle('takeoff:importAnswer', async () => {
+    const pick = await dialog.showOpenDialog({
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '拾い出し表・内訳書', extensions: ['xlsx', 'csv', 'pdf', 'png', 'jpg', 'jpeg', 'webp'] }],
+    });
+    if (pick.canceled || !pick.filePaths.length) return { ok: false, canceled: true };
+    const rows: AnswerRow[] = [];
+    const notes: string[] = [];
+    let usedCredits = 0;
+    for (const file of pick.filePaths) {
+      const base = path.basename(file);
+      try {
+        if (/\.(xlsx|csv)$/i.test(file)) {
+          const sheets: { label: string; grid: any[][] }[] = [];
+          if (/\.xlsx$/i.test(file)) {
+            const ExcelJS = require('exceljs');
+            const wb = new ExcelJS.Workbook();
+            await wb.xlsx.readFile(file);
+            for (const ws of wb.worksheets) {
+              const grid: any[][] = [];
+              ws.eachRow({ includeEmpty: true }, (row: any, rn: number) => {
+                grid[rn - 1] = (row.values as any[]).slice(1).map((v: any) => {
+                  if (v == null) return '';
+                  if (typeof v === 'object') return v.result ?? v.text ?? (v.richText ? v.richText.map((t: any) => t.text).join('') : '');
+                  return v;
+                });
+              });
+              for (let i = 0; i < grid.length; i++) if (!grid[i]) grid[i] = [];
+              sheets.push({ label: `${base}「${ws.name}」`, grid });
+            }
+          } else {
+            const buf = fs.readFileSync(file);
+            let txt = new TextDecoder('utf-8').decode(buf);
+            // 日本のCSVはShift_JISが多い。UTF-8で読んで化けたら読み直す
+            if (txt.includes('�')) txt = new TextDecoder('shift_jis').decode(buf);
+            txt = txt.replace(/^﻿/, '');
+            const grid = txt.split(/\r?\n/).map((l) => (l.match(/("([^"]|"")*"|[^,]*)(,|$)/g) || [])
+              .map((c) => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim()));
+            sheets.push({ label: base, grid });
+          }
+          let got = 0; let lastErr = '';
+          for (const s of sheets) {
+            const r = parseAnswerGrid(s.grid, s.label);
+            if (r.rows.length) { rows.push(...r.rows); got += r.rows.length; } else if (r.error) lastErr = r.error;
+          }
+          notes.push(got ? `${base}: ${got}行` : `${base}: 読めませんでした（${lastErr}）`);
+        } else {
+          // PDF・写真 → AIで書き写す
+          await syncRemoteLicense(false);
+          const cost = CREDIT_COSTS['正解の読み取り'] ?? 1;
+          const cr = useCreditsSynced(cost, '正解の読み取り');
+          if (!cr.success) {
+            if (cr.limitReached) await sendLimitNotification('正解の読み取り');
+            notes.push(`${base}: 今月のAIストックが足りないため読めませんでした（Excel・CSVなら単位を使わずに読めます）`);
+            continue;
+          }
+          syncCreditsToRemote();
+          const config = loadApiConfig();
+          if (!config.anthropicKey) { refundCredits(cost, '正解の読み取りの失敗による返却'); throw new Error('AI機能の初期化に失敗しました。サポートにお問い合わせください。'); }
+          const Anthropic = require('@anthropic-ai/sdk');
+          const client = new Anthropic({ apiKey: config.anthropicKey });
+          const b64 = fs.readFileSync(file).toString('base64');
+          const isPdf = /\.pdf$/i.test(file);
+          const media = /\.png$/i.test(file) ? 'image/png' : /\.webp$/i.test(file) ? 'image/webp' : 'image/jpeg';
+          const block = isPdf
+            ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
+            : { type: 'image', source: { type: 'base64', media_type: media, data: b64 } };
+          const res = await client.messages.create({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 16000,
+            temperature: 0,
+            messages: [{ role: 'user', content: [block, { type: 'text', text: ANSWER_READ_PROMPT }] }],
+          }).catch((e: any) => { throw handleAiFailure(e, { where: 'answer-read', credits: cost, operation: '正解の読み取り' }); });
+          const text = res.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('');
+          const got = parseAnswerJson(text).map(r => ({ ...r, src: `${base}${r.src ? ' ' + r.src : ''}` }));
+          rows.push(...got);
+          usedCredits += cost;
+          notes.push(got.length ? `${base}: ${got.length}行（AIで読み取り）` : `${base}: 数量の表が見つかりませんでした`);
+        }
+      } catch (e: any) {
+        notes.push(`${base}: ${e?.message || e}`);
+      }
+    }
+    logAudit('import', 'takeoff_answer', 0, `答え合わせの正解 ${pick.filePaths.length}ファイル ${rows.length}行 ${usedCredits}単位`);
+    return { ok: rows.length > 0, rows, notes, usedCredits };
   });
 
   // 拾い出しを Excel で出す。見積担当はExcelで受け取って自分の表に貼る・確かめるのが普通なので、

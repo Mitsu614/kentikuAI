@@ -17,6 +17,7 @@
     "harness:learning": "node tools/harness-learning/run.js",
     "harness:estimate-rows": "node tools/harness-estimate-rows/run.js",
     "harness:ocr": "node tools/harness-ocr-import/run.js",
+    "harness:takeoff-answer": "node tools/harness-takeoff-answer/run.js",
     "harness:learning-all": "npm run harness:learning-context && npm run harness:ocr && npm run harness:market-guard",
     "harness:market-guard": "node tools/harness-market-prices/run.js",
     "harness:electrical-dry": "node tools/harness-electrical/run.js --dry",

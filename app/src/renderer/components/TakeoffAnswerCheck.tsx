@@ -1,11 +1,15 @@
 import React, { useMemo, useState } from 'react';
+import { groupTakeoffItems, matchAnswers, AnswerRow, AnswerMatch } from '../../main/takeoff-answer';
 
 // 図面の答え合わせ。
-// お客様が「自社で拾った数量」を入れると、AIの拾い出しと部位ごとに並べて判定する。
+// お客様の「正解」（自社で拾った数量）と、AIの拾い出しを部位×材料×単位ごとに並べて判定する。
+//   ・正解は取り込める：Excel・CSV はその場で読む（単位を使わない）。PDF・写真はAIが書き写す（1ファイル1単位）
+//   ・取り込んだ行は自動でAIの行にひも付けるが、どれに結んだかを一覧で見せ、人が選び直せる。
+//     自信の無いひも付け・単位違いは「要確認」。勝手に結んだままにしない
 //   ・AIの数量は拾い出し直後の値（aiQuantity）。表で直した後の値ではなく、AIがそもそも何と言ったかで比べる
-//   ・御社の数量が空欄の行は「未入力」で採点しない。0 を入れた行は「御社は拾わない＝AIだけ（余計）」
-//   ・AIが拾っていない項目は下で足す＝「拾い漏れ」
-//   ・比べるのは画面の中だけ。AIは呼ばないので単位は減らない
+//   ・同じ材料が部屋ごとに何行もあるときは合計して比べる（お客様の表も部屋ごと・合計のどちらもあるため）
+//   ・手で打った数字は、取り込んだ数字より優先する。空欄に戻せば取り込んだ数字に戻る
+//   ・0 を入れた行は「御社は拾わない＝AIだけ（余計）」。AIに無い正解の行は「拾い漏れ」
 //   ・「学習に使う」はお客様が押したときだけ。送るのは部位名・単位・数量だけ（金額・図面は送らない）
 
 type Kind = 'ok' | 'warn' | 'bad' | 'extra' | 'none';
@@ -13,63 +17,114 @@ const LABEL: Record<Kind, string> = { ok: '✅ 一致', warn: '⚠ ずれ大', b
 const COLOR: Record<Kind, string> = { ok: '#2e7d32', warn: '#ef6c00', bad: '#c62828', extra: '#5e35b1', none: '#90a4ae' };
 const BG: Record<Kind, string> = { ok: '#e8f5e9', warn: '#fff3e0', bad: '#ffebee', extra: '#ede7f6', none: '#f5f7f9' };
 
+const MISS = '__miss';
+const SKIP = '__skip';
+
 export interface AnswerFeedbackRow {
   itemKey: string; unit: string; aiQuantity: number; actualQuantity: number; note?: string;
 }
+
+interface Imported { row: AnswerRow; auto: AnswerMatch; assign: string }
+
+const fmt = (n: number) => (Math.round(n * 100) / 100).toLocaleString();
 
 export default function TakeoffAnswerCheck({ items, onSend }: {
   items: any[];
   onSend: (rows: AnswerFeedbackRow[]) => Promise<number> | number;
 }) {
-  const [truth, setTruth] = useState<Record<number, string>>({});
+  const groups = useMemo(() => groupTakeoffItems(items), [items]);
+  const [manual, setManual] = useState<Record<string, string>>({});
+  const [imported, setImported] = useState<Imported[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [importNotes, setImportNotes] = useState<string[]>([]);
+  const [mapOpen, setMapOpen] = useState(false);
   const [extras, setExtras] = useState<{ name: string; unit: string; qty: string }[]>([]);
   const [tol, setTol] = useState(10);
-  const [openWhy, setOpenWhy] = useState<Set<number>>(new Set());
+  const [openWhy, setOpenWhy] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [sentN, setSentN] = useState<number | null>(null);
 
-  const aiQty = (it: any) => Number(it?.aiQuantity ?? it?.quantity) || 0;
+  const importAnswer = async () => {
+    setImporting(true);
+    try {
+      const res = await (window as any).api.importTakeoffAnswer();
+      if (res?.canceled) return;
+      setImportNotes(res?.notes || []);
+      const rows: AnswerRow[] = res?.rows || [];
+      if (rows.length) {
+        const auto = matchAnswers(groups, rows);
+        const add = rows.map((row, k) => ({ row, auto: auto[k], assign: auto[k].key ?? MISS }));
+        setImported(p => [...p, ...add]);
+        if (add.some(a => a.auto.needsCheck)) setMapOpen(true);
+        setSentN(null);
+      }
+    } catch (e: any) {
+      setImportNotes([`読み込めませんでした: ${e?.message || e}`]);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const rows = useMemo(() => {
-    const main = items.map((it, i) => {
-      const raw = truth[i];
-      const t = raw === undefined || raw === '' ? null : Number(raw);
-      const a = aiQty(it);
+    const importedSum = new Map<string, { sum: number; n: number }>();
+    imported.forEach(x => {
+      if (x.assign === MISS || x.assign === SKIP) return;
+      const v = importedSum.get(x.assign) || { sum: 0, n: 0 };
+      importedSum.set(x.assign, { sum: v.sum + x.row.qty, n: v.n + 1 });
+    });
+    const main = groups.map(g => {
+      const raw = manual[g.key];
+      const imp = importedSum.get(g.key);
+      let t: number | null = null; let from: 'manual' | 'import' | null = null;
+      if (raw !== undefined && raw !== '' && !isNaN(Number(raw))) { t = Number(raw); from = 'manual'; }
+      else if (imp) { t = Math.round(imp.sum * 1000) / 1000; from = 'import'; }
+      const a = g.ai;
       let kind: Kind = 'none'; let diff: number | null = null;
-      if (t === null || isNaN(t)) kind = 'none';
+      if (t === null) kind = 'none';
       else if (t === 0) kind = 'extra';
       else if (!(a > 0)) kind = 'bad';
       else { diff = (a - t) / t * 100; kind = Math.abs(diff) <= tol ? 'ok' : 'warn'; }
-      return { i, it, t, a, kind, diff };
+      return { g, t, a, kind, diff, from, impN: imp?.n || 0 };
     });
-    const miss = extras
-      .map((e, j) => ({ j, e, t: Number(e.qty) }))
-      .filter(x => x.e.name.trim() && x.t > 0);
-    return { main, miss };
-  }, [items, truth, extras, tol]);
+    const missImported = imported.filter(x => x.assign === MISS);
+    const missManual = extras.filter(e => e.name.trim() && Number(e.qty) > 0);
+    return { main, missImported, missCount: missImported.length + missManual.length };
+  }, [groups, manual, imported, extras, tol]);
 
   const cnt: Record<Kind, number> = { ok: 0, warn: 0, bad: 0, extra: 0, none: 0 };
   rows.main.forEach(r => cnt[r.kind]++);
-  cnt.bad += rows.miss.length;
+  cnt.bad += rows.missCount;
   const graded = cnt.ok + cnt.warn + cnt.bad + cnt.extra;
   const learnable = rows.main.filter(r => r.t !== null && r.t > 0 && r.a > 0);
+  const needCheck = imported.filter(x => x.auto.needsCheck && x.assign === (x.auto.key ?? MISS)).length;
 
   const send = async () => {
-    const payload: AnswerFeedbackRow[] = learnable.map(r => ({
-      itemKey: String(r.it.name || '').replace(/^【[^】]*】/, '').trim(),
-      unit: r.it.unit || '',
-      aiQuantity: r.a,
-      actualQuantity: r.t as number,
-      note: `答え合わせ${r.it.formula ? ' / ' + String(r.it.formula).slice(0, 100) : ''}`,
-    }));
+    const payload: AnswerFeedbackRow[] = learnable.map(r => {
+      const f = r.g.idxs.map(i => items[i]?.formula).filter(Boolean).join(' / ');
+      return {
+        itemKey: r.g.name,
+        unit: r.g.unit || '',
+        aiQuantity: r.a,
+        actualQuantity: r.t as number,
+        note: `答え合わせ${r.from === 'import' ? '（正解取り込み）' : ''}${f ? ' / ' + f.slice(0, 100) : ''}`,
+      };
+    });
     const n = await onSend(payload);
     setConfirming(false);
     setSentN(typeof n === 'number' ? n : payload.length);
   };
 
+  const groupLabel = (key: string) => {
+    const g = groups.find(x => x.key === key);
+    return g ? `${g.part ? g.part + '｜' : ''}${g.name}（${g.unit || '—'}）` : key;
+  };
+
   const cell: React.CSSProperties = { padding: '5px 8px', borderBottom: '1px solid #eceff1', verticalAlign: 'top' };
   const num: React.CSSProperties = { ...cell, textAlign: 'right', fontFamily: 'monospace', whiteSpace: 'nowrap' };
   const inp: React.CSSProperties = { width: 80, padding: '3px 6px', textAlign: 'right', border: '1px solid #cfd8dc', borderRadius: 5, fontSize: 12 };
+  const chip = (text: string, color: string, bg: string): React.ReactNode => (
+    <span style={{ background: bg, color, fontSize: 10.5, borderRadius: 4, padding: '0 5px', marginLeft: 4, whiteSpace: 'nowrap' }}>{text}</span>
+  );
 
   return (
     <div style={{ marginTop: 12, border: '2px solid #2e6fbf', borderRadius: 10, padding: '12px 14px', background: '#fff' }}>
@@ -81,8 +136,79 @@ export default function TakeoffAnswerCheck({ items, onSend }: {
             style={{ width: 48, margin: '0 3px', padding: '1px 4px', border: '1px solid #cfd8dc', borderRadius: 4 }} />%
         </label>
       </div>
-      <div style={{ fontSize: 11.5, color: '#607d8b', margin: '4px 0 10px', lineHeight: 1.7 }}>
-        「御社の数量」に、御社で拾った数量を入れてください。比べるのは画面の中だけで、AIの単位は使いません。<br />
+
+      {/* 正解の取り込み */}
+      <div style={{ background: '#f5f8fc', border: '1px solid #d8e2ec', borderRadius: 8, padding: '10px 12px', margin: '8px 0 10px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <button type="button" className="btn btn-primary btn-sm" disabled={importing} onClick={importAnswer}>
+            {importing ? '読み込み中…' : '📥 御社の拾い出し表を取り込む（Excel・CSV・PDF・写真）'}
+          </button>
+          {imported.length > 0 && (
+            <button type="button" className="btn btn-sm" onClick={() => { setImported([]); setImportNotes([]); setSentN(null); }}>取り込んだ正解を消す</button>
+          )}
+        </div>
+        <div style={{ fontSize: 11.5, color: '#607d8b', marginTop: 6, lineHeight: 1.7 }}>
+          Excel・CSV は単位を使いません（「品名・名称」と「数量」の見出しがあれば読めます）。PDF・写真はAIが表を書き写すため、1ファイル1単位です。<br />
+          読み込んだ行は、AIの拾い出しの同じ材料に自動でひも付けます。部屋ごとの行は合計して比べます。
+        </div>
+        {importNotes.length > 0 && (
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: '#33475b' }}>
+            {importNotes.map((n, i) => <li key={i}>{n}</li>)}
+          </ul>
+        )}
+        {imported.length > 0 && (
+          <div style={{ marginTop: 6 }}>
+            <button type="button" onClick={() => setMapOpen(o => !o)}
+              style={{ border: 'none', background: 'none', color: '#2e6fbf', cursor: 'pointer', fontSize: 12, padding: 0 }}>
+              {mapOpen ? '▲' : '▼'} 取り込んだ正解のひも付けを確かめる（{imported.length}行
+              {needCheck > 0 && <b style={{ color: COLOR.warn }}>・要確認 {needCheck}行</b>}）
+            </button>
+          </div>
+        )}
+        {mapOpen && imported.length > 0 && (
+          <div style={{ overflowX: 'auto', marginTop: 6 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 680, background: '#fff' }}>
+              <thead>
+                <tr style={{ background: '#eef2f6', color: '#546e7a', textAlign: 'left' }}>
+                  <th style={cell}>読んだ場所</th><th style={cell}>御社の表の項目</th>
+                  <th style={{ ...cell, textAlign: 'right' }}>数量</th><th style={cell}>ひも付け先（AIの行）</th>
+                </tr>
+              </thead>
+              <tbody>
+                {imported.map((x, k) => {
+                  const warn = x.auto.needsCheck && x.assign === (x.auto.key ?? MISS);
+                  return (
+                    <tr key={k} style={{ boxShadow: warn ? `inset 3px 0 ${COLOR.warn}` : undefined }}>
+                      <td style={{ ...cell, color: '#90a4ae', whiteSpace: 'nowrap' }}>{x.row.src || '—'}</td>
+                      <td style={cell}>
+                        {x.row.part && <span style={{ color: '#607d8b' }}>{x.row.part}｜</span>}{x.row.name}
+                        {x.row.room && chip(x.row.room, '#546e7a', '#eceff1')}
+                      </td>
+                      <td style={num}>{fmt(x.row.qty)} <span style={{ color: '#90a4ae' }}>{x.row.unit}</span></td>
+                      <td style={cell}>
+                        <select value={x.assign}
+                          onChange={e => { const v = e.target.value; setImported(p => p.map((y, j) => j === k ? { ...y, assign: v } : y)); setSentN(null); }}
+                          style={{ maxWidth: 300, fontSize: 11.5, padding: '2px 4px', border: '1px solid #cfd8dc', borderRadius: 4 }}>
+                          {x.auto.suggestKey && <option value={x.auto.suggestKey}>★候補 {groupLabel(x.auto.suggestKey)}</option>}
+                          {groups.map(g => <option key={g.key} value={g.key}>{groupLabel(g.key)}</option>)}
+                          <option value={MISS}>AIに無い（拾い漏れ）</option>
+                          <option value={SKIP}>比べない</option>
+                        </select>
+                        <div style={{ fontSize: 10.5, color: warn ? COLOR.warn : '#90a4ae', marginTop: 2 }}>
+                          {x.assign === (x.auto.key ?? MISS) ? x.auto.why : '手で選び直しました'}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div style={{ fontSize: 11.5, color: '#607d8b', margin: '0 0 10px', lineHeight: 1.7 }}>
+        「御社の数量」は手でも直せます（手で打った数字が優先。空欄に戻すと取り込んだ数字に戻ります）。比べるのは画面の中だけです。<br />
         空欄の行は採点しません。御社では拾わない項目は <b>0</b> を入れてください（AIだけが拾った項目になります）。
       </div>
 
@@ -121,38 +247,61 @@ export default function TakeoffAnswerCheck({ items, onSend }: {
             </tr>
           </thead>
           <tbody>
-            {rows.main.map(r => (
-              <React.Fragment key={r.i}>
-                <tr style={{ boxShadow: r.kind === 'none' || r.kind === 'ok' ? undefined : `inset 3px 0 ${COLOR[r.kind]}` }}>
-                  <td style={{ ...cell, color: '#607d8b' }}>{r.it.part || '—'}</td>
-                  <td style={cell}>{r.it.name}</td>
-                  <td style={num}>
-                    <input type="number" min={0} step="any" value={truth[r.i] ?? ''} placeholder="—"
-                      onChange={e => { const v = e.target.value; setTruth(p => ({ ...p, [r.i]: v })); setSentN(null); }}
-                      style={inp} /> <span style={{ color: '#90a4ae' }}>{r.it.unit}</span>
-                  </td>
-                  <td style={num}>{r.a > 0 ? r.a.toLocaleString() : '—'} <span style={{ color: '#90a4ae' }}>{r.it.unit}</span></td>
-                  <td style={{ ...num, color: COLOR[r.kind] }}>
-                    {r.diff !== null ? `${r.diff > 0 ? '+' : ''}${r.diff.toFixed(1)}%` : r.kind === 'extra' ? '余計' : r.kind === 'bad' ? '拾い漏れ' : ''}
-                  </td>
-                  <td style={cell}>
-                    <span style={{ background: BG[r.kind], color: COLOR[r.kind], fontWeight: 'bold', fontSize: 11, borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>{LABEL[r.kind]}</span>
-                  </td>
-                  <td style={cell}>
-                    {r.it.formula && (
-                      <button type="button" onClick={() => setOpenWhy(p => { const n = new Set(p); n.has(r.i) ? n.delete(r.i) : n.add(r.i); return n; })}
-                        style={{ border: 'none', background: 'none', color: '#2e6fbf', cursor: 'pointer', fontSize: 11.5, whiteSpace: 'nowrap' }}>
-                        根拠 {openWhy.has(r.i) ? '▲' : '▼'}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-                {openWhy.has(r.i) && (
-                  <tr><td colSpan={7} style={{ ...cell, background: '#f5f8fc', fontSize: 11.5 }}>
-                    AIの計算式：<code>{r.it.formula}</code>{r.it.source ? `　／　出典：${r.it.source}` : ''}
-                  </td></tr>
-                )}
-              </React.Fragment>
+            {rows.main.map(r => {
+              const its = r.g.idxs.map(i => items[i]);
+              const hasWhy = its.some(it => it?.formula);
+              return (
+                <React.Fragment key={r.g.key}>
+                  <tr style={{ boxShadow: r.kind === 'none' || r.kind === 'ok' ? undefined : `inset 3px 0 ${COLOR[r.kind]}` }}>
+                    <td style={{ ...cell, color: '#607d8b' }}>{r.g.part || '—'}</td>
+                    <td style={cell}>{r.g.name}{r.g.idxs.length > 1 && chip(`${r.g.idxs.length}行の合計`, '#546e7a', '#eceff1')}</td>
+                    <td style={num}>
+                      <input type="number" min={0} step="any"
+                        value={manual[r.g.key] ?? ''}
+                        placeholder={r.from === 'import' ? String(r.t) : '—'}
+                        onChange={e => { const v = e.target.value; setManual(p => ({ ...p, [r.g.key]: v })); setSentN(null); }}
+                        style={{ ...inp, ...(r.from === 'import' ? { background: '#eef4fc', borderColor: '#9dbbe0' } : {}) }} />{' '}
+                      <span style={{ color: '#90a4ae' }}>{r.g.unit}</span>
+                      {r.from === 'import' && <div>{chip(`取り込み ${r.impN}行`, '#2e6fbf', '#eef4fc')}</div>}
+                    </td>
+                    <td style={num}>{r.a > 0 ? fmt(r.a) : '—'} <span style={{ color: '#90a4ae' }}>{r.g.unit}</span></td>
+                    <td style={{ ...num, color: COLOR[r.kind] }}>
+                      {r.diff !== null ? `${r.diff > 0 ? '+' : ''}${r.diff.toFixed(1)}%` : r.kind === 'extra' ? '余計' : r.kind === 'bad' ? '拾い漏れ' : ''}
+                    </td>
+                    <td style={cell}>
+                      <span style={{ background: BG[r.kind], color: COLOR[r.kind], fontWeight: 'bold', fontSize: 11, borderRadius: 4, padding: '1px 7px', whiteSpace: 'nowrap' }}>{LABEL[r.kind]}</span>
+                    </td>
+                    <td style={cell}>
+                      {hasWhy && (
+                        <button type="button" onClick={() => setOpenWhy(p => { const n = new Set(p); n.has(r.g.key) ? n.delete(r.g.key) : n.add(r.g.key); return n; })}
+                          style={{ border: 'none', background: 'none', color: '#2e6fbf', cursor: 'pointer', fontSize: 11.5, whiteSpace: 'nowrap' }}>
+                          根拠 {openWhy.has(r.g.key) ? '▲' : '▼'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {openWhy.has(r.g.key) && (
+                    <tr><td colSpan={7} style={{ ...cell, background: '#f5f8fc', fontSize: 11.5 }}>
+                      {its.filter(it => it?.formula).map((it, k) => (
+                        <div key={k}>
+                          {it.room ? <b>{it.room}：</b> : null}AIの計算式：<code>{it.formula}</code>{it.source ? `　／　出典：${it.source}` : ''}
+                        </div>
+                      ))}
+                    </td></tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+            {rows.missImported.map((x, k) => (
+              <tr key={'m' + k} style={{ boxShadow: `inset 3px 0 ${COLOR.bad}` }}>
+                <td style={{ ...cell, color: '#607d8b' }}>{x.row.part || '（AI無し）'}</td>
+                <td style={cell}>{x.row.name}{x.row.room && chip(x.row.room, '#546e7a', '#eceff1')}{chip('取り込み', '#2e6fbf', '#eef4fc')}</td>
+                <td style={num}>{fmt(x.row.qty)} <span style={{ color: '#90a4ae' }}>{x.row.unit}</span></td>
+                <td style={num}>—</td>
+                <td style={{ ...num, color: COLOR.bad }}>拾い漏れ</td>
+                <td style={cell}><span style={{ background: BG.bad, color: COLOR.bad, fontWeight: 'bold', fontSize: 11, borderRadius: 4, padding: '1px 7px' }}>{LABEL.bad}</span></td>
+                <td style={{ ...cell, fontSize: 10.5, color: '#90a4ae' }}>{x.auto.suggestKey ? '単位違いの候補あり' : ''}</td>
+              </tr>
             ))}
             {extras.map((e, j) => (
               <tr key={'x' + j} style={{ boxShadow: `inset 3px 0 ${COLOR.bad}` }}>
@@ -198,6 +347,7 @@ export default function TakeoffAnswerCheck({ items, onSend }: {
         {confirming && (
           <div style={{ background: '#eef4fc', borderRadius: 6, padding: '10px 12px', fontSize: 12.5 }}>
             御社の数量を「正解」として、<b>部位名・単位・数量だけ</b>を送ります。会社名・現場名・金額・図面そのものは送りません。
+            {needCheck > 0 && <div style={{ color: COLOR.warn, marginTop: 4 }}>※ ひも付けが「要確認」の行が {needCheck} 行あります。先に確かめてから送るのがおすすめです。</div>}
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <button type="button" className="btn btn-primary btn-sm" onClick={send}>送る</button>
               <button type="button" className="btn btn-sm" onClick={() => setConfirming(false)}>やめる</button>

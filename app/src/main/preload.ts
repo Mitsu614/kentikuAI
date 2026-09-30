@@ -102,6 +102,7 @@ contextBridge.exposeInMainWorld('api', {
   takeoffHistory: () => ipcRenderer.invoke('ai:takeoffHistory'),
   generateTakeoffPDF: (data: any) => ipcRenderer.invoke('takeoff:generatePDF', data),
   exportTakeoffExcel: (data: any) => ipcRenderer.invoke('takeoff:exportExcel', data),
+  importTakeoffAnswer: () => ipcRenderer.invoke('takeoff:importAnswer'),
   importPriceTable: () => ipcRenderer.invoke('materials:importPriceTable'),
   getPriceBasis: () => ipcRenderer.invoke('materials:getPriceBasis'),
   setPriceBasis: (basis: 'sell' | 'cost') => ipcRenderer.invoke('materials:setPriceBasis', basis),
