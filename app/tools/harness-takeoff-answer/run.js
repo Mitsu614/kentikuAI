@@ -112,5 +112,58 @@ check('名前も単位も一致するものは要確認にしない', !m[0].need
 check('単位の書き方を揃える（m2=平米=㎡、ｍ=m、ヶ所=箇所）',
   T.normUnit('m2') === '㎡' && T.normUnit('平米') === '㎡' && T.normUnit('ｍ') === 'm' && T.normUnit('ヶ所') === '箇所');
 
+// ── 4. 拾い出しソフト（建築の電卓 など）の書き出し。数字は作り物
+console.log('4. 拾い出しソフトの書き出し（「数量」列が無い表）を読む');
+const calcWall = [
+  ['建築の電卓 見本'],
+  ['見本物件_現状図_壁', ''],
+  ['#', '壁名', '色', '壁長', '壁高', '壁面積', '開口数', '開口面積', '梁立面積', '減算後面積', 'ブラインド', '枠'],
+  ['(mm)', '(mm)', '(m²)', '(m²)', '(m²)', '(m²)', '(mm)', '(m)', '(mm)', '(mm)'],
+  [1, '会議室', '', 10000, 2400, 24, 0, 0, 0, 24, 0, 10000],
+  [2, '会議室アクセント', '', 5000, 2400, 12, 0, 0, 0, 12, 0, 5000],
+  [3, '廊下', '', 20000, 2400, 48, 2, 3.78, 0, 44.22, 0, 20000],
+  ['合計', 35000, 84, 2, 3.78, 0, 80.22, 0, 0, 35000, 35000],
+  ['#', '壁名', '開口名', '開口種類', '幅/直径', '高さ', '面積', '個数', '枠', '枠合計', '面積減算', '減算面積'],
+  ['(mm)', '(mm)', '(m²)', '(m)', '(m)', '(m²)'],
+  [1, '廊下', 'シングル扉', '片開きドア', 900, 2100, 1.89, 2, 5.1, 10.2, 'する', 3.78],
+];
+const cw = T.parseAnswerGrid(calcWall, '見本_壁', '見本物件_現状図_壁');
+check('「部屋名・壁名＋面積」の見出しを見つける', !cw.error && cw.rows.length === 3, JSON.stringify(cw));
+check('壁は開口を引いた後の面積（減算後面積）を使う', cw.rows[2] && cw.rows[2].qty === 44.22, cw.rows[2] && cw.rows[2].qty);
+check('合計行の下の開口一覧は読まない', cw.rows.every((r) => r.name !== 'シングル扉' && r.qty !== 1.89));
+check('シート名の末尾「_壁」から部位＝壁', cw.rows.every((r) => r.part === '壁' && r.unit === '㎡' && r.byRoom));
+const calcFloor = [
+  ['見本物件_現状図_床'],
+  ['#', '部屋名', '色', '部屋面積', '部屋外周', '壁高', '壁面積'],
+  ['(m²)', '(mm)', '(mm)', '(m²)'],
+  [1, '部屋1', '', 50.5, 30000, 0, 0],
+  [2, '部屋2', '', 4.25, 8200, 0, 0],
+  ['合計', 54.75, 38200, 0],
+];
+const cf = T.parseAnswerGrid(calcFloor, '見本_床', '見本物件_現状図（2）_床');
+check('床は部屋面積を使い、部位＝床', cf.rows.length === 2 && cf.rows[0].qty === 50.5 && cf.rows[0].part === '床', JSON.stringify(cf.rows));
+check('空のシート（見出しだけ）はエラーで返す', !!T.parseAnswerGrid([['見本_巾木等'], ['']], 'x', '見本_巾木等').error);
+check('シート名から部位（天井・巾木）', T.partFromSheetName('見本_天井') === '天井' && T.partFromSheetName('見本_巾木等') === '巾木');
+
+console.log('5. 部位×部屋の行を、部位でAIの行にひも付ける');
+const gc = T.groupTakeoffItems([
+  { part: '壁', room: '会議室', name: 'ビニルクロス', unit: '㎡', quantity: 30 },
+  { part: '壁', room: '廊下', name: 'ビニルクロス', unit: '㎡', quantity: 40 },
+  { part: '壁', room: '会議室', name: 'アクセントクロス', unit: '㎡', quantity: 10 },
+  { part: '壁', room: null, name: '石膏ボード下地', unit: '㎡', quantity: 200 },
+  { part: '床', room: null, name: 'タイルカーペット', unit: '㎡', quantity: 50 },
+]);
+const mc = T.matchAnswers(gc, cw.rows);
+const cloth = gc.find((g) => g.name === 'ビニルクロス').key;
+const accent = gc.find((g) => g.name === 'アクセントクロス').key;
+check('「会議室」の壁 → ビニルクロス（下地・数量最大のボードではなく仕上げ）', mc[0].key === cloth, JSON.stringify(mc[0]));
+check('候補が複数のときは「要確認」', mc[0].needsCheck === true);
+check('「会議室アクセント」→ アクセントクロス（名前の手がかり）', mc[1].key === accent && !mc[1].needsCheck, JSON.stringify(mc[1]));
+check('手がかりの無い行をアクセントクロスに結ばない', mc[2].key === cloth, JSON.stringify(mc[2]));
+const mf = T.matchAnswers(gc, cf.rows);
+check('床の行は床の唯一の行に結び、要確認にしない', mf[0].key === gc.find((g) => g.part === '床').key && !mf[0].needsCheck, JSON.stringify(mf[0]));
+const mn = T.matchAnswers(gc, [{ name: '部屋1', unit: '㎡', qty: 20, part: '天井', room: '部屋1', byRoom: true }]);
+check('AIに無い部位（天井）は拾い漏れ扱い', mn[0].key === null, JSON.stringify(mn[0]));
+
 console.log(`\n全体: 合格 ${pass}/${pass + fail}`);
 process.exit(fail ? 1 : 0);

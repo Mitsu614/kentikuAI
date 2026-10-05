@@ -97,6 +97,10 @@ export default function TakeoffAnswerCheck({ items, onSend }: {
   const graded = cnt.ok + cnt.warn + cnt.bad + cnt.extra;
   const learnable = rows.main.filter(r => r.t !== null && r.t > 0 && r.a > 0);
   const needCheck = imported.filter(x => x.auto.needsCheck && x.assign === (x.auto.key ?? MISS)).length;
+  // 材料名の無い「部位×部屋」の行（拾い出しソフトの書き出し）は部位ごとにまとめて選び直せるようにする
+  const bulkParts = [...imported.filter(x => x.row.byRoom).reduce((m, x) => {
+    const p = x.row.part || ''; m.set(p, (m.get(p) || 0) + 1); return m;
+  }, new Map<string, number>())].filter(([, n]) => n >= 2);
 
   const send = async () => {
     const payload: AnswerFeedbackRow[] = learnable.map(r => {
@@ -163,6 +167,25 @@ export default function TakeoffAnswerCheck({ items, onSend }: {
               {mapOpen ? '▲' : '▼'} 取り込んだ正解のひも付けを確かめる（{imported.length}行
               {needCheck > 0 && <b style={{ color: COLOR.warn }}>・要確認 {needCheck}行</b>}）
             </button>
+          </div>
+        )}
+        {mapOpen && imported.length > 0 && bulkParts.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6, fontSize: 12 }}>
+            {bulkParts.map(([part, n]) => (
+              <div key={part}>
+                「{part}」の行（{n}行）をまとめて：{' '}
+                <select value="" onChange={e => {
+                  const v = e.target.value; if (!v) return;
+                  setImported(p => p.map(y => (y.row.byRoom && (y.row.part || '') === part ? { ...y, assign: v } : y)));
+                  setSentN(null);
+                }} style={{ fontSize: 11.5, padding: '2px 4px', border: '1px solid #cfd8dc', borderRadius: 4, maxWidth: 300 }}>
+                  <option value="">選ぶ…</option>
+                  {groups.map(g => <option key={g.key} value={g.key}>{groupLabel(g.key)}</option>)}
+                  <option value={MISS}>AIに無い（拾い漏れ）</option>
+                  <option value={SKIP}>比べない</option>
+                </select>
+              </div>
+            ))}
           </div>
         )}
         {mapOpen && imported.length > 0 && (

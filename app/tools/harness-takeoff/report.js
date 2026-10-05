@@ -4,7 +4,7 @@
 // 1枚の報告書にして渡す。accuracy.js を回したあとの accuracy-result.json から作る（AIは呼ばない＝無料）。
 //
 //   node tools/harness-takeoff/report.js                     … 預かった図面の結果を全部1冊に
-//   node tools/harness-takeoff/report.js --customer=株式会社ＴＳＵＮＥ  … 正解ファイルの customer が一致するものだけ
+//   node tools/harness-takeoff/report.js --customer=株式会社○○  … 正解ファイルの customer が一致するものだけ
 //   node tools/harness-takeoff/report.js --pdf               … PDFも出す（Edge のヘッドレス印刷）
 //
 // ★出力は預かった図面のフォルダ（リポジトリの外）に書く。お客様名・現場名が入るため。

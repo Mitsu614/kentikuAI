@@ -185,6 +185,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   //   （実測: 823pxの電気図では型番コードが潰れて読めず、照明22台を18台と数え落とした。
   //     同じ図面を拡大して渡すとコードを読み取り、人の計数と一致した）。
   const [takeoffTiled, setTakeoffTiled] = useState(false);
+  const [takeoffMarked, setTakeoffMarked] = useState(false);   // 色の印で範囲を示した図面（印を機械で測る）
   // クロスの品番・リピート（任意）。柄物は1本の長さをリピートの倍数に切り上げる必要があるため、
   // 「品番が分かれば再計算できます」とAIに言わせている以上、入れる場所を用意しておく。
   const [takeoffRepeats, setTakeoffRepeats] = useState('');
@@ -1580,6 +1581,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         repeats: takeoffRepeats,
         industryOverride: industryOverride || undefined,
         tiled: takeoffTiled,
+        marked: takeoffMarked,
       });
       endBusy();
       // AIが最初に出した数量を控えておく。表で直したあとも「AIが何と言ったか」と比べられるように
@@ -2494,6 +2496,29 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       </span>
                     ))}
                   </div>
+                )}
+
+                {/* ★色の線・囲みで「ここを拾って」と示した図面のための道。画像の図面があるときだけ出す。
+                    印の線の長さ・囲みの面積を機械が画素で数え、AIにはその数字を使わせる（目で測らせると折れ線をたどれず外す）。
+                    カラーのCAD図面の青や緑の線を印と取り違えないよう、お客様が選んだときだけ効かせる。 */}
+                {takeoffFiles.some(f => f.type !== 'pdf') && (
+                  <label
+                    title="図面の上に色の線（壁）や色の囲み（床・天井）で拾う範囲を描いた図面のとき。印の長さ・面積を機械が画素で数えます。単位は増えません。"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '8px 10px',
+                      border: `1px solid ${takeoffMarked ? '#93c5fd' : '#e2e8f0'}`, borderRadius: 8,
+                      background: takeoffMarked ? '#eff6ff' : '#fafafa', cursor: 'pointer', fontSize: 13,
+                    }}>
+                    <input type="checkbox" checked={takeoffMarked} onChange={e => setTakeoffMarked(e.target.checked)} />
+                    <span>
+                      <strong>色の線・囲みで拾う範囲を示した図面</strong>
+                      <span style={{ color: '#64748b' }}>（拾い出しソフトの書き出し・手描きの印など）</span>
+                      <span style={{ display: 'block', fontSize: 11, color: '#94a3b8', lineHeight: 1.7 }}>
+                        青・黄・緑などの線と囲みの長さ・面積を機械が画素で数え、その範囲だけを拾います。
+                        縮尺は図面の表記（用紙の大きさ・1/200 など）から出すので、<strong>用紙まるごとの画像</strong>で入れてください。
+                      </span>
+                    </span>
+                  </label>
                 )}
 
                 {/* ★記号が小さくて読めない図面のための道。画像1枚のときだけ出す

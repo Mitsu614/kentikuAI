@@ -66,7 +66,26 @@ function loadKey() {
 // ── main.ts takeoffDrawingCore と同一のプロンプト本体 ──
 // ★本番(main.ts)と同一。check-prompt-sync.js が両方の一致を見張っている。
 //   ズレたまま測ると『本番ではない別物』の精度を測ることになるので、回す前に必ず照合すること。
-const PROMPT = fs.readFileSync(path.join(DIR, "prompt.txt"), "utf-8");
+// --prompt=<ファイル> で別の指示文を回せる（直す前と後を同じ条件で比べるため）。既定は本番と同じ prompt.txt
+const PROMPT_FILE = (process.argv.find((a) => a.startsWith('--prompt=')) || '').slice('--prompt='.length) || path.join(DIR, "prompt.txt");
+const PROMPT = fs.readFileSync(PROMPT_FILE, "utf-8");
+// --marks で使う「印を測る」関数は本番と同じ src/main/mark-measure.ts をその場でコンパイルして使う
+const MARKS = process.argv.includes('--marks');
+const MARK = MARKS ? (() => {
+  const { execFileSync } = require('child_process');
+  const APP = path.resolve(DIR, '../..');
+  const out = path.join(APP, '.harness-build');
+  const cfg = path.join(APP, '.tsconfig.harness-marks.json');
+  fs.writeFileSync(cfg, JSON.stringify({ extends: './tsconfig.json', compilerOptions: { outDir: out, noEmit: false }, files: ['src/main/mark-measure.ts'] }), 'utf8');
+  try { execFileSync(process.execPath, [path.join(APP, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', cfg], { cwd: APP, stdio: 'inherit' }); }
+  finally { try { fs.unlinkSync(cfg); } catch (_) {} }
+  const hit = ['main/mark-measure.js', 'mark-measure.js'].map((x) => path.join(out, x)).find((x) => fs.existsSync(x));
+  return require(hit);
+})() : null;
+const FASTPNG = MARKS ? require(path.join(DIR, '..', '..', 'node_modules', 'fast-png')) : null;
+// --tag=<名前> で出力（raw-*.json・結果）を分けて残す。比べる2回が上書きし合わないように
+const TAG = (process.argv.find((a) => a.startsWith('--tag=')) || '').slice('--tag='.length);
+const tagged = (base) => (TAG ? `${base}-${TAG}` : base);
 const { fillPrompt } = require(path.join(DIR, "context.js"));
 
 function parseJson(text) {
@@ -85,7 +104,7 @@ function sumMatching(items, pattern, exclude, unit) {
   const want = normUnit(unit);
   const hit = (items || []).filter((it) => {
     // 名前の書き方は揺れるので、まず部位(part)と単位で絞る。名前は補助にしか使わない。
-    const label = String(it.name || '') + ' ' + String(it.part || '') + ' ' + String(it.unit || '');
+    const label = String(it.name || '') + ' ' + String(it.part || '') + ' ' + String(it.unit || '') + ' ' + String(it.room || '');
     if (!re.test(label)) return false;
     if (ex && ex.test(label)) return false;
     // ★単位が違う行は数えない。電気の実測で「コンセント 防水 2箇所」を探した正規表現が
@@ -111,19 +130,33 @@ function grade(got, want) {
 
 // 投げる文面を組む。API は叩かない（--dry から呼んで目視できるようにするため）。
 function buildContent(spec) {
-  const buf = fs.readFileSync(spec.file);
-  const isPdf = path.extname(spec.file).toLowerCase() === '.pdf';
-  const b64 = buf.toString('base64');
-  const content = [{ type: 'text', text: `【資料：${path.basename(spec.file)}】` }];
-  // ★中身（マジックバイト）で判定する。本番 main.ts の detectMediaType と同じ考え方。
-  //   拡張子は嘘をつく（.jpg という名前のWebPが実際にあり、APIが400を返した）。
-  const media = buf[0] === 0x89 ? 'image/png'
-    : buf[0] === 0x47 ? 'image/gif'
-    : (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') ? 'image/webp'
-    : 'image/jpeg';
-  content.push(isPdf
-    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
-    : { type: 'image', source: { type: 'base64', media_type: media, data: b64 } });
+  // spec.files（複数）なら本番 main.ts と同じ「【資料1：名前】」の形で順に並べる。1枚なら従来どおり
+  const list = Array.isArray(spec.files) && spec.files.length ? spec.files : [spec.file];
+  const content = [];
+  list.forEach((file, i) => {
+    const buf = fs.readFileSync(file);
+    const isPdf = path.extname(file).toLowerCase() === '.pdf';
+    const b64 = buf.toString('base64');
+    content.push({ type: 'text', text: list.length > 1 ? `【資料${i + 1}：${path.basename(file)}】` : `【資料：${path.basename(file)}】` });
+    // ★中身（マジックバイト）で判定する。本番 main.ts の detectMediaType と同じ考え方。
+    //   拡張子は嘘をつく（.jpg という名前のWebPが実際にあり、APIが400を返した）。
+    const media = buf[0] === 0x89 ? 'image/png'
+      : buf[0] === 0x47 ? 'image/gif'
+      : (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') ? 'image/webp'
+      : 'image/jpeg';
+    content.push(isPdf
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
+      : { type: 'image', source: { type: 'base64', media_type: media, data: b64 } });
+  });
+  // --marks: 図面の色の印を機械で測り、その結果を指示文の前に差し込む（本番 main.ts と同じ関数・同じ位置）
+  if (MARKS) {
+    list.forEach((file, i) => {
+      if (!/\.png$/i.test(file)) return;
+      const png = FASTPNG.decode(fs.readFileSync(file));
+      const m = MARK.measureMarks({ width: png.width, height: png.height, data: png.data, channels: png.channels });
+      if (MARK.hasMarks(m)) content.push({ type: 'text', text: MARK.describeMarks(m, list.length > 1 ? `資料${i + 1}` : '') });
+    });
+  }
   // 差し込む中身（面積セクション・対象・工事内容・縮尺）の組み立ては context.js に集約。
   // ここで書き写すと本番とズレる（実際にズレていた）。
   content.push({ type: "text", text: fillPrompt(PROMPT, spec) });
@@ -136,6 +169,8 @@ function buildContent(spec) {
 //   --thinking=8000         … 考える時間を与える（temperature は送れないので外す）
 const MODEL = (process.argv.find((a) => a.startsWith('--model=')) || '').split('=')[1] || 'claude-sonnet-4-6';
 const THINK = Number((process.argv.find((a) => a.startsWith('--thinking=')) || '').split('=')[1] || 0);
+//   --effort=high           … Opus 5.5 などの新しいモデルで考える深さを指定（adaptive thinking）
+const EFFORT = (process.argv.find((a) => a.startsWith('--effort=')) || '').split('=')[1] || '';
 
 async function runOnce(client, spec) {
   const content = buildContent(spec);
@@ -144,8 +179,10 @@ async function runOnce(client, spec) {
     system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
     messages: [{ role: 'user', content }],
   };
-  if (THINK > 0) params.thinking = { type: 'enabled', budget_tokens: THINK };
-  else params.temperature = 0;
+  // Opus 5.5 など新しいモデルは考える量を budget ではなく effort で指定し、temperature は送れない（400になる）
+  if (EFFORT) { params.thinking = { type: 'adaptive' }; params.output_config = { effort: EFFORT }; }
+  else if (THINK > 0) params.thinking = { type: 'enabled', budget_tokens: THINK };
+  else if (/sonnet-4-6|opus-4-6|sonnet-4-5|haiku-4-5/.test(MODEL)) params.temperature = 0;
   const res = await client.messages.stream(params).finalMessage();
   const text = res.content.filter((c) => c.type === 'text').map((c) => c.text).join('');
   return { json: parseJson(text), truncated: res.stop_reason === 'max_tokens', len: text.length };
@@ -166,8 +203,8 @@ async function runOnce(client, spec) {
   if (!process.argv.includes('--private')) dirs.push(TRUTH_DIR);
   if (!process.argv.includes('--public') && fs.existsSync(PRIVATE_TRUTH_DIR)) dirs.push(PRIVATE_TRUTH_DIR);
   const files = dirs.flatMap((d) => fs.readdirSync(d)
-    .filter((f) => f.endsWith('.json') && !f.startsWith('_') && f !== 'accuracy-result.json' && !f.startsWith('raw-'))
-    .filter((f) => !only || f.replace(/\.json$/, '') === only)
+    .filter((f) => f.endsWith('.json') && !f.startsWith('_') && !f.startsWith('accuracy-result') && !f.startsWith('raw-'))
+    .filter((f) => !only || f.replace(/\.json$/, '') === only || f.startsWith(only + '-'))   // 物件名だけ渡せばその物件の全件
     .map((f) => ({ dir: d, f })));
   if (!files.length) { console.error('対象の正解ファイルがありません'); process.exit(1); }
   const outDir = (x) => (x.dir === TRUTH_DIR ? DIR : x.dir);   // 預かった図面の出力はリポジトリに書かない
@@ -193,7 +230,7 @@ async function runOnce(client, spec) {
   //   正解の書き方（match / exclude / unit）を直したときに、同じ出力で採点だけやり直すため。
   const REGRADE = process.argv.includes('--regrade');
   const loadRaw = (x, i) => {
-    const p = path.join(outDir(x), `raw-${x.f.replace(/\.json$/, '')}-${i}.json`);
+    const p = path.join(outDir(x), `raw-${tagged(x.f.replace(/\.json$/, ''))}-${i}.json`);
     if (!fs.existsSync(p)) throw new Error('前回の出力がありません: ' + p);
     return { json: JSON.parse(fs.readFileSync(p, 'utf-8')), truncated: false, len: 0 };
   };
@@ -219,7 +256,7 @@ async function runOnce(client, spec) {
         const g = grade(got && got.qty, t.qty);
         return { name: t.name, want: t.qty, unit: t.unit || '', got: got && got.qty, rows: got && got.rows, ...g };
       });
-      try { fs.writeFileSync(path.join(outDir(x), `raw-${f.replace(/\.json$/, '')}-${i}.json`), JSON.stringify(json, null, 1)); } catch (_) {}
+      try { fs.writeFileSync(path.join(outDir(x), `raw-${tagged(f.replace(/\.json$/, ''))}-${i}.json`), JSON.stringify(json, null, 1)); } catch (_) {}
       perRun.push(rows);
       const ok = rows.filter((r) => r.mark === '◎' || r.mark === '○').length;
       console.log(`items=${(json.items || []).length} 合格 ${ok}/${rows.length}${truncated ? ' ※切断' : ''}`);
@@ -252,7 +289,7 @@ async function runOnce(client, spec) {
     for (const row of r) { tally.total++; if (row.mark === '◎' || row.mark === '○') tally.pass++; if (row.got == null) tally.miss++; }
   }
   // 結果ファイルにも項目名が入るので、預かった図面を含む回は外のフォルダに書く
-  const resultPath = path.join(all.some((a) => a.private) ? PRIVATE_TRUTH_DIR : DIR, 'accuracy-result.json');
+  const resultPath = path.join(all.some((a) => a.private) ? PRIVATE_TRUTH_DIR : DIR, tagged('accuracy-result') + '.json');
   fs.writeFileSync(resultPath, JSON.stringify(all, null, 1));
   console.log(`\n全体: 合格 ${tally.pass}/${tally.total}（${tally.total ? Math.round(tally.pass / tally.total * 100) : 0}%）・未検出 ${tally.miss}`);
   console.log('判定: ±5%以内=◎ / ±15%以内=○ / それ以外=×');

@@ -18,6 +18,9 @@ export interface AnswerRow {
   room?: string;
   /** どこから読んだか（例: 'Sheet1 12行目'、'2ページ'） */
   src?: string;
+  /** 材料名が無く「部位×部屋（壁名）の面積・長さ」だけの行（建築の電卓などの拾い出しソフトの書き出し）。
+   *  名前ではなく部位でAIの行に結ぶ */
+  byRoom?: boolean;
 }
 
 export interface TakeoffGroup {
@@ -115,35 +118,80 @@ const SURE_MIN = 0.75;   // これ未満で結んだものは「要確認」
 
 /** 正解の各行を、いちばん近いAIのまとまりに結ぶ。単位が違うものは結ばず候補に回す */
 export function matchAnswers(groups: TakeoffGroup[], answers: AnswerRow[]): AnswerMatch[] {
-  return answers.map(a => {
-    const aText = `${a.part || ''}${a.name}`;
-    const aUnit = normUnit(a.unit);
-    let best: { g: TakeoffGroup; s: number } | null = null;
-    let bestAnyUnit: { g: TakeoffGroup; s: number } | null = null;
-    for (const g of groups) {
-      // 名前だけ・部位込み の高いほう（お客様の表は「天井クロス」のように部位を名前に含めがち）
-      const s = Math.max(nameSimilarity(a.name, g.name), nameSimilarity(aText, `${g.part}${g.name}`));
-      if (!bestAnyUnit || s > bestAnyUnit.s) bestAnyUnit = { g, s };
-      const unitOk = !aUnit || !normUnit(g.unit) || aUnit === normUnit(g.unit);
-      if (!unitOk) continue;
-      if (!best || s > best.s) best = { g, s };
-    }
-    const r2 = (n: number) => Math.round(n * 100) / 100;
-    if (best && best.s >= AUTO_MIN) {
-      const sure = best.s >= SURE_MIN;
-      return {
-        key: best.g.key, score: r2(best.s), needsCheck: !sure,
-        why: sure ? '名前と単位が一致' : '名前が似ている（要確認）',
-      };
-    }
-    if (bestAnyUnit && bestAnyUnit.s >= SURE_MIN) {
-      return {
-        key: null, score: r2(bestAnyUnit.s), needsCheck: true, suggestKey: bestAnyUnit.g.key,
-        why: `名前は「${bestAnyUnit.g.name}」が近いが単位が違う（${a.unit || '—'} と ${bestAnyUnit.g.unit || '—'}）`,
-      };
-    }
-    return { key: null, score: best ? r2(best.s) : 0, needsCheck: false, why: 'AIの拾い出しに該当なし' };
-  });
+  return answers.map(a => a.byRoom ? matchByPart(groups, a) : matchByName(groups, a));
+}
+
+// 下地・準備の行。部位だけで結ぶとき「仕上げ」と取り違えないよう後回しにする
+const PREP = /下地|ボード|pb|lgs|軽鉄|軽量鉄骨|胴縁|パテ|シーラー|撤去|養生|既存|剥が|はがし|処分/i;
+
+/** 材料名の無い「部位×部屋の面積」の行。同じ部位・同じ単位のAIの行に結ぶ。
+ *  候補が1つならそれ。複数あるときは名前が近いもの（食堂アクセント→アクセントクロス）、
+ *  無ければ下地以外で数量の大きいもの（＝主な仕上げ）を仮に選び、要確認にする */
+function matchByPart(groups: TakeoffGroup[], a: AnswerRow): AnswerMatch {
+  const aUnit = normUnit(a.unit);
+  const aPart = normText(a.part);
+  const samePart = groups.filter(g => aPart && normText(g.part) === aPart);
+  const cands = samePart.filter(g => !aUnit || normUnit(g.unit) === aUnit);
+  if (!cands.length) {
+    const s = samePart[0];
+    return s
+      ? { key: null, score: 0, needsCheck: true, suggestKey: s.key, why: `部位「${a.part}」はあるが単位が違う（${a.unit} と ${s.unit || '—'}）` }
+      : { key: null, score: 0, needsCheck: false, why: `AIの拾い出しに部位「${a.part || '—'}」の行が無い` };
+  }
+  // 「食堂アクセント」のように、名前に材料の手がかりがあるときはそれを優先
+  //   AIの材料名から「クロス・張り」などのありふれた語を外した芯（アクセントクロス→アクセント）が、
+  //   正解の名前（食堂アクセント）に含まれていれば、その材料とみなす
+  const an = normText(a.name);
+  const named = cands
+    .map(g => ({ g, core: materialCore(g.name) }))
+    .filter(x => x.core.length >= 2 && an.includes(x.core))
+    .sort((x, y) => y.core.length - x.core.length)[0];
+  if (named) return { key: named.g.key, score: 0.9, needsCheck: false, why: `部位「${a.part}」・名前に「${named.g.name}」の手がかり` };
+  // 逆に、芯のある材料（アクセントクロスなど）に、手がかりの無い行を結ばない
+  const plain = cands.filter(g => materialCore(g.name).length < 2);
+  const base = plain.length ? plain : cands;
+  const finish = base.filter(g => !PREP.test(g.name));
+  const pool = finish.length ? finish : base;
+  const pick = [...pool].sort((x, y) => y.ai - x.ai)[0];
+  if (cands.length === 1) return { key: pick.key, score: 1, needsCheck: false, why: `部位「${a.part}」の行は1つだけ` };
+  return {
+    key: pick.key, score: 0.5, needsCheck: true,
+    why: `部位「${a.part}」の行が${cands.length}つあるため、主な仕上げ（${pick.name}）に仮に結んだ（要確認）`,
+  };
+}
+
+function materialCore(name: string): string {
+  return normText(name).replace(/(ビニル)?クロス|壁紙|張り?|貼り?|仕上げ?|塗装|塗り|工事|一般|標準|量産品?|1000番|sp/gi, '');
+}
+
+function matchByName(groups: TakeoffGroup[], a: AnswerRow): AnswerMatch {
+  const aText = `${a.part || ''}${a.name}`;
+  const aUnit = normUnit(a.unit);
+  let best: { g: TakeoffGroup; s: number } | null = null;
+  let bestAnyUnit: { g: TakeoffGroup; s: number } | null = null;
+  for (const g of groups) {
+    // 名前だけ・部位込み の高いほう（お客様の表は「天井クロス」のように部位を名前に含めがち）
+    const s = Math.max(nameSimilarity(a.name, g.name), nameSimilarity(aText, `${g.part}${g.name}`));
+    if (!bestAnyUnit || s > bestAnyUnit.s) bestAnyUnit = { g, s };
+    const unitOk = !aUnit || !normUnit(g.unit) || aUnit === normUnit(g.unit);
+    if (!unitOk) continue;
+    if (!best || s > best.s) best = { g, s };
+  }
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  if (best && best.s >= AUTO_MIN) {
+    const sure = best.s >= SURE_MIN;
+    return {
+      key: best.g.key, score: r2(best.s), needsCheck: !sure,
+      why: sure ? '名前と単位が一致' : '名前が似ている（要確認）',
+    };
+  }
+  if (bestAnyUnit && bestAnyUnit.s >= SURE_MIN) {
+    return {
+      key: null, score: r2(bestAnyUnit.s), needsCheck: true, suggestKey: bestAnyUnit.g.key,
+      why: `名前は「${bestAnyUnit.g.name}」が近いが単位が違う（${a.unit || '—'} と ${bestAnyUnit.g.unit || '—'}）`,
+    };
+  }
+  return { key: null, score: best ? r2(best.s) : 0, needsCheck: false, why: 'AIの拾い出しに該当なし' };
 }
 
 const HEAD = {
@@ -157,8 +205,91 @@ const HEAD = {
 
 const TOTAL_ROW = /^(小計|合計|総計|計|中計|累計|総合計)$|小計|合計/;
 
-/** Excel・CSVの表（行×列の文字）から正解の行を取り出す。見出しの行は自動で探す */
-export function parseAnswerGrid(grid: any[][], srcLabel = ''): { rows: AnswerRow[]; error?: string } {
+// ── 拾い出しソフト（建築の電卓 など）の書き出し ──
+// 見出しが「# / 部屋名 / 色 / 部屋面積 / 部屋外周 …」「# / 壁名 / 色 / 壁長 / 壁高 / 壁面積 / … / 減算後面積」の形で、
+// 「数量」という列が無い。すぐ下の行に単位（(m²)・(mm)）が並ぶ。部位はシート名の末尾（…_床 / …_壁）で分かる。
+// 合計行の下に開口の一覧（開口名・幅・高さ…）が続くことがあるので、合計行で読むのをやめる。
+const CALC_NAME = /^(部屋名|壁名|天井名|名称|名前|部位名|項目名)$/;
+// 使う数量の列。上ほど優先（壁は開口を引いた後の面積を正解とする）
+const CALC_QTY: { re: RegExp; kind: 'area' | 'len' | 'count' }[] = [
+  { re: /^減算後面積$/, kind: 'area' },
+  { re: /^(仕上面積|施工面積|張り面積)$/, kind: 'area' },
+  { re: /^(壁面積|天井面積|床面積|部屋面積|面積)$/, kind: 'area' },
+  { re: /^(巾木長さ|幅木長さ|長さ|延長|周長)$/, kind: 'len' },
+  { re: /^(個数|箇所数|数)$/, kind: 'count' },
+];
+
+export function partFromSheetName(name: string): string | undefined {
+  const s = String(name || '').normalize('NFKC');
+  const m = s.match(/[_＿\s]([^_＿\s]+)$/);
+  const tail = m ? m[1] : s;
+  if (/巾木|幅木/.test(tail)) return '巾木';
+  if (/天井/.test(tail)) return '天井';
+  if (/壁/.test(tail)) return '壁';
+  if (/床/.test(tail)) return '床';
+  return undefined;
+}
+
+function parseCalcGrid(grid: any[][], srcLabel: string, sheetName: string): AnswerRow[] | null {
+  const n = (v: any) => String(v ?? '').normalize('NFKC').replace(/[\s　]+/g, '');
+  for (let h = 0; h < Math.min(grid.length, 20); h++) {
+    const head = (grid[h] || []).map(n);
+    const cName = head.findIndex(c => CALC_NAME.test(c));
+    if (cName < 0) continue;
+    let cQty = -1; let kind: 'area' | 'len' | 'count' = 'area';
+    for (const q of CALC_QTY) { const k = head.findIndex(c => q.re.test(c)); if (k >= 0) { cQty = k; kind = q.kind; break; } }
+    if (cQty < 0) continue;
+    // 単位の行（見出しのすぐ下）。書いてなければ見出しの種類から決める
+    const unitRow = (grid[h + 1] || []).map(n);
+    const unitHasParen = unitRow.some(c => /^\(.*\)$/.test(c));
+    const rawUnit = unitHasParen ? (unitRow[cQty] || '').replace(/^\(|\)$/g, '') : '';
+    let unit = kind === 'area' ? '㎡' : kind === 'len' ? 'm' : '箇所';
+    let scale = 1;
+    if (rawUnit) {
+      const u = rawUnit.toLowerCase();
+      if (u === 'mm') { unit = 'm'; scale = 1 / 1000; }
+      else if (u === 'cm') { unit = 'm'; scale = 1 / 100; }
+      else unit = normUnit(rawUnit) || unit;
+    }
+    // 単位の行は「(m²)」がずれて並ぶ書き出しもあるので、面積の列なら㎡・長さの列ならmを信じる
+    if (kind === 'area') { unit = '㎡'; scale = 1; }
+    // 部位はシート名の末尾（…_床 / …_壁）で決める。書いていない書き出し（「新しいフロア」「Sheet1」）は見出しで決める：
+    //   壁名＝壁、天井名＝天井、部屋名＝床（建築の電卓の部屋の表は床。天井は「…_天井」のシートで別に出る）
+    const nameHead = head[cName];
+    const part = partFromSheetName(sheetName)
+      || (/壁/.test(nameHead) ? '壁' : /天井/.test(nameHead) ? '天井' : /部屋|室/.test(nameHead) ? '床' : undefined);
+    const rows: AnswerRow[] = [];
+    for (let i = h + (unitHasParen ? 2 : 1); i < grid.length; i++) {
+      const row = grid[i] || [];
+      const first = n(row[0]);
+      const name = String(row[cName] ?? '').trim();
+      if (first === '合計' || /^(合計|総計|小計)$/.test(n(name))) break;   // この下は別の表（開口の一覧など）
+      if (first === '#') break;
+      const q = parseQty(row[cQty]);
+      if (!name || q === null || !(q > 0)) continue;
+      rows.push({
+        name, unit, qty: Math.round(q * scale * 1000) / 1000,
+        part, room: name, byRoom: true,
+        src: `${srcLabel ? srcLabel + ' ' : ''}${i + 1}行目`,
+      });
+    }
+    return rows;
+  }
+  return null;
+}
+
+/** Excel・CSVの表（行×列の文字）から正解の行を取り出す。見出しの行は自動で探す。
+ *  sheetName はシート名（拾い出しソフトの書き出しでは、ここに部位が書いてある） */
+export function parseAnswerGrid(grid: any[][], srcLabel = '', sheetName = ''): { rows: AnswerRow[]; error?: string } {
+  const std = parseStdGrid(grid, srcLabel);
+  if (std.rows.length || !std.headerMissing) return { rows: std.rows, error: std.error };
+  const calc = parseCalcGrid(grid, srcLabel, sheetName);
+  if (calc && calc.length) return { rows: calc };
+  if (calc) return { rows: [], error: '数量の入った行がありませんでした' };
+  return { rows: [], error: std.error };
+}
+
+function parseStdGrid(grid: any[][], srcLabel = ''): { rows: AnswerRow[]; error?: string; headerMissing?: boolean } {
   const n = (v: any) => String(v ?? '').normalize('NFKC').replace(/[\s　]+/g, '');
   const find = (row: any[], re: RegExp) => row.findIndex(c => re.test(n(c)));
   let h = -1; const c: Record<keyof typeof HEAD, number> = { name: -1, qty: -1, unit: -1, part: -1, room: -1, spec: -1 };
@@ -176,7 +307,7 @@ export function parseAnswerGrid(grid: any[][], srcLabel = ''): { rows: AnswerRow
       break;
     }
   }
-  if (h < 0) return { rows: [], error: '見出しの行が見つかりませんでした（「品名・名称」と「数量」の列が必要です）' };
+  if (h < 0) return { rows: [], headerMissing: true, error: '見出しの行が見つかりませんでした（「品名・名称」と「数量」の列、または「部屋名・壁名」と「面積」の列が必要です）' };
   const rows: AnswerRow[] = [];
   let lastPart = '', lastRoom = '';
   for (let i = h + 1; i < grid.length; i++) {

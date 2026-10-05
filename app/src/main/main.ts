@@ -13,6 +13,7 @@ import { readMarketInsightCache, warmMarketInsight, buildMarketPrompt } from './
 import { buildLearningContext, dropSummaryRows } from './learning-context';
 import { estimateManDaysFromBreakdown, yieldsWithConfig } from './labor-yield';
 import { parseAnswerGrid, parseAnswerJson, ANSWER_READ_PROMPT, AnswerRow } from './takeoff-answer';
+import { measureMarks, hasMarks, describeMarks } from './mark-measure';
 import { templatePrompt, sanitizeTemplate, validateTemplate, renderTemplate, buildTemplateData, usedPlaceholders, PLACEHOLDERS } from './estimate-template';
 import { importOcrResultCore } from './ocr-import';
 
@@ -5715,7 +5716,7 @@ app.whenReady().then(async () => {
       const base = path.basename(file);
       try {
         if (/\.(xlsx|csv)$/i.test(file)) {
-          const sheets: { label: string; grid: any[][] }[] = [];
+          const sheets: { label: string; name: string; grid: any[][] }[] = [];
           if (/\.xlsx$/i.test(file)) {
             const ExcelJS = require('exceljs');
             const wb = new ExcelJS.Workbook();
@@ -5730,7 +5731,7 @@ app.whenReady().then(async () => {
                 });
               });
               for (let i = 0; i < grid.length; i++) if (!grid[i]) grid[i] = [];
-              sheets.push({ label: `${base}「${ws.name}」`, grid });
+              sheets.push({ label: `${base}「${ws.name}」`, name: String(ws.name || ''), grid });
             }
           } else {
             const buf = fs.readFileSync(file);
@@ -5740,11 +5741,11 @@ app.whenReady().then(async () => {
             txt = txt.replace(/^﻿/, '');
             const grid = txt.split(/\r?\n/).map((l) => (l.match(/("([^"]|"")*"|[^,]*)(,|$)/g) || [])
               .map((c) => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"').trim()));
-            sheets.push({ label: base, grid });
+            sheets.push({ label: base, name: base.replace(/\.csv$/i, ''), grid });
           }
           let got = 0; let lastErr = '';
           for (const s of sheets) {
-            const r = parseAnswerGrid(s.grid, s.label);
+            const r = parseAnswerGrid(s.grid, s.label, s.name);
             if (r.rows.length) { rows.push(...r.rows); got += r.rows.length; } else if (r.error) lastErr = r.error;
           }
           notes.push(got ? `${base}: ${got}行` : `${base}: 読めませんでした（${lastErr}）`);
@@ -8458,6 +8459,8 @@ manDaysBreakdownの書き方例:
     files?: { type?: 'pdf' | 'image'; data: string; name?: string }[];
     comment?: string; scaleHint?: string; targets?: string; industryOverride?: string; repeats?: string;
     tiled?: boolean;
+    /** 色の線・囲みで拾う範囲を示した図面（印を機械で測ってAIに渡す） */
+    marked?: boolean;
   }) => {
     const files = (data?.files || []).filter((f: any) => f && f.data);
     if (files.length === 0) throw new Error('ERROR: 図面または材料一覧表のファイル（PDFまたは画像）を選択してください。');
@@ -8465,7 +8468,8 @@ manDaysBreakdownの書き方例:
 
     // ★分割して拾うか。器具の記号が小さくて読めない図面のための道。
     //   画像1枚のときだけ。PDFはベクタのまま渡していて細部が保たれているので、分割しても得がない。
-    const wantTiled = !!data?.tiled;
+    // 色の印を測るときは分割しない（分割すると画素の位置・縮尺が印の計測と合わなくなる）
+    const wantTiled = !!data?.tiled && !data?.marked;
     const onlyImage = files.length === 1
       && files[0].type !== 'pdf'
       && !String(files[0].data).startsWith('data:application/pdf');
@@ -8549,6 +8553,8 @@ ${TAKEOFF_INDUSTRY_HINT[takeoffIndustry]}
       : '';
 
     const content: any[] = [];
+    const markSections: string[] = [];
+    const markMissing: string[] = [];
     files.forEach((f: any, i: number) => {
       const raw = String(f.data);
       const isPdf = f.type === 'pdf' || raw.startsWith('data:application/pdf');
@@ -8559,8 +8565,26 @@ ${TAKEOFF_INDUSTRY_HINT[takeoffIndustry]}
         // 図面は細い寸法線を読ませるので、現場写真ほど縮めない（長辺2000px）
         const shrunk = shrinkImageForAI(raw, 2000);
         content.push({ type: 'image', source: { type: 'base64', media_type: detectMediaType(shrunk), data: String(shrunk).replace(/^data:image\/\w+;base64,/, '') } });
+        // ★色の印で範囲を示した図面：AIに送るのと同じ画像で印を測る（画素の位置・縮尺の計算がAIの見る画像と揃う）
+        if (data?.marked) {
+          try {
+            const { nativeImage } = require('electron');
+            const img = nativeImage.createFromDataURL(String(shrunk));
+            if (!img.isEmpty()) {
+              const sz = img.getSize();
+              const m = measureMarks({ width: sz.width, height: sz.height, data: img.toBitmap(), channels: 4, bgr: true });
+              if (hasMarks(m)) markSections.push(describeMarks(m, files.length > 1 ? `資料${i + 1}` : ''));
+              else markMissing.push(`資料${i + 1}`);
+            }
+          } catch (e: any) {
+            console.error('印の計測に失敗:', e?.message || e);
+            markMissing.push(`資料${i + 1}`);
+          }
+        }
       }
     });
+    // 印を測った結果は、図面の後・指示文の前に置く（ハーネス accuracy.js --marks と同じ位置）
+    for (const t of markSections) content.push({ type: 'text', text: t });
 
     // 依頼文に「床面積1,209.35㎡」等が書かれていれば、それを統制総計として渡す。
     // これが無いと、部屋を1つずつ挙げる途中で取りこぼしても気づけない（実測で床が正解の62%だった）。
@@ -8948,11 +8972,17 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
     //   拾い出しは1行が長い（式・寸法・出典・仮定つき）ので、見積より出力が伸びる。
     //   claude-sonnet-4-6 の出力上限は128K。ストリームならHTTPタイムアウトを気にせず大きく取れるので
     //   64Kまで引き上げて、そもそも切らせない（見積側 analyze が同じ理由でストリーム化済み）。
+    // ★色の印で範囲を示した図面は Opus 5.5 で拾う。
+    //   印を測った表を読んで「どの番号がどの線か・見えない裏面・見えている扉」を判断させる所で、
+    //   Sonnet 4.6 は不安定だった（2026-09-30 ハーネス：物件B1F壁 +237%、物件A1F床 +113%）。
+    //   Opus 5.5（effort high）は合計14件中13件が±15%以内。Opus 5.5 は temperature を送れない（400）。
+    const markedModel = !!data?.marked;
     const askTakeoff = async (msgContent: any[]) => {
       const stream = client.messages.stream({
-        model: 'claude-sonnet-4-6',
+        ...(markedModel
+          ? { model: 'claude-opus-5-5', thinking: { type: 'adaptive' }, output_config: { effort: 'high' } }
+          : { model: 'claude-sonnet-4-6', temperature: 0 }),
         max_tokens: 64000,
-        temperature: 0,
         system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
         messages: [{ role: 'user', content: msgContent }],
       });
@@ -9006,6 +9036,15 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
       const r = await askTakeoff(content);
       takeoff = r.takeoff;
       truncated = r.cut;
+    }
+    if (data?.marked && takeoff) {
+      takeoff.warnings = Array.isArray(takeoff.warnings) ? takeoff.warnings : [];
+      if (markSections.length) {
+        takeoff.warnings.unshift('★色の印の長さ・面積は、機械が画素で数えた値を使っています。縮尺（1画素の実寸）は図面の用紙の大きさと縮尺の表記から出しています。用紙の一部だけを切り取った画像だと縮尺がずれます。');
+      }
+      if (markMissing.length) {
+        takeoff.warnings.unshift(`★「色の線・囲みで範囲を示した図面」を選びましたが、${markMissing.join('・')}に色の印が見つかりませんでした。印の無い図面として拾っています。`);
+      }
     }
     } catch (e: any) {
       // AIが答えを返せなかったときは、引いた単位を返してから日本語のエラーにして返す
