@@ -39,7 +39,22 @@ export interface MarkPiece {
   ends: number;
   /** 両側が印に囲まれた部屋になっていて、両面（2本分）と数えた芯線の画素数 */
   bothFacesPx: number;
+  /** 芯線を角・分かれ目で区切った区間（画像全体の座標）。★いまはAIへの文面に載せていない（describeMarks の注記を参照）。
+   *  区間ごとに両面を決める案を試すときの土台として、測るところだけ残してある */
+  segments: MarkSegment[];
   bbox: [number, number, number, number];
+}
+
+export interface MarkSegment {
+  x1: number; y1: number; x2: number; y2: number;
+  /** 区間の長さ（画素・1本分） */
+  lengthPx: number;
+  /** 機械が「両側が印に囲まれた部屋」と見た区間か（区間の半分以上がそう） */
+  enclosedBoth: boolean;
+  /** 区間に接する、印に囲まれた部屋の数（0・1・2。区間の画素の多数決） */
+  rooms: number;
+  /** この区間の上にある開口の印の幅（画素。四角の長い辺＋線の太さ） */
+  openingWidthsPx: number[];
 }
 
 export interface MarkRegion {
@@ -181,7 +196,7 @@ function skeletonLength(bin: Uint8Array, W: number, H: number, weight?: Uint8Arr
 
 /** 塊の中の小さな穴（開口の印の四角など）を塗りつぶす。塗った穴の数を返す。
  *  四角のまま細線化すると、周りを一周ぶん長さに数えてしまう */
-function fillSmallHoles(bin: Uint8Array, W: number, H: number, bbox: [number, number, number, number], maxHole: number, widths?: number[]): number {
+function fillSmallHoles(bin: Uint8Array, W: number, H: number, bbox: [number, number, number, number], maxHole: number, widths?: number[], centers?: [number, number][]): number {
   const [x0, y0, x1, y1] = bbox;
   const w = x1 - x0 + 3, h = y1 - y0 + 3;
   const lab = new Int32Array(w * h);              // 0=未, -1=外, >0=穴の番号
@@ -211,6 +226,7 @@ function fillSmallHoles(bin: Uint8Array, W: number, H: number, bbox: [number, nu
         let ax = w, bx = 0, ay = h, by = 0;
         for (const c of cells) { const cx = c % w, cy = (c / w) | 0; if (cx < ax) ax = cx; if (cx > bx) bx = cx; if (cy < ay) ay = cy; if (cy > by) by = cy; }
         widths.push(Math.max(bx - ax, by - ay) + 1);   // 四角の長い辺＝開口の幅（内法）
+        if (centers) centers.push([(ax + bx) / 2 + x0 - 1, (ay + by) / 2 + y0 - 1]);
       }
       for (const c of cells) { const cx = c % w, cy = (c / w) | 0; bin[(cy + y0 - 1) * W + (cx + x0 - 1)] = 1; }
     }
@@ -248,6 +264,81 @@ function endpoints(bin: Uint8Array, W: number, H: number): number {
     if (k === 1) n++;
   }
   return n;
+}
+
+/**
+ * 芯線を、分かれ目・端で区切った道にたどり、さらに角（向きが変わる所）で区切った区間にする。
+ * 柱型の小さな出入り（eps 画素より浅いもの）は区切らず、その長さは区間に含める。
+ * 座標は bin の中の位置。長さは道に沿った長さ（1本分）
+ */
+function traceSegments(bin: Uint8Array, W: number, H: number, eps: number, weight?: Uint8Array, rooms?: Uint8Array): { x1: number; y1: number; x2: number; y2: number; lengthPx: number; both: boolean; rooms: number }[] {
+  const nb = (p: number): number[] => {
+    const x = p % W, y = (p / W) | 0, out: number[] = [];
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && ny >= 0 && nx < W && ny < H && bin[ny * W + nx]) out.push(ny * W + nx);
+    }
+    return out;
+  };
+  const isNode = new Uint8Array(W * H);
+  for (let p = 0; p < W * H; p++) if (bin[p] && nb(p).length !== 2) isNode[p] = 1;
+  const seen = new Uint8Array(W * H);
+  const paths: number[][] = [];
+  const walk = (start: number, first: number) => {
+    const path = [start, first];
+    if (!isNode[first]) seen[first] = 1;
+    let prev = start, cur = first;
+    while (!isNode[cur]) {
+      // 輪のときは、出発点に戻ったら閉じる
+      const cand = nb(cur).filter((q) => q !== prev && (isNode[q] || !seen[q] || (q === start && path.length > 3)));
+      if (!cand.length) break;
+      // 4近傍を先に（斜めの段差で道が二股に見えるのを避ける）
+      const cx = cur % W;
+      cand.sort((a, b) => Number(Math.abs((a % W) - cx) + Math.abs(((a / W) | 0) - ((cur / W) | 0)) > 1) - Number(Math.abs((b % W) - cx) + Math.abs(((b / W) | 0) - ((cur / W) | 0)) > 1));
+      const node = cand.find((q) => isNode[q]);
+      const next = node ?? cand[0];
+      path.push(next);
+      if (isNode[next] || next === start) break;
+      seen[next] = 1; prev = cur; cur = next;
+    }
+    paths.push(path);
+  };
+  for (let p = 0; p < W * H; p++) if (isNode[p]) for (const q of nb(p)) if (!isNode[q] && !seen[q]) walk(p, q);
+  // 分かれ目も端も無い輪（部屋を一周した線）
+  for (let p = 0; p < W * H; p++) if (bin[p] && !isNode[p] && !seen[p]) { seen[p] = 1; const q = nb(p).find((r) => !seen[r]); if (q !== undefined) walk(p, q); }
+
+  const segs: { x1: number; y1: number; x2: number; y2: number; lengthPx: number; both: boolean; rooms: number }[] = [];
+  for (const path of paths) {
+    const xs = path.map((p) => p % W), ys = path.map((p) => (p / W) | 0);
+    const cum = [0];
+    for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + (xs[i] !== xs[i - 1] && ys[i] !== ys[i - 1] ? Math.SQRT2 : 1));
+    // 角で区切る（Douglas-Peucker）
+    const keep = new Uint8Array(path.length); keep[0] = 1; keep[path.length - 1] = 1;
+    const dp = (a: number, b: number) => {
+      let best = -1, bd = eps;
+      const dx = xs[b] - xs[a], dy = ys[b] - ys[a], L = Math.hypot(dx, dy) || 1;
+      for (let i = a + 1; i < b; i++) {
+        const d = Math.abs(dy * (xs[i] - xs[a]) - dx * (ys[i] - ys[a])) / L;
+        if (d > bd) { bd = d; best = i; }
+      }
+      if (best > 0) { keep[best] = 1; dp(a, best); dp(best, b); }
+    };
+    dp(0, path.length - 1);
+    let a = 0;
+    for (let i = 1; i < path.length; i++) {
+      if (!keep[i]) continue;
+      const len = cum[i] - cum[a];
+      let w2 = 0;
+      if (weight) for (let k = a; k <= i; k++) if (weight[path[k]] === 2) w2++;
+      const rc = [0, 0, 0];
+      if (rooms) for (let k = a; k <= i; k++) rc[rooms[path[k]]]++;
+      const rn = rc[2] >= rc[1] && rc[2] >= rc[0] ? 2 : rc[1] >= rc[0] ? 1 : 0;
+      if (len >= 1) segs.push({ x1: xs[a], y1: ys[a], x2: xs[i], y2: ys[i], lengthPx: len, both: w2 * 2 > i - a + 1, rooms: rn });
+      a = i;
+    }
+  }
+  return segs;
 }
 
 /** 正方形の構造要素で太らせる（途切れた囲みをつなぐため） */
@@ -315,7 +406,7 @@ function enclosedArea(bin: Uint8Array, W: number, H: number, bbox: [number, numb
  * 印を測る。
  * @param minSide これより小さい塊は番号の数字などとみなして捨てる（画素）
  */
-export function measureMarks(img: Rgba, opts: { minSide?: number; bridge?: number; maxHole?: number; bothFaces?: boolean; lineFrac?: number; debug?: boolean; roomBridge?: number; thickDouble?: boolean; doubleRatio?: number; minRun?: number } = {}): MarkMeasure {
+export function measureMarks(img: Rgba, opts: { minSide?: number; bridge?: number; maxHole?: number; bothFaces?: boolean; lineFrac?: number; debug?: boolean; roomBridge?: number; thickDouble?: boolean; doubleRatio?: number; minRun?: number; segDiv?: number } = {}): MarkMeasure {
   const W = img.width, H = img.height;
   const minSide = opts.minSide ?? Math.max(14, Math.round(Math.max(W, H) / 60));
   // 囲みの途切れ（注記の文字が線に重なった所など）をつなぐ幅。画像の大きさに比例させる
@@ -324,7 +415,7 @@ export function measureMarks(img: Rgba, opts: { minSide?: number; bridge?: numbe
   const comps = components(map, W, H);
   const names: MarkColor[] = ['blue', 'blue', 'yellow', 'green', 'magenta', 'orange', 'brown'];
   const pieces: MarkPiece[] = [];
-  const pending: { c: { idx: number[]; color: number; bbox: [number, number, number, number] }; bin: Uint8Array; dist: Uint16Array; lw: number; lh: number; enclosedPx: number; openings: number; openingWidths: number[] }[] = [];
+  const pending: { c: { idx: number[]; color: number; bbox: [number, number, number, number] }; bin: Uint8Array; dist: Uint16Array; lw: number; lh: number; enclosedPx: number; openings: number; openingWidths: number[]; openingCenters: [number, number][] }[] = [];
   for (const c of comps) {
     const [x0, y0, x1, y1] = c.bbox;
     if (Math.max(x1 - x0, y1 - y0) + 1 < minSide) continue;       // 番号・点
@@ -338,10 +429,11 @@ export function measureMarks(img: Rgba, opts: { minSide?: number; bridge?: numbe
     // 開口の印（線の上の小さな四角）は塗りつぶしてから細線化する。穴の大きさの上限は画像に比例
     const maxHole = opts.maxHole ?? Math.round((Math.max(W, H) / 100) ** 2);
     const openingWidths: number[] = [];
-    const openings = fillSmallHoles(bin, lw, lh, lb, maxHole, openingWidths);
+    const openingCenters: [number, number][] = [];
+    const openings = fillSmallHoles(bin, lw, lh, lb, maxHole, openingWidths, openingCenters);
     const dist = distanceMap(bin, lw, lh);
     thin(bin, lw, lh);
-    pending.push({ c, bin, dist, lw, lh, enclosedPx, openings, openingWidths });
+    pending.push({ c, bin, dist, lw, lh, enclosedPx, openings, openingWidths, openingCenters });
   }
 
   // ★同じ所を2回なぞった線（間仕切り壁の表と裏）は画素では1本に重なり、見分けられない。
@@ -442,9 +534,10 @@ export function measureMarks(img: Rgba, opts: { minSide?: number; bridge?: numbe
   const reach = Math.ceil(w0 / 2 + (opts.roomBridge ? opts.roomBridge : best === bridged ? bridge : 0) + 2);
    // 線の芯から部屋の内側まで届く距離
   for (const q of pending) {
-    const { c, bin, lw, lh, enclosedPx, openings, openingWidths } = q;
+    const { c, bin, lw, lh, enclosedPx, openings, openingWidths, openingCenters } = q;
     const [x0, y0] = c.bbox;
     const weight = new Uint8Array(lw * lh);
+    const roomsN = new Uint8Array(lw * lh);
     let doubledPx = 0;
     for (let ly = 0; ly < lh; ly++) for (let lx = 0; lx < lw; lx++) {
       const li = ly * lw + lx;
@@ -457,6 +550,7 @@ export function measureMarks(img: Rgba, opts: { minSide?: number; bridge?: numbe
         const r = roomId[ny * W + nx]; if (r) seen.add(r);
       }
       weight[li] = seen.size >= 2 && opts.bothFaces !== false ? 2 : 1;
+      roomsN[li] = Math.min(2, seen.size);
     }
     // ── 太さで見る2回なぞり ──
     //   重ねてなぞった線は1〜2画素ずれて重なり、約2倍の太さになる（物件A1Fの間仕切り・廊下の線で実見）。
@@ -512,7 +606,38 @@ export function measureMarks(img: Rgba, opts: { minSide?: number; bridge?: numbe
     const ends = endpoints(bin, lw, lh);
     // 細線化で両端が線の太さの半分ずつ縮むので、端ごとに足し戻す
     const lengthPx = skeletonLength(bin, lw, lh, weight) + ends * (w0 / 2);
-    pieces.push({ color: names[c.color], pixels: c.idx.length, lengthPx, enclosedPx, openings, ends, bothFacesPx: doubledPx, openingWidthsPx: openingWidths.map((v) => v + w0), thickRuns, bbox: c.bbox });
+    // 区間に区切る。柱型の出入り（画像の長辺の1/150より浅いもの）は区切らない
+    //   区間の合計は、分かれ目の画素・端の足し戻しの分だけ線の長さ（1本分）より短く出るので、1本分の長さに按分して合わせる
+    const segRaw = traceSegments(bin, lw, lh, Math.max(3, Math.max(W, H) / (opts.segDiv ?? 150)), weight, roomsN);
+    const oneFace = skeletonLength(bin, lw, lh) + ends * (w0 / 2);
+    const segSum = segRaw.reduce((s, v) => s + v.lengthPx, 0) || 1;
+    const all1: MarkSegment[] = segRaw
+      .map((s) => ({ x1: s.x1 + x0 - 1, y1: s.y1 + y0 - 1, x2: s.x2 + x0 - 1, y2: s.y2 + y0 - 1, lengthPx: s.lengthPx * oneFace / segSum, enclosedBoth: s.both, rooms: s.rooms, openingWidthsPx: [] as number[] }));
+    // 分かれ目のきれはし（短い区間）は、端がつながっている長い区間に長さを足して消す（AIに渡す行を減らす）
+    const minSeg = Math.max(4, Math.max(W, H) / 150);
+    const segments = all1.filter((s) => s.lengthPx >= minSeg);
+    for (const s of all1) {
+      if (s.lengthPx >= minSeg) continue;
+      const touch = (t: MarkSegment) => Math.min(
+        Math.hypot(t.x1 - s.x1, t.y1 - s.y1), Math.hypot(t.x1 - s.x2, t.y1 - s.y2),
+        Math.hypot(t.x2 - s.x1, t.y2 - s.y1), Math.hypot(t.x2 - s.x2, t.y2 - s.y2));
+      let best: MarkSegment | null = null;
+      for (const t of segments) if (!best || touch(t) < touch(best)) best = t;
+      if (best) best.lengthPx += s.lengthPx; else segments.push(s);
+    }
+    // 開口の印を、いちばん近い区間に付ける（AIが「どの番号の壁から引くか」を決められるように）
+    openingCenters.forEach(([lx, ly], k) => {
+      const gx = lx + x0 - 1, gy = ly + y0 - 1;
+      const dist = (t: MarkSegment) => {
+        const dx = t.x2 - t.x1, dy = t.y2 - t.y1, L2 = dx * dx + dy * dy || 1;
+        const u = Math.max(0, Math.min(1, ((gx - t.x1) * dx + (gy - t.y1) * dy) / L2));
+        return Math.hypot(t.x1 + u * dx - gx, t.y1 + u * dy - gy);
+      };
+      let best: MarkSegment | null = null;
+      for (const t of segments) if (!best || dist(t) < dist(best)) best = t;
+      if (best) best.openingWidthsPx.push(openingWidths[k] + w0);
+    });
+    pieces.push({ color: names[c.color], pixels: c.idx.length, lengthPx, enclosedPx, openings, ends, bothFacesPx: doubledPx, segments, openingWidthsPx: openingWidths.map((v) => v + w0), thickRuns, bbox: c.bbox });
   }
 
   // ── 番号の数字を数える ──
@@ -607,6 +732,10 @@ export function describeMarks(m: MarkMeasure, label = ''): string {
     out.push('### 印に囲まれた範囲（床・天井などを示す囲み）');
     m.regions.forEach((r, k) => out.push(`- 囲み${k + 1}: 面積 ${r.areaPx}画素（線の芯まで含む）・${where(r.bbox, m.width, m.height)}`));
     out.push(`囲みの合計: ${Math.round(m.totalEnclosedPx)}画素`);
+    // ★囲みの面積は、色ごとに数えた入れ子の囲みの合計を按分しているので、上の座標の範囲（外枠）より大きく出ることがある。
+    //   AIがこれを「物理的にあり得ない」と見て、解像度の掛け直しを自分で作り出した（2026-10-06：ある物件の床で -35%、別の物件で -10%）。
+    out.push('※囲みの面積は、色の違う囲みが入れ子になっている所を色ごとに足してから按分した値なので、座標の範囲（外枠）の面積より大きいことがある。**それで正しい。**'
+      + '**画素数を「別の解像度」とみなして割り戻したり、縮尺を変えて合わせたりするな。**1画素の実寸は、図面の用紙と縮尺の表記から出した値をそのまま使え。');
   }
   if (m.labels.length) {
     out.push(`### 印の番号らしい数字の位置（${m.labels.length}個。機械の目安で、数え違いが1〜2個ありうる。実際の番号は図で読め）`);
@@ -617,11 +746,21 @@ export function describeMarks(m: MarkMeasure, label = ''): string {
   out.push('   線の長さは**開口を引く前**の長さだ。**線の上の小さな四角は、お客様が「引く」と決めた開口の印**だ。'
     + '四角ごとに「幅（上の画素×1画素の実寸）× 高さ2,100mm」を、その線の面積から引け（図面に建具の高さが書いてあればそれを使え）。'
     + '**四角の無い所は、図面に扉が描いてあっても引くな**（お客様がそこは引かないと決めている）。');
-  out.push('2. 図の番号（#1 など）ごとに行を立てる。1本の線（塊）に複数の番号の壁がつながっていて、番号ごとの長さに分けられないときは、'
-    + 'その塊を1行にまとめ、name に含まれる番号を全部書け（例「#4・#5・#6 …」）。**見えている線から出した行の合計は、線の合計に一致させろ。**');
-  out.push('3. **まず図の番号を全部読み、一覧にしてから行を立てろ。**番号の数より行（番号）が少なければ、線が見つからない番号がある。それが次の場合だ。');
-  out.push('   番号と起点の丸（●）があるのに、その番号の線が別の線と完全に重なって見えないことがある。これは間仕切りの両面を同じ線の上になぞったものだ。'
-    + 'その番号の壁は、重なっている相手の区間と同じ長さで1行出せ（線の合計とは別に、その上に足す。ただし上で「2本分として長さに含めてある」線の区間は、もう足してあるので足すな）。assumption に「#◯の線と重なる裏面」と書け。**番号の数と行の数を突き合わせ、番号を落とすな。**');
+  out.push('2. **まず図の番号を全部読み、一覧にしてから行を立てろ。**番号（#1 など）ごとに行を立てる。');
+  // ★お客様の拾い方（2026-10-06 確認）：間仕切りは**両面**で拾う。表と裏を同じ線の上に重ねてなぞるので、
+  //   画像には線が1本しか残らない。以前は「分けられない番号は1行にまとめろ」を先に書いていたため、
+  //   AIが表と裏の2つの番号を1行にまとめ、裏面の分をまるごと落としていた（物件A 3F壁 -18%→-3.8%）。
+  // ★区間ごとに両面をAIに決めさせる案（MarkPiece.segments を文面に載せる）も試したが採らない（2026-10-06）。
+  //   物件Aの1Fは直る（-12%→-4%）が、番号が部屋の外にある図面で番号と部屋を取り違えて +7〜+21%、
+  //   さらにAIが読めない番号を「並びから抜けているはず」と推測で作り始めた（ある物件で +26%）。
+  out.push('3. **この拾い方では、間仕切りの壁は両面（表と裏）で拾う。**表と裏は同じ線の上に重ねてなぞるので、画像には線が1本しか見えない。'
+    + '**1本の線（塊）に番号が2つ以上付いていたら、まず「同じ壁の表と裏」ではないかを確かめろ。**次のどれかなら表と裏だ：'
+    + '①2つの番号の起点の丸（●）が、同じまっすぐな線の両端にある（表と裏を逆向きになぞった）／'
+    + '②2つの番号が、その線をはさんだ両側の部屋にある／'
+    + '③番号はあるのに、その番号だけの線がどこにも見えない。'
+    + '表と裏なら、**番号ごとに1行ずつ、同じ壁の長さで2行**出せ（線の合計とは別に裏面の分を足す。ただし上で「2本分として長さに含めてある」線の区間は、もう足してあるので足すな）。assumption に「#◯の裏面（同じ線を両面で拾う）」と書け。');
+  out.push('   表と裏ではなく、別々の壁が1本につながっていて番号ごとの長さに分けられないときだけ、その塊を1行にまとめ、name に含まれる番号を全部書け（例「#4・#5・#6 …」）。'
+    + '**最後に番号の数と行の数を突き合わせ、番号を落とすな。**');
   out.push('4. 囲みは、その囲みの番号の床・天井として出せ。囲みの面積の合計は上の合計に一致させろ。');
   out.push('5. 図面の寸法線と大きく食い違うとき（2割以上）は、縮尺の読み違いを疑って warnings に書け。');
   return out.join('\n');
