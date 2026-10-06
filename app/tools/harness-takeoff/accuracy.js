@@ -71,6 +71,8 @@ const PROMPT_FILE = (process.argv.find((a) => a.startsWith('--prompt=')) || '').
 const PROMPT = fs.readFileSync(PROMPT_FILE, "utf-8");
 // --marks で使う「印を測る」関数は本番と同じ src/main/mark-measure.ts をその場でコンパイルして使う
 const MARKS = process.argv.includes('--marks');
+// --perroom: 部屋ごとに一周なぞった図面として渡す（本番の「部屋ごとに一周なぞった図面」チェックと同じ）
+const PERROOM = process.argv.includes('--perroom');
 const MARK = MARKS ? (() => {
   const { execFileSync } = require('child_process');
   const APP = path.resolve(DIR, '../..');
@@ -154,7 +156,7 @@ function buildContent(spec) {
       if (!/\.png$/i.test(file)) return;
       const png = FASTPNG.decode(fs.readFileSync(file));
       const m = MARK.measureMarks({ width: png.width, height: png.height, data: png.data, channels: png.channels });
-      if (MARK.hasMarks(m)) content.push({ type: 'text', text: MARK.describeMarks(m, list.length > 1 ? `資料${i + 1}` : '') });
+      if (MARK.hasMarks(m)) content.push({ type: 'text', text: MARK.describeMarks(m, list.length > 1 ? `資料${i + 1}` : '', { perRoom: PERROOM }) });
     });
   }
   // 差し込む中身（面積セクション・対象・工事内容・縮尺）の組み立ては context.js に集約。

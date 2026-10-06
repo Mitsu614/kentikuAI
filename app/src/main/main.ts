@@ -8461,6 +8461,8 @@ manDaysBreakdownの書き方例:
     tiled?: boolean;
     /** 色の線・囲みで拾う範囲を示した図面（印を機械で測ってAIに渡す） */
     marked?: boolean;
+    /** そのうち、部屋ごとに一周なぞった図面（壁名に部屋の名前を付ける描き方）。区間ごとに両面をAIに決めさせる */
+    markedPerRoom?: boolean;
   }) => {
     const files = (data?.files || []).filter((f: any) => f && f.data);
     if (files.length === 0) throw new Error('ERROR: 図面または材料一覧表のファイル（PDFまたは画像）を選択してください。');
@@ -8573,7 +8575,7 @@ ${TAKEOFF_INDUSTRY_HINT[takeoffIndustry]}
             if (!img.isEmpty()) {
               const sz = img.getSize();
               const m = measureMarks({ width: sz.width, height: sz.height, data: img.toBitmap(), channels: 4, bgr: true });
-              if (hasMarks(m)) markSections.push(describeMarks(m, files.length > 1 ? `資料${i + 1}` : ''));
+              if (hasMarks(m)) markSections.push(describeMarks(m, files.length > 1 ? `資料${i + 1}` : '', { perRoom: !!data?.markedPerRoom }));
               else markMissing.push(`資料${i + 1}`);
             }
           } catch (e: any) {

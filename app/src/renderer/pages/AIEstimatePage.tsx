@@ -186,6 +186,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
   //     同じ図面を拡大して渡すとコードを読み取り、人の計数と一致した）。
   const [takeoffTiled, setTakeoffTiled] = useState(false);
   const [takeoffMarked, setTakeoffMarked] = useState(false);   // 色の印で範囲を示した図面（印を機械で測る）
+  const [takeoffMarkedPerRoom, setTakeoffMarkedPerRoom] = useState(false);   // そのうち部屋ごとに一周なぞった図面
   // クロスの品番・リピート（任意）。柄物は1本の長さをリピートの倍数に切り上げる必要があるため、
   // 「品番が分かれば再計算できます」とAIに言わせている以上、入れる場所を用意しておく。
   const [takeoffRepeats, setTakeoffRepeats] = useState('');
@@ -1582,6 +1583,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
         industryOverride: industryOverride || undefined,
         tiled: takeoffTiled,
         marked: takeoffMarked,
+        markedPerRoom: takeoffMarked && takeoffMarkedPerRoom,
       });
       endBusy();
       // AIが最初に出した数量を控えておく。表で直したあとも「AIが何と言ったか」と比べられるように
@@ -2516,6 +2518,25 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
                       <span style={{ display: 'block', fontSize: 11, color: '#94a3b8', lineHeight: 1.7 }}>
                         青・黄・緑などの線と囲みの長さ・面積を機械が画素で数え、その範囲だけを拾います。
                         縮尺は図面の表記（用紙の大きさ・1/200 など）から出すので、<strong>用紙まるごとの画像</strong>で入れてください。
+                      </span>
+                    </span>
+                  </label>
+                )}
+                {/* ★部屋ごとに一周なぞった図面か。描き方で間仕切りの両面の数え方が変わり、画像からは見分けられないので、お客様に選んでもらう。
+                    拾い出しソフトで壁名に部屋の名前（食堂・廊下…）を付けている図面はこちら。「壁1・壁2…」のままならオフ。 */}
+                {takeoffMarked && takeoffFiles.some(f => f.type !== 'pdf') && (
+                  <label
+                    title="拾い出しソフトで、部屋ごとに壁を一周なぞった図面のとき（壁名に「食堂」「廊下」など部屋の名前を付けている）。部屋と部屋の間の壁を、両方の部屋の分として数えます。"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, margin: '-4px 0 10px 24px', padding: '6px 10px',
+                      border: `1px solid ${takeoffMarkedPerRoom ? '#93c5fd' : '#e2e8f0'}`, borderRadius: 8,
+                      background: takeoffMarkedPerRoom ? '#eff6ff' : '#fafafa', cursor: 'pointer', fontSize: 13,
+                    }}>
+                    <input type="checkbox" checked={takeoffMarkedPerRoom} onChange={e => setTakeoffMarkedPerRoom(e.target.checked)} />
+                    <span>
+                      <strong>部屋ごとに一周なぞった図面</strong>
+                      <span style={{ display: 'block', fontSize: 11, color: '#94a3b8', lineHeight: 1.7 }}>
+                        壁の名前を「食堂」「廊下」など部屋の名前にしている図面はこちら。「壁1・壁2…」のままなら外してください。
                       </span>
                     </span>
                   </label>
