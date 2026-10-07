@@ -166,13 +166,13 @@ function buildContent(spec) {
   return content;
 }
 
-// モデルと thinking は、試すときだけ差し替える（既定は本番と同じ sonnet-4-6・thinking なし）。
+// モデルと thinking は、試すときだけ差し替える（既定は本番と同じ opus-5-5・effort high。2026-10-08 から）。
 //   --model=claude-opus-5   … モデルを変える
 //   --thinking=8000         … 考える時間を与える（temperature は送れないので外す）
-const MODEL = (process.argv.find((a) => a.startsWith('--model=')) || '').split('=')[1] || 'claude-sonnet-4-6';
+const MODEL = (process.argv.find((a) => a.startsWith('--model=')) || '').split('=')[1] || 'claude-opus-5-5';
 const THINK = Number((process.argv.find((a) => a.startsWith('--thinking=')) || '').split('=')[1] || 0);
 //   --effort=high           … Opus 5.5 などの新しいモデルで考える深さを指定（adaptive thinking）
-const EFFORT = (process.argv.find((a) => a.startsWith('--effort=')) || '').split('=')[1] || '';
+const EFFORT = (process.argv.find((a) => a.startsWith('--effort=')) || '').split('=')[1] || (MODEL === 'claude-opus-5-5' ? 'high' : '');
 
 async function runOnce(client, spec) {
   const content = buildContent(spec);
