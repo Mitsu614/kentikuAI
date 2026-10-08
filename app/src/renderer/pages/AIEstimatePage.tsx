@@ -12,7 +12,9 @@ const ESTIMATE_SEC = 60;    // AI見積の作成
 const AREA_SEC = 15;        // 写真からの面積読み取り
 const IMAGE_SEC = 40;       // 完成イメージ生成
 const AUTOCREATE_SEC = 12;  // 物件・施工・請求書の自動登録
-const TAKEOFF_SEC = 45;     // 図面からの数量拾い出し（PDFはページ数ぶん重い）
+// 図面からの数量拾い出し。2026-10-08 から Opus 5.5 で拾うので重い（実測: 1枚2〜5分、7枚の意匠図で約8分）。
+// 小さな図面で早く終わった回の実測に引っぱられて目安が縮まないよう、学習させず8分で固定する（fixedEta）。
+const TAKEOFF_SEC = 480;
 const TRAINING_SEC = 150;   // 研修モード（実測: 内訳6行の屋根工事で約143秒。考えさせるぶん見積より長い）
 
 // 待っている間に出す「いま何をしているか」の一言。固定POPと画面内カードで同じ文言を使う。
@@ -1572,7 +1574,7 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     }
     setTakeoffLoading(true);
     setError('');
-    startBusy({ key: 'takeoff', title: '図面から数量を拾っています', etaSec: TAKEOFF_SEC, sub: '寸法・縮尺を読み取り中', note: '図面の枚数が多いほど時間がかかります' });
+    startBusy({ key: 'takeoff', title: '図面から数量を拾っています', etaSec: TAKEOFF_SEC, fixedEta: true, sub: '寸法・縮尺を読み取り中', note: '図面の枚数が多いほど時間がかかります。完了までこの画面を開いたままにしてください' });
     try {
       const res = await (window as any).api.takeoffDrawing({
         files: takeoffFiles.map(f => ({ type: f.type, data: f.data, name: f.name })),

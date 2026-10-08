@@ -24,6 +24,8 @@ export type BusyTask = {
   perItemSec?: number;
   /** 待っている間に見せる一言（省略時は既定文） */
   note?: string;
+  /** true なら実測で目安を上書きしない（図面の大きさで時間が大きく変わり、中央値が当てにならない作業） */
+  fixedEta?: boolean;
 };
 
 type BusyState = (BusyTask & { startedAt: number; done: number }) | null;
@@ -84,9 +86,11 @@ export function etaText(key: string, fallbackSec: number, count = 1): string {
 export function startBusy(task: BusyTask) {
   const per = task.perItemSec;
   const total = task.total;
-  const eta = total && per
-    ? learnedSec(task.key, per) * total
-    : learnedSec(task.key, task.etaSec || 30);
+  const eta = task.fixedEta
+    ? (total && per ? per * total : task.etaSec || 30)
+    : total && per
+      ? learnedSec(task.key, per) * total
+      : learnedSec(task.key, task.etaSec || 30);
   current = { ...task, etaSec: eta, startedAt: Date.now(), done: 0 };
   if (flashTimer) { clearTimeout(flashTimer); flashTimer = null; }
   doneFlash = null;
