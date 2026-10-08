@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { PageGuide } from '../components/PageGuide';
 import { startBusy, updateBusy, endBusy, etaText } from '../components/BusyPop';
+import { pdfToTiles } from '../utils/pdfTiles';
 import CustomerSchedule from '../components/CustomerSchedule';
 import TakeoffAnswerCheck from '../components/TakeoffAnswerCheck';
 
@@ -1576,8 +1577,11 @@ export default function AIEstimatePage({ onNavigateToConstruction }: { onNavigat
     setError('');
     startBusy({ key: 'takeoff', title: '図面から数量を拾っています', etaSec: TAKEOFF_SEC, fixedEta: true, sub: '寸法・縮尺を読み取り中', note: '図面の枚数が多いほど時間がかかります。完了までこの画面を開いたままにしてください' });
     try {
+      // 大判（A2以上）のPDFは、ページを4つに切った拡大画像も添える（小さな室名・寸法をAIが読めるように）
+      const pageTiles = takeoffFiles.some(f => f.type === 'pdf') ? await pdfToTiles(takeoffFiles) : [];
       const res = await (window as any).api.takeoffDrawing({
         files: takeoffFiles.map(f => ({ type: f.type, data: f.data, name: f.name })),
+        pageTiles,
         comment,
         scaleHint: takeoffScale,
         targets: takeoffTargets,

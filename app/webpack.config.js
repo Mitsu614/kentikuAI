@@ -87,6 +87,8 @@ module.exports = [
           { from: './src/renderer/manifest.json', to: 'manifest.json' },
           { from: './src/renderer/sw.js', to: 'sw.js' },
           { from: '../admin-dashboard/index.html', to: 'admin.html' },
+          // pdf.js の描画用ワーカー（大判PDFを拡大画像に切るため。utils/pdfTiles.ts が './pdf.worker.min.mjs' を読む）
+          { from: './node_modules/pdfjs-dist/build/pdf.worker.min.mjs', to: 'pdf.worker.min.mjs' },
         ],
       }),
     ],

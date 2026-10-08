@@ -8478,6 +8478,8 @@ manDaysBreakdownの書き方例:
     marked?: boolean;
     /** そのうち、部屋ごとに一周なぞった図面（壁名に部屋の名前を付ける描き方）。区間ごとに両面をAIに決めさせる */
     markedPerRoom?: boolean;
+    /** 大判PDFのページを画面側で2×2に切った拡大画像（fileIndex の資料のもの）。小さな室名・寸法を読ませる */
+    pageTiles?: { fileIndex: number; label: string; data: string }[];
   }) => {
     const files = (data?.files || []).filter((f: any) => f && f.data);
     if (files.length === 0) throw new Error('ERROR: 図面または材料一覧表のファイル（PDFまたは画像）を選択してください。');
@@ -8578,6 +8580,12 @@ ${TAKEOFF_INDUSTRY_HINT[takeoffIndustry]}
       content.push({ type: 'text', text: `【資料${i + 1}${f.name ? '：' + f.name : ''}】` });
       if (isPdf) {
         content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: raw.replace(/^data:application\/pdf;base64,/, '') } });
+        // ★大判（A1など）のページは、AIがPDFを1枚の画像に縮めて読むと小さな文字がつぶれる。
+        //   画面側で切った拡大画像を同じ資料のすぐ後ろに添える（2026-10-08：A1・1/50で室の行 50%→76%、確かさ「低」がほぼ消えた）。
+        for (const t of (data?.pageTiles || []).filter((t) => t && t.fileIndex === i && /^data:image\//.test(String(t.data))).slice(0, 40)) {
+          content.push({ type: 'text', text: `【資料${i + 1} の ${t.label}を拡大したもの（小さな室名・寸法を読むため。数量はこれと上のPDFの両方を見て拾え）】` });
+          content.push({ type: 'image', source: { type: 'base64', media_type: detectMediaType(t.data), data: String(t.data).replace(/^data:image\/\w+;base64,/, '') } });
+        }
       } else {
         // 図面は細い寸法線を読ませるので、現場写真ほど縮めない（長辺2000px）
         const shrunk = shrinkImageForAI(raw, 2000);
@@ -8849,6 +8857,12 @@ ${String(data.repeats).trim()}
    指定（または図面記載）の床面積から、各室の合計を引いた残りがそれだ。
    例: name「廊下・ホール等（差引き）」／formula「1,209.35 − 755.00 = 454.35」／confidence「中」。
    **各室を挙げただけで終わるな。**床の合計が指定面積に足りないまま出すのが、一番多い外し方だ。
+   ★★**差引きに入れてよいのは、名前の無い残りと、寸法がどうしても読めない室だけだ。**★★
+     **図面に室名が書かれ、その室を囲む寸法（通り芯・内法の寸法線）が読めるなら、差引きに入れずに1室ずつ行を立てろ。**
+     平面詳細図（1/50・1/100）は寸法が細かく入っているので、差引きは廊下・ホールの一部まで縮められる。
+     （実測：A1・5階建ての平面詳細図で、名前のある室の7割を差引きに入れ、床合計の34％が差引きの1行になった）
+     **目安：差引きが床合計の15％を超えたら、まだ拾える室が差引きに残っている。**室名の一覧と突き合わせて取り出せ。
+     同じ大きさの室が並ぶとき（居室・個室・トイレ）は「居室（2.5×5.2）×13室」のように1行にまとめてよい。
    ★引くのは「**items に実際に出した床の行の合計**」だけにしろ。面積が読めずに items に入れなかった室を
    引き算に混ぜるな（その室は差引きの残りに含まれる）。**出した行の合計 ＋ 差引き ＝ 指定面積** が
    1円の狂いもなく成立していなければ誤りだ。出す前に足して確かめろ。

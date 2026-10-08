@@ -43,6 +43,7 @@
     "localtunnel": "^2.0.2",
     "nodemailer": "^8.0.10",
     "openai": "^6.39.0",
+    "pdfjs-dist": "^4.10.38",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.15.1",

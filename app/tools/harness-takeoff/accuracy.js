@@ -150,6 +150,19 @@ function buildContent(spec) {
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
       : { type: 'image', source: { type: 'base64', media_type: media, data: b64 } });
   });
+  // 大判PDFのページを高解像度で2×2に切った画像も添える（本番 utils/pdfTiles.ts＋main.ts と同じ。--no-pdf-tiles で外す）
+  if (!process.argv.includes('--no-pdf-tiles')) {
+    list.forEach((file, i) => {
+      if (path.extname(file).toLowerCase() !== '.pdf') return;
+      const out = path.join(os.tmpdir(), 'kb-pdf-tiles', crypto.createHash('md5').update(file).digest('hex').slice(0, 8));
+      const lines = require('child_process').execFileSync('python', [path.join(DIR, 'pdf-tiles.py'), file, out], { encoding: 'utf-8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }).trim().split(/\r?\n/).filter(Boolean);
+      for (const ln of lines) {
+        const [label, f] = ln.split('\t');
+        content.push({ type: 'text', text: `【資料${i + 1} の ${label}を拡大したもの（小さな室名・寸法を読むため。数量はこれと上のPDFの両方を見て拾え）】` });
+        content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: fs.readFileSync(f).toString('base64') } });
+      }
+    });
+  }
   // --marks: 図面の色の印を機械で測り、その結果を指示文の前に差し込む（本番 main.ts と同じ関数・同じ位置）
   if (MARKS) {
     list.forEach((file, i) => {
