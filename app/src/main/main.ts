@@ -1041,14 +1041,25 @@ async function sendUsageNotification(operation: string, detail?: string, extras?
       estimateDetail += `\n\n【ユーザーコメント】\n${extras.comment}`;
     }
 
-    // 画像添付
-    const attachments: any[] = [];
+    // 入れられたファイルを添付する（写真だけでなくPDFの図面も）。運営がお客様と同じものを見て確かめられるように。
+    //   以前は data:image/… しか剥がしておらず、PDFは「data:application/pdf;base64,」が付いたまま .jpg の名前で送られ、開けなかった。
+    //   send-mail の上限（合計8MB）を超える分は送らず、本文にファイル名と大きさを書く（黙って落とさない）。
+    const attachments: { filename: string; contentBase64: string }[] = [];
+    const notAttached: string[] = [];
+    const ATTACH_BUDGET = 7.5 * 1024 * 1024;
+    let attachUsed = 0;
     if (extras?.images) {
       for (const img of extras.images) {
-        if (img.content) {
-          const base64Data = img.content.replace(/^data:image\/\w+;base64,/, '');
-          attachments.push({ filename: img.filename, contentBase64: base64Data });
-        }
+        if (!img.content) continue;
+        const m = String(img.content).match(/^data:([^;,]+);base64,/);
+        const mime = m ? m[1] : 'image/jpeg';
+        const base64Data = String(img.content).replace(/^data:[^;,]+;base64,/, '');
+        const ext = mime === 'application/pdf' ? '.pdf' : mime === 'image/png' ? '.png' : mime === 'image/webp' ? '.webp' : '.jpg';
+        const filename = /\.[a-z0-9]{2,4}$/i.test(img.filename) && !/\.jpe?g$/i.test(img.filename) ? img.filename : img.filename.replace(/\.jpe?g$/i, '') + ext;
+        const size = Math.floor(base64Data.length * 3 / 4);
+        if (attachUsed + size > ATTACH_BUDGET) { notAttached.push(`${filename}（${(size / 1024 / 1024).toFixed(1)}MB）`); continue; }
+        attachUsed += size;
+        attachments.push({ filename, contentBase64: base64Data });
       }
     }
 
@@ -1076,6 +1087,9 @@ async function sendUsageNotification(operation: string, detail?: string, extras?
           ? `■ ★デモ期限: ${usage.expiresAt}（あと${usage.daysLeft}日）${usage.daysLeft <= 5 ? ' ← まもなく使えなくなります。プラン変更の要否を確認してください' : ''}`
           : '',
         estimateDetail,
+        attachments.length ? `
+【添付】${attachments.map(a => a.filename).join(' / ')}` : '',
+        notAttached.length ? `★メールの容量を超えるため添付できなかったファイル: ${notAttached.join(' / ')}` : '',
         '',
         '---',
         '建築ブースト 利用通知',
@@ -8430,6 +8444,7 @@ manDaysBreakdownの書き方例:
       if (imageBase64) notifyImages.push({ filename: 'input-photo.jpg', content: imageBase64 });
       if (beforeImage) notifyImages.push({ filename: 'before.jpg', content: beforeImage });
       if (afterImage) notifyImages.push({ filename: 'after.jpg', content: afterImage });
+      extraShots.forEach((x: string, i: number) => notifyImages.push({ filename: `資料${i + 2}.jpg`, content: x }));
       sendUsageNotification(opName, `工事種別: ${estimateResult.workType || '不明'}, 売価: ¥${Math.round(estimateResult.estimatedTotal || 0).toLocaleString()}`, {
         images: notifyImages,
         estimateResult,
@@ -9184,7 +9199,14 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
       );
     } catch (e) { console.error('takeoff_log保存失敗:', e); }
 
-    sendUsageNotification('図面拾い出し', `${(takeoff.drawingTypes || []).join('・') || '図面'} / ${takeoff.items.length}項目 / 縮尺${takeoff.scale || '不明'}`);
+    sendUsageNotification('図面拾い出し', `${(takeoff.drawingTypes || []).join('・') || '図面'} / ${takeoff.items.length}項目 / 縮尺${takeoff.scale || '不明'}`, {
+      // 入れられた図面そのものを添付（運営がお客様と同じ図面で拾い出しを確かめられるように）
+      images: files.map((f: any, i: number) => ({
+        filename: String(f.name || `図面${i + 1}${f.type === 'pdf' || String(f.data).startsWith('data:application/pdf') ? '.pdf' : '.jpg'}`),
+        content: String(f.data),
+      })),
+      comment: data?.comment || undefined,
+    });
     return { ...takeoff, _takeoffLogId: takeoffLogId };
   };
   ipcMain.handle('ai:takeoffDrawing', (_e, data: any) => takeoffDrawingCore(data));
