@@ -8997,6 +8997,8 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
     //   拾い出しは1行が長い（式・寸法・出典・仮定つき）ので、見積より出力が伸びる。
     //   出力上限は128K。ストリームならHTTPタイムアウトを気にせず大きく取れるので
     //   64Kまで引き上げて、そもそも切らせない（見積側 analyze が同じ理由でストリーム化済み）。
+    //   ★Opus 5.5 は考える分（thinking）も max_tokens に数えられる。A1・8枚の平面詳細図で 64K に当たり、
+    //   答えのJSONが約3万字で切れた（2026-10-08）。Opus 5.5 の上限 128K まで取る。
     // ★拾い出しは、どの図面も Opus 5.5（effort high）で行う（2026-10-08 から）。
     //   色の印の図面は先に Opus 5.5 にしていた（Sonnet 4.6 は番号と線の対応で +237% など不安定だった）。
     //   スキャンPDFの余白の小さな面積注記（「リネン A：1.75×5.525＝9.66m²」など）を Sonnet 4.6 は毎回違う数字に
@@ -9005,7 +9007,7 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
     const askTakeoff = async (msgContent: any[]) => {
       const stream = client.messages.stream({
         model: 'claude-opus-5-5', thinking: { type: 'adaptive' }, output_config: { effort: 'high' },
-        max_tokens: 64000,
+        max_tokens: 128000,
         system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
         messages: [{ role: 'user', content: msgContent }],
       });
@@ -9017,10 +9019,10 @@ items は拾えた分だけでよい（無理に埋めるな）。読めない�
         .filter((c: any) => c.type === 'text')
         .map((c: any) => c.text)
         .join('');
-      // 64Kでも切れた場合は、結果を捨てずに出す（拾えた分は使えるため）。ただし黙って通さず、
+      // 上限でも切れた場合は、結果を捨てずに出す（拾えた分は使えるため）。ただし黙って通さず、
       // 「途中で切れている」ことを警告として画面に必ず出す（欠けた行に気づけないのが一番危ない）。
       const cut = response.stop_reason === 'max_tokens';
-      if (cut) console.warn(`[takeoff] 出力が上限(64K)に達して切れました（${text.length}文字）`);
+      if (cut) console.warn(`[takeoff] 出力が上限(128K)に達して切れました（${text.length}文字）`);
       const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('資料を読み取れませんでした。画像が鮮明か、寸法または数量が写っているかご確認ください。');
       let parsed: any = null;

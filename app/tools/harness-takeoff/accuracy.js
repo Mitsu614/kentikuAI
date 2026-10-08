@@ -177,7 +177,7 @@ const EFFORT = (process.argv.find((a) => a.startsWith('--effort=')) || '').split
 async function runOnce(client, spec) {
   const content = buildContent(spec);
   const params = {
-    model: MODEL, max_tokens: 64000,
+    model: MODEL, max_tokens: 128000,
     system: 'あなたは建築積算の拾い出し専門家です。図面の寸法数値を正確に読み、計算式を必ず添えて数量を出します。読めないものは推測せず「読めない」と報告します。金額は扱いません。',
     messages: [{ role: 'user', content }],
   };
